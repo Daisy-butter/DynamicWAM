@@ -937,6 +937,7 @@ def _validate_benchmark(raw: Any, action_chunk_size: int) -> dict[str, Any]:
             "domino_root",
             "eval_policy",
             "curobo_root",
+            "curobo_extension_sha256",
             "tasks",
         },
         "benchmark",
@@ -952,6 +953,9 @@ def _validate_benchmark(raw: Any, action_chunk_size: int) -> dict[str, Any]:
         "curobo_root",
     ):
         _nonempty_string(benchmark[key], f"benchmark.{key}")
+    digest = benchmark["curobo_extension_sha256"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("benchmark.curobo_extension_sha256 must be a lowercase SHA256")
     for key in ("python", "domino_root", "eval_policy", "curobo_root"):
         if not Path(benchmark[key]).is_absolute():
             raise ValueError(f"benchmark.{key} must be absolute")
