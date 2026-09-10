@@ -25,6 +25,21 @@ def _curobo_environment(
     environment = os.environ.copy()
     environment["CUDA_VISIBLE_DEVICES"] = str(gpu)
     environment["PYTHONUNBUFFERED"] = "1"
+    vulkan_lib = Path(
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/external/vulkan-conda/lib"
+    )
+    vulkan_icd = Path(
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/external/vulkan-icd/nvidia_icd.json"
+    )
+    if vulkan_lib.is_dir() and vulkan_icd.is_file():
+        existing = environment.get("LD_LIBRARY_PATH", "")
+        environment["LD_LIBRARY_PATH"] = (
+            f"{vulkan_lib}{os.pathsep}{existing}" if existing else str(vulkan_lib)
+        )
+        environment["VK_ICD_FILENAMES"] = str(vulkan_icd)
+        environment["VK_DRIVER_FILES"] = str(vulkan_icd)
+        environment["VK_LOADER_LAYERS_DISABLE"] = "~implicit~"
+        environment["NVIDIA_DRIVER_CAPABILITIES"] = "all"
     pythonpath = [str(curobo_root)]
     pythonpath.extend(str(path) for path in extra_pythonpath)
     if environment.get("PYTHONPATH"):
@@ -103,7 +118,8 @@ def _install_collection_configs(
             raise TypeError(f"collection config must be a mapping: {source}")
         configured_save_root = Path(str(payload.get("save_path", "")))
         if not configured_save_root.is_absolute():
-            configured_save_root = (project_root / configured_save_root).resolve()
+            configured_save_root = project_root / configured_save_root
+        configured_save_root = configured_save_root.resolve()
         randomized = index == 1
         domain = payload.get("domain_randomization", {})
         required_true = (

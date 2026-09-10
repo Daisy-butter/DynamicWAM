@@ -33,7 +33,7 @@ data_type:
   actor_segmentation: false
 pcd_down_sample_num: 1024
 pcd_crop: true
-save_path: data/raw/clean
+save_path: /SSD_DISK_1/users/wuruihan/DynamicWAM/data/raw/clean
 clear_cache_freq: 5
 collect_data: true
 eval_video_log: false

@@ -441,6 +441,7 @@ def _copy_languages(
     *,
     language_embeddings_root: Path,
     output_root: Path,
+    tasks: list[str],
 ) -> None:
     from dynamicwam.language import (
         assert_language_embeddings_equal,
@@ -449,7 +450,7 @@ def _copy_languages(
 
     target_root = output_root / "language"
     target_root.mkdir(parents=True, exist_ok=True)
-    for task in OFFICIAL_LEVEL1_TASKS:
+    for task in tasks:
         source = language_embeddings_root / f"{task}.pt"
         values = load_language_embeddings(source)
         target = target_root / f"{task}.pt"
@@ -473,10 +474,11 @@ def _verify_converted_file_set(
     output_root: Path,
     cache_root: Path,
     split_contracts: tuple[tuple[str, str, int], ...],
+    tasks: list[str],
 ) -> None:
     for split, _config_name, expected_count in split_contracts:
         expected_names = {str(index) for index in range(expected_count)}
-        for task in OFFICIAL_LEVEL1_TASKS:
+        for task in tasks:
             task_root = output_root / split / task
             for directory, suffix in (
                 ("videos", ".mp4"),
@@ -501,8 +503,11 @@ def _verify_converted_file_set(
                     f"contract: {split}/{task}"
                 )
     language_names = {path.stem for path in (output_root / "language").glob("*.pt")}
-    if language_names != set(OFFICIAL_LEVEL1_TASKS):
-        raise RuntimeError("converted language bank differs from the official task set")
+    if language_names != set(tasks):
+        raise RuntimeError(
+            "converted language bank differs from the selected task set: "
+            f"expected={sorted(tasks)}, actual={sorted(language_names)}"
+        )
 
 
 def _select_episode_prefix(
@@ -527,13 +532,26 @@ def _select_episode_prefix(
     return episode_paths[:expected_count]
 
 
-def run(*, config_path: str, workers: int) -> None:
+def run(
+    *,
+    config_path: str,
+    workers: int,
+    tasks: list[str] | None = None,
+    splits: list[str] | None = None,
+    expected_episodes: int | None = None,
+) -> None:
     profile = load_profile(config_path)
     raw = profile.raw
     raw_root = Path(raw["paths"]["raw_dataset"])
     output_root = Path(raw["paths"]["source_dataset"])
     cache_root = Path(raw["paths"]["head_flow_cache"])
     collection = raw["collection"]
+    selected_tasks = list(OFFICIAL_LEVEL1_TASKS if not tasks else tasks)
+    invalid_tasks = sorted(set(selected_tasks) - set(OFFICIAL_LEVEL1_TASKS))
+    if invalid_tasks:
+        raise ValueError(f"unknown Level-1 tasks: {invalid_tasks}")
+    if len(selected_tasks) != len(set(selected_tasks)):
+        raise ValueError("convert tasks must be unique")
     params = build_flow_cache_parameters(
         head_flow_config=raw["method"]["head_flow"],
         global_downsample_rate=int(raw["method"]["video"]["global_downsample_rate"]),
@@ -543,7 +561,7 @@ def run(*, config_path: str, workers: int) -> None:
         sort_keys=True,
         separators=(",", ":"),
     )
-    split_contracts = (
+    all_split_contracts = (
         (
             "clean",
             collection["clean_config_name"],
@@ -555,9 +573,23 @@ def run(*, config_path: str, workers: int) -> None:
             int(collection["randomized_episodes_per_task"]),
         ),
     )
+    selected_splits = {"clean", "randomized"} if not splits else set(splits)
+    if selected_splits - {"clean", "randomized"}:
+        raise ValueError("convert splits must be clean and/or randomized")
+    split_contracts = tuple(
+        (
+            split,
+            config_name,
+            int(expected_episodes) if expected_episodes is not None else count,
+        )
+        for split, config_name, count in all_split_contracts
+        if split in selected_splits
+    )
+    if not split_contracts:
+        raise ValueError("convert requires at least one split")
     jobs: list[tuple[str, str, str, str]] = []
     for split, config_name, expected_count in split_contracts:
-        for task in OFFICIAL_LEVEL1_TASKS:
+        for task in selected_tasks:
             source_dir = raw_root / split / task / config_name / "data"
             episode_paths = _select_episode_prefix(
                 source_dir=source_dir,
@@ -592,11 +624,13 @@ def run(*, config_path: str, workers: int) -> None:
     _copy_languages(
         language_embeddings_root=Path(raw["paths"]["language_embeddings"]),
         output_root=output_root,
+        tasks=selected_tasks,
     )
     _verify_converted_file_set(
         output_root=output_root,
         cache_root=cache_root,
         split_contracts=split_contracts,
+        tasks=selected_tasks,
     )
 
 
@@ -604,6 +638,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--workers", type=int)
+    parser.add_argument("--tasks", nargs="+")
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        choices=("clean", "randomized"),
+    )
+    parser.add_argument("--expected-episodes", type=int)
     arguments = parser.parse_args()
     profile = load_profile(arguments.config)
     workers = (
@@ -613,7 +654,15 @@ def main() -> None:
     )
     if workers <= 0:
         parser.error("workers must be positive")
-    run(config_path=arguments.config, workers=workers)
+    if arguments.expected_episodes is not None and arguments.expected_episodes <= 0:
+        parser.error("expected-episodes must be positive")
+    run(
+        config_path=arguments.config,
+        workers=workers,
+        tasks=arguments.tasks,
+        splits=arguments.splits,
+        expected_episodes=arguments.expected_episodes,
+    )
 
 
 if __name__ == "__main__":

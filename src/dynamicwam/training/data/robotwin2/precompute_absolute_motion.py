@@ -100,6 +100,9 @@ def run(
     *,
     config_path: str,
     workers: int,
+    tasks: list[str] | None = None,
+    splits: list[str] | None = None,
+    expected_episodes: int | None = None,
 ) -> None:
     profile = load_profile(config_path)
     raw = profile.raw
@@ -114,14 +117,26 @@ def run(
     )
     params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
     collection = raw["collection"]
+    selected_tasks = list(OFFICIAL_LEVEL1_TASKS if not tasks else tasks)
+    invalid_tasks = sorted(set(selected_tasks) - set(OFFICIAL_LEVEL1_TASKS))
+    if invalid_tasks:
+        raise ValueError(f"unknown Level-1 tasks: {invalid_tasks}")
+    selected_splits = ["clean", "randomized"] if not splits else list(splits)
+    if any(split not in {"clean", "randomized"} for split in selected_splits):
+        raise ValueError("motion splits must be clean and/or randomized")
     split_counts = {
         "clean": int(collection["clean_episodes_per_task"]),
         "randomized": int(collection["randomized_episodes_per_task"]),
     }
+    if expected_episodes is not None:
+        if expected_episodes <= 0:
+            raise ValueError("expected_episodes must be positive")
+        split_counts = {split: int(expected_episodes) for split in selected_splits}
     expected_videos = {
         dataset_root / split / task / "videos" / f"{episode}.mp4"
-        for split, episode_count in split_counts.items()
-        for task in OFFICIAL_LEVEL1_TASKS
+        for split in selected_splits
+        for episode_count in [split_counts[split]]
+        for task in selected_tasks
         for episode in range(episode_count)
     }
     actual_videos = set(dataset_root.rglob("*.mp4"))
@@ -171,6 +186,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--workers", type=int)
+    parser.add_argument("--tasks", nargs="+")
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        choices=("clean", "randomized"),
+    )
+    parser.add_argument("--expected-episodes", type=int)
     arguments = parser.parse_args()
     profile = load_profile(arguments.config)
     workers = (
@@ -180,9 +202,14 @@ def main() -> None:
     )
     if workers <= 0:
         parser.error("workers must be positive")
+    if arguments.expected_episodes is not None and arguments.expected_episodes <= 0:
+        parser.error("expected-episodes must be positive")
     run(
         config_path=arguments.config,
         workers=workers,
+        tasks=arguments.tasks,
+        splits=arguments.splits,
+        expected_episodes=arguments.expected_episodes,
     )
 
 

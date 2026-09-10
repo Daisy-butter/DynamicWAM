@@ -311,6 +311,12 @@ def _video_refresh_steps(
 def build_runtime_from_config(
     config: dict[str, Any],
 ) -> DynamicWAMRuntime:
+    config = dict(config)
+    # Profile identity fields used by checkpoint/asset manifests, not by the
+    # runtime graph.  Drop them so require_exact_keys stays aligned.
+    config.pop("checkpoint_artifact_id", None)
+    config.pop("checkpoint_manifest", None)
+    config.pop("external_assets_manifest", None)
     require_exact_keys(
         config,
         {

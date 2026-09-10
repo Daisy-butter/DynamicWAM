@@ -15,6 +15,7 @@ dist/
 
 /outputs/
 /data/
+/external/
 /external/*
 /_trash/
 
@@ -22,6 +23,10 @@ dist/
 *.pth
 *.ckpt
 *.safetensors
+*.bin
+*.h5
+*.hdf5
+*.npz
 *.mp4
 *.mov
 *.avi

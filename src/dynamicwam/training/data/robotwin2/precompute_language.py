@@ -26,7 +26,13 @@ def _parse_tasks(values: list[str] | None) -> tuple[str, ...]:
     return tasks
 
 
-def run(*, config_path: str, tasks: tuple[str, ...], device: str) -> None:
+def run(
+    *,
+    config_path: str,
+    tasks: tuple[str, ...],
+    device: str,
+    expected_episodes: int | None = None,
+) -> None:
     import torch
 
     from dynamicwam.vendor.wan.modules.t5 import T5EncoderModel
@@ -67,7 +73,11 @@ def run(*, config_path: str, tasks: tuple[str, ...], device: str) -> None:
             domino_root=domino_root,
             scene_info_path=scene_info_path,
             task=task,
-            expected_episodes=int(collection["clean_episodes_per_task"]),
+            expected_episodes=(
+                int(expected_episodes)
+                if expected_episodes is not None
+                else int(collection["clean_episodes_per_task"])
+            ),
             prompts_per_task=int(raw["data"]["language_prompts_per_task"]),
             seed=int(raw["data"]["language_prompt_seed"]) + task_index,
             scene_prefix=str(raw["inference"]["scene_prefix"]),
@@ -101,11 +111,15 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--task", action="append")
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--expected-episodes", type=int)
     arguments = parser.parse_args()
+    if arguments.expected_episodes is not None and arguments.expected_episodes <= 0:
+        parser.error("expected-episodes must be positive")
     run(
         config_path=arguments.config,
         tasks=_parse_tasks(arguments.task),
         device=arguments.device,
+        expected_episodes=arguments.expected_episodes,
     )
 
 
