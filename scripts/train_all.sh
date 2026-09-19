@@ -8,14 +8,16 @@ PYTHON=$ENV_ROOT/bin/python
 TORCHRUN=$ENV_ROOT/bin/torchrun
 ACCELERATE=$ENV_ROOT/bin/accelerate
 PROFILE=$ROOT/configs/absolute_motion_v2.yaml
-DATA_ROOT=${DYNAMICWAM_DATA_ROOT:-/SSD_DISK_1/users/wuruihan/DynamicWAM}
-RUN_ROOT=${DYNAMICWAM_RUN_ROOT:-$DATA_ROOT/outputs/mainline_dynamic_only}
-DATASET=$DATA_ROOT/data/packed/domino_absolute_motion_v2/dataset.json
-PCA=$DATA_ROOT/outputs/stage1_pca/pca_stats.pt
-STAGE1=$DATA_ROOT/outputs/training/absolute_motion_stage1_video/exports/stage1_step_80000.pt
-INITIALIZED=$DATA_ROOT/outputs/checkpoint_init/absolute_motion_init.pt
-STAGE2=$DATA_ROOT/outputs/training/absolute_motion_stage2_action/exports/stage2_step_80000.pt
-STAGE3=$DATA_ROOT/outputs/training/absolute_motion_stage3_joint/exports/stage3_step_40000.pt
+DATA_ROOT=${DYNAMICWAM_DATA_ROOT:-/SSD_DISK/users/wuruihan/wam}
+RUN_ROOT=${DYNAMICWAM_RUN_ROOT:-$DATA_ROOT/outputs/explicit_newton/mainline}
+DATASET=$DATA_ROOT/datasets/domino_absolute_motion_v2/dataset.json
+NEWTON_STATS=$DATA_ROOT/datasets/domino_absolute_motion_v2/newton_stats.json
+PCA=$DATA_ROOT/outputs/explicit_newton/stage1_pca/pca_stats.pt
+STAGE1=$DATA_ROOT/outputs/explicit_newton/training/absolute_motion_stage1_video/exports/stage1_step_80000.pt
+INITIALIZED=$DATA_ROOT/outputs/explicit_newton/checkpoint_init/absolute_motion_newton_init.pt
+STAGE2=$DATA_ROOT/outputs/explicit_newton/training/absolute_motion_stage2_action/exports/stage2_step_80000.pt
+STAGE3=$DATA_ROOT/outputs/explicit_newton/training/absolute_motion_stage3_joint/exports/stage3_step_40000.pt
+EVAL_ROOT=$DATA_ROOT/outputs/explicit_newton/evaluation/absolute_motion_domino_level1
 GPU_PROCESSES=${DYNAMICWAM_GPU_PROCESSES:-8}
 
 export PATH=$ENV_ROOT/bin:$PATH
@@ -41,20 +43,32 @@ if [[ ! -s $DATASET ]]; then
   exit 1
 fi
 
-printf '%s dynamic_only_mainline_start dataset=%s gpus=%s\n' \
-  "$(date '+%F %T')" "$DATASET" "$CUDA_VISIBLE_DEVICES"
-
-if [[ ! -s $PCA ]]; then
-  "$TORCHRUN" --standalone --nproc_per_node="$GPU_PROCESSES" \
-    "$ROOT/scripts/train.py" stage1_pca --config "$PROFILE" \
-    2>&1 | tee "$RUN_ROOT/stage1_pca.log"
+if [[ ! -s $NEWTON_STATS ]]; then
+  printf '%s computing newton_stats\n' "$(date '+%F %T')"
+  "$PYTHON" "$ROOT/scripts/precompute_newton_stats.py" --config "$PROFILE" \
+    2>&1 | tee "$RUN_ROOT/newton_stats.log"
 fi
 
+if [[ ! -s $NEWTON_STATS ]]; then
+  printf 'missing newton statistics: %s\n' "$NEWTON_STATS" >&2
+  exit 1
+fi
+
+printf '%s explicit_newton_mainline_start dataset=%s gpus=%s stage1=%s\n' \
+  "$(date '+%F %T')" "$DATASET" "$CUDA_VISIBLE_DEVICES" "$STAGE1"
+
 if [[ ! -s $STAGE1 ]]; then
+  if [[ ! -s $PCA ]]; then
+    "$TORCHRUN" --standalone --nproc_per_node="$GPU_PROCESSES" \
+      "$ROOT/scripts/train.py" stage1_pca --config "$PROFILE" \
+      2>&1 | tee "$RUN_ROOT/stage1_pca.log"
+  fi
   "$ACCELERATE" launch --multi_gpu --num_processes "$GPU_PROCESSES" \
     --main_process_port 29521 \
     "$ROOT/scripts/train.py" stage1 --config "$PROFILE" \
     2>&1 | tee "$RUN_ROOT/stage1.log"
+else
+  printf '%s reusing existing stage1 checkpoint %s\n' "$(date '+%F %T')" "$STAGE1"
 fi
 
 if [[ ! -s $INITIALIZED ]]; then
@@ -77,5 +91,11 @@ if [[ ! -s $STAGE3 ]]; then
     2>&1 | tee "$RUN_ROOT/stage3.log"
 fi
 
-printf '%s dynamic_only_mainline_complete checkpoint=%s\n' \
+printf '%s explicit_newton_mainline_complete checkpoint=%s\n' \
   "$(date '+%F %T')" "$STAGE3"
+
+"$PYTHON" "$ROOT/scripts/eval_domino.py" --config "$PROFILE" --episodes-per-task 20 \
+  2>&1 | tee "$RUN_ROOT/eval_level1.log"
+
+printf '%s explicit_newton_eval_complete aggregate=%s\n' \
+  "$(date '+%F %T')" "$EVAL_ROOT/aggregate.json"

@@ -154,6 +154,16 @@ class AbsoluteMotionProfile:
             )
         return {key: method[key] for key in method if key in keys}
 
+    def _explicit_dynamics(self) -> dict[str, Any]:
+        raw = self.raw
+        method = raw["method"]
+        return {
+            "window_count": int(method["explicit_dynamics"]["window_count"]),
+            "horizon_steps": int(method["explicit_dynamics"]["horizon_steps"]),
+            "action_interval_seconds": float(raw["inference"]["action_interval_ms"])
+            / 1000.0,
+        }
+
     def _training_dataset(
         self,
         *,
@@ -286,6 +296,7 @@ class AbsoluteMotionProfile:
                     "history_count": method["head_flow"]["count"],
                     "flow_contract": flow_compute_contract(method["head_flow"]),
                 },
+                "explicit_dynamics": self._explicit_dynamics(),
             },
         }
         if stage == "stage2":
@@ -410,6 +421,7 @@ class AbsoluteMotionProfile:
                     "spatial_unit": SPATIAL_UNIT,
                     "flow_contract": flow_compute_contract(method["head_flow"]),
                 },
+                "explicit_dynamics": self._explicit_dynamics(),
             },
             "head_flow": method["head_flow"],
             "inference": {

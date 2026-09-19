@@ -166,6 +166,7 @@ def _validate_method(raw: Any) -> dict[str, Any]:
             "compact_wan",
             "action_expert",
             "normalization_epsilon",
+            "explicit_dynamics",
         },
         "method",
     )
@@ -421,6 +422,32 @@ def _validate_method(raw: Any) -> dict[str, Any]:
         raise ValueError(
             "method.head_flow.count * policy_stride must equal "
             "method.action_expert.chunk_size"
+        )
+    explicit = require_exact_keys(
+        method["explicit_dynamics"],
+        {"window_count", "horizon_steps"},
+        "method.explicit_dynamics",
+    )
+    window_count = _positive_int(
+        explicit["window_count"],
+        "method.explicit_dynamics.window_count",
+    )
+    horizon_steps = _positive_int(
+        explicit["horizon_steps"],
+        "method.explicit_dynamics.horizon_steps",
+    )
+    if horizon_steps != int(action["chunk_size"]):
+        raise ValueError(
+            "method.explicit_dynamics.horizon_steps must equal "
+            "method.action_expert.chunk_size"
+        )
+    if window_count != int(head_flow["count"]):
+        raise ValueError(
+            "method.explicit_dynamics.window_count must equal method.head_flow.count"
+        )
+    if horizon_steps % window_count != 0:
+        raise ValueError(
+            "method.explicit_dynamics.horizon_steps must be divisible by window_count"
         )
     _finite_number(
         method["normalization_epsilon"],

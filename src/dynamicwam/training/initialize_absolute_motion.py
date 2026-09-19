@@ -18,7 +18,14 @@ from dynamicwam.absolute_motion import (
 )
 from dynamicwam.config import load_profile
 from dynamicwam.config.schema import require_exact_keys
+from dynamicwam.explicit_dynamics import (
+    NEWTON_STATS_FILE,
+    build_checkpoint_newton_metadata,
+    hash_json_payload,
+    validate_newton_statistics,
+)
 from dynamicwam.models.absolute_motion_tokens import AbsoluteMotionTokenModule
+from dynamicwam.models.explicit_dynamics_tokens import ExplicitDynamicsTokenModule
 from dynamicwam.training.checkpoint_merge import (
     merge_stage1_compact_with_base_action,
 )
@@ -160,6 +167,7 @@ def run(*, config_path: str) -> Path:
     packed_root = Path(paths["packed_dataset"])
     packed_stats_path = packed_root / TRAIN_DATASET_ACTION_STATS
     motion_stats_path = packed_root / TRAIN_DATASET_MOTION_STATS
+    newton_stats_path = packed_root / NEWTON_STATS_FILE
     metadata_path = packed_root / TRAIN_DATASET_METADATA
     output_path = Path(paths["motion_init_checkpoint"])
 
@@ -169,6 +177,7 @@ def run(*, config_path: str) -> Path:
         base_stats_path,
         packed_stats_path,
         motion_stats_path,
+        newton_stats_path,
         metadata_path,
     )
     for path in required_files:
@@ -234,6 +243,23 @@ def run(*, config_path: str) -> Path:
         raise RuntimeError(
             "packed motion contract differs from the profile or statistics"
         )
+    newton_statistics = validate_newton_statistics(_read_json(newton_stats_path))
+    newton_contract = build_checkpoint_newton_metadata(
+        statistics=newton_statistics,
+        statistics_sha256=hash_json_payload(newton_statistics),
+    )
+    expected_newton = profile._explicit_dynamics()
+    if (
+        int(newton_contract["window_count"]) != int(expected_newton["window_count"])
+        or int(newton_contract["horizon_steps"])
+        != int(expected_newton["horizon_steps"])
+        or float(newton_contract["action_interval_seconds"])
+        != float(expected_newton["action_interval_seconds"])
+    ):
+        raise RuntimeError(
+            "packed newton contract differs from the profile: "
+            f"{newton_contract} vs {expected_newton}"
+        )
 
     payload = torch.load(
         base_path,
@@ -298,10 +324,19 @@ def run(*, config_path: str) -> Path:
     )
     for key, value in motion.state_dict().items():
         output_state[f"absolute_motion_tokens.{key}"] = value.cpu()
+    newton = ExplicitDynamicsTokenModule(
+        dim=int(raw["method"]["action_expert"]["dim"]),
+        window_count=int(newton_contract["window_count"]),
+        feature_mean=tuple(newton_contract["feature_mean"]),
+        feature_scale=tuple(newton_contract["feature_scale"]),
+    )
+    for key, value in newton.state_dict().items():
+        output_state[f"explicit_dynamics_tokens.{key}"] = value.cpu()
 
     training_config["training_stage"] = "absolute_motion_initialization"
     training_config["model"] = dict(training_config["model"])
     training_config["model"]["absolute_motion"] = motion_contract
+    training_config["model"]["explicit_dynamics"] = newton_contract
     training_config["action_normalization"] = {
         "enabled": True,
         "type": "mean_std",
@@ -328,6 +363,8 @@ def run(*, config_path: str) -> Path:
             "training_dataset_identity": dataset_identity,
             "motion_statistics": str(motion_stats_path),
             "motion_statistics_sha256": motion_contract["statistics_sha256"],
+            "newton_statistics": str(newton_stats_path),
+            "newton_statistics_sha256": newton_contract["statistics_sha256"],
             "torch_seed": seed,
         },
     }

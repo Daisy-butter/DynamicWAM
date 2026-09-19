@@ -73,6 +73,21 @@ def compact_wan_training_contract(
     return normalized
 
 
+def stage1_video_dataset_identity(identity: Any) -> dict[str, Any]:
+    """Identity fields that Stage-1 video weights actually depend on.
+
+    Kinematic re-aggregation changes motion statistics and the packed
+    fingerprint without touching flow-RGB latents or action labels.
+    """
+
+    canonical = validate_dataset_identity(identity)
+    return {
+        "format": canonical["format"],
+        "version": canonical["version"],
+        "action_stats_sha256": canonical["action_stats_sha256"],
+    }
+
+
 def stage1_training_contract(
     value: Any,
     *,
@@ -101,7 +116,7 @@ def stage1_training_contract(
         normalized.get("student"),
         label=f"{label}.student",
     )
-    normalized["dataset_identity"] = validate_dataset_identity(
+    normalized["dataset_identity"] = stage1_video_dataset_identity(
         normalized.get("dataset_identity")
     )
     return normalized

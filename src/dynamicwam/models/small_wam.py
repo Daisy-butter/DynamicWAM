@@ -6,8 +6,10 @@ from typing import Dict, Protocol
 import torch
 import torch.nn as nn
 
+from dynamicwam.explicit_dynamics import rollout_image_plane_newton
 from dynamicwam.models.absolute_motion_tokens import AbsoluteMotionTokenModule
 from dynamicwam.models.action_expert import ActionExpert, ActionExpertConfig
+from dynamicwam.models.explicit_dynamics_tokens import ExplicitDynamicsTokenModule
 from dynamicwam.vendor.wan.modules.attention import flash_attention
 from dynamicwam.vendor.wan.modules.model import sinusoidal_embedding_1d
 
@@ -32,6 +34,11 @@ class SmallWAMActionConfig:
     motion_history_count: int
     motion_feature_mean: tuple[float, ...]
     motion_feature_scale: tuple[float, ...]
+    newton_window_count: int
+    newton_horizon_steps: int
+    newton_action_interval_seconds: float
+    newton_feature_mean: tuple[float, ...]
+    newton_feature_scale: tuple[float, ...]
 
 
 class SmallWAMActionModel(nn.Module):
@@ -72,6 +79,17 @@ class SmallWAMActionModel(nn.Module):
             history_count=config.motion_history_count,
             feature_mean=config.motion_feature_mean,
             feature_scale=config.motion_feature_scale,
+        )
+        if int(config.newton_horizon_steps) != int(config.chunk_size):
+            raise ValueError(
+                "newton_horizon_steps must equal action chunk_size: "
+                f"{config.newton_horizon_steps} != {config.chunk_size}"
+            )
+        self.explicit_dynamics_tokens = ExplicitDynamicsTokenModule(
+            dim=config.ae_dim,
+            window_count=config.newton_window_count,
+            feature_mean=config.newton_feature_mean,
+            feature_scale=config.newton_feature_scale,
         )
         if config.wan_frozen:
             for param in self.compact_wan.parameters():
@@ -520,11 +538,29 @@ class SmallWAMActionModel(nn.Module):
             dtype=base_tokens.dtype,
             device=base_tokens.device,
         )
+        newton_features, newton_interval_valid, newton_acceleration_valid = (
+            rollout_image_plane_newton(
+                batch["absolute_motion_features"],
+                batch["absolute_motion_interval_valid_mask"],
+                batch["absolute_motion_acceleration_valid_mask"],
+                action_interval_seconds=self.config.newton_action_interval_seconds,
+                horizon_steps=self.config.newton_horizon_steps,
+                window_count=self.config.newton_window_count,
+            )
+        )
+        newton_tokens = self.explicit_dynamics_tokens(
+            newton_features,
+            newton_interval_valid,
+            newton_acceleration_valid,
+            dtype=base_tokens.dtype,
+            device=base_tokens.device,
+        )
         return (
             torch.cat(
                 (
                     base_tokens[:, :core_length],
                     motion_tokens,
+                    newton_tokens,
                     base_tokens[:, core_length:],
                 ),
                 dim=1,

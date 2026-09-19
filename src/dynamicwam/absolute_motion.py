@@ -27,7 +27,7 @@ from dynamicwam.motion_contract import (
     validate_flow_quality_config,
 )
 
-ABSOLUTE_MOTION_CHECKPOINT_VERSION = 2
+ABSOLUTE_MOTION_CHECKPOINT_VERSION = 3
 FLOW_CACHE_VERSION = 2
 MOTION_STATISTICS_VERSION = 2
 FLOW_CACHE_ARRAY_KEYS = frozenset(
@@ -59,6 +59,10 @@ MOTION_FEATURE_NAMES = (
     "mean_acceleration_magnitude_pixels_per_second2",
 )
 MOTION_FEATURE_DIM = len(MOTION_FEATURE_NAMES)
+FOREGROUND_ABS_FLOOR_PIXELS = 0.25
+FOREGROUND_MAG_FRACTION = 0.3
+FOREGROUND_MIN_PIXELS = 8
+FOREGROUND_ENERGY_RATIO = 0.4
 CHECKPOINT_MOTION_METADATA_KEYS = frozenset(
     {
         "history_count",
@@ -504,6 +508,27 @@ def filter_flow_by_forward_backward_consistency(
     return filtered, reliable, reliable_fraction, quality_valid
 
 
+def rgb_to_flow(
+    flow_rgb: np.ndarray,
+    *,
+    magnitude_scale: float,
+) -> np.ndarray:
+    """Invert `flow_to_rgb` using the stored per-map p99 magnitude scale."""
+
+    cv2 = _opencv()
+    rgb = np.asarray(flow_rgb)
+    if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[-1] != 3:
+        raise ValueError(f"flow_rgb must be [H,W,3] uint8, got {rgb.dtype} {rgb.shape}")
+    scale = float(magnitude_scale)
+    if not np.isfinite(scale) or scale < 0.0:
+        raise ValueError("magnitude_scale must be finite and non-negative")
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    angle = hsv[..., 0].astype(np.float32) * 2.0
+    magnitude = hsv[..., 2].astype(np.float32) * (scale / 255.0)
+    flow_x, flow_y = cv2.polarToCart(magnitude, angle, angleInDegrees=True)
+    return np.stack((flow_x, flow_y), axis=-1).astype(np.float32)
+
+
 def flow_to_rgb(
     flow_xy: np.ndarray,
     *,
@@ -531,22 +556,12 @@ def flow_to_rgb(
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
 
-def displacement_statistics(
+def _global_displacement_statistics(
     flow_xy: np.ndarray,
+    magnitude: np.ndarray,
     *,
-    magnitude_percentile: float,
+    percentile: float,
 ) -> np.ndarray:
-    """Return signed mean xy, mean magnitude, and the HSV scale magnitude."""
-
-    flow_xy = np.asarray(flow_xy, dtype=np.float32)
-    if flow_xy.ndim != 3 or flow_xy.shape[-1] != 2:
-        raise ValueError(f"flow_xy must be [H,W,2], got {flow_xy.shape}")
-    if not np.isfinite(flow_xy).all():
-        raise ValueError("flow_xy contains non-finite values")
-    percentile = float(magnitude_percentile)
-    if percentile != 99.0:
-        raise ValueError("absolute-motion v2 requires the exact p99 HSV scale")
-    magnitude = np.linalg.norm(flow_xy, axis=-1)
     return np.asarray(
         (
             float(flow_xy[..., 0].mean()),
@@ -558,6 +573,143 @@ def displacement_statistics(
     )
 
 
+def select_foreground_blob(
+    flow_xy: np.ndarray,
+    *,
+    previous_centroid: np.ndarray | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return a moving-blob mask and centroid, or None to use the full map."""
+
+    flow_xy = np.asarray(flow_xy, dtype=np.float32)
+    magnitude = np.linalg.norm(flow_xy, axis=-1)
+    p99 = float(np.percentile(magnitude, 99.0))
+    threshold = max(FOREGROUND_ABS_FLOOR_PIXELS, FOREGROUND_MAG_FRACTION * p99)
+    candidates = magnitude >= threshold
+    if int(candidates.sum()) < FOREGROUND_MIN_PIXELS:
+        return None, None
+    cv2 = _opencv()
+    count, labels = cv2.connectedComponents(
+        candidates.astype(np.uint8),
+        connectivity=8,
+    )
+    components: list[tuple[float, np.ndarray, np.ndarray]] = []
+    for index in range(1, int(count)):
+        mask = labels == index
+        pixel_count = int(mask.sum())
+        if pixel_count <= 0:
+            continue
+        energy = float(magnitude[mask].sum())
+        rows, cols = np.nonzero(mask)
+        centroid = np.asarray(
+            (float(cols.mean()), float(rows.mean())),
+            dtype=np.float64,
+        )
+        components.append((energy, mask, centroid))
+    if not components:
+        return None, None
+    best_energy = max(energy for energy, _mask, _centroid in components)
+    eligible = [
+        item
+        for item in components
+        if item[0] >= FOREGROUND_ENERGY_RATIO * best_energy
+    ]
+    if previous_centroid is not None and eligible:
+        previous = np.asarray(previous_centroid, dtype=np.float64).reshape(2)
+        chosen = min(
+            eligible,
+            key=lambda item: float(np.linalg.norm(item[2] - previous)),
+        )
+    else:
+        chosen = max(eligible, key=lambda item: item[0])
+    return chosen[1], chosen[2]
+
+
+def displacement_statistics(
+    flow_xy: np.ndarray,
+    *,
+    magnitude_percentile: float,
+    previous_centroid: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Return blob-masked mean xy, mean magnitude, p99, and the blob centroid."""
+
+    flow_xy = np.asarray(flow_xy, dtype=np.float32)
+    if flow_xy.ndim != 3 or flow_xy.shape[-1] != 2:
+        raise ValueError(f"flow_xy must be [H,W,2], got {flow_xy.shape}")
+    if not np.isfinite(flow_xy).all():
+        raise ValueError("flow_xy contains non-finite values")
+    percentile = float(magnitude_percentile)
+    if percentile != 99.0:
+        raise ValueError("absolute-motion v2 requires the exact p99 HSV scale")
+    magnitude = np.linalg.norm(flow_xy, axis=-1)
+    mask, centroid = select_foreground_blob(
+        flow_xy,
+        previous_centroid=previous_centroid,
+    )
+    if mask is None:
+        return (
+            _global_displacement_statistics(
+                flow_xy,
+                magnitude,
+                percentile=percentile,
+            ),
+            None,
+        )
+    selected = flow_xy[mask]
+    selected_magnitude = magnitude[mask]
+    return (
+        np.asarray(
+            (
+                float(selected[:, 0].mean()),
+                float(selected[:, 1].mean()),
+                float(selected_magnitude.mean()),
+                float(np.percentile(selected_magnitude, percentile)),
+            ),
+            dtype=np.float32,
+        ),
+        centroid,
+    )
+
+
+def rebuild_cache_motion_features(
+    arrays: dict[str, np.ndarray],
+    *,
+    raw_stride: int,
+) -> np.ndarray:
+    """Rebuild 12-D kinematics from cached flow RGB using blob statistics."""
+
+    flow_rgb = np.asarray(arrays["flow_rgb"])
+    old_features = np.asarray(arrays["motion_features"])
+    interval_valid = np.asarray(arrays["interval_valid"], dtype=np.bool_)
+    frame_count = int(flow_rgb.shape[0])
+    displacement = np.zeros((frame_count, 4), dtype=np.float32)
+    centroid: np.ndarray | None = None
+    stride = int(raw_stride)
+    if stride <= 0:
+        raise ValueError("raw_stride must be positive")
+    for index in range(frame_count):
+        if not bool(interval_valid[index]):
+            continue
+        flow_xy = rgb_to_flow(
+            flow_rgb[index],
+            magnitude_scale=float(old_features[index, 3]),
+        )
+        stats, centroid = displacement_statistics(
+            flow_xy,
+            magnitude_percentile=99.0,
+            previous_centroid=centroid,
+        )
+        displacement[index] = stats
+    previous = np.arange(frame_count, dtype=np.int64) - stride
+    features, _interval_valid, _acceleration_valid = build_motion_features(
+        displacement,
+        arrays["interval_start_time_seconds"],
+        arrays["interval_end_time_seconds"],
+        interval_valid,
+        previous_interval_indices=previous,
+    )
+    return features
+
+
 def compute_flow_observation(
     previous_rgb: np.ndarray,
     current_rgb: np.ndarray,
@@ -566,7 +718,8 @@ def compute_flow_observation(
     normalization_percentile: float,
     farneback: dict[str, Any],
     quality: dict[str, Any],
-) -> tuple[np.ndarray, np.ndarray, float, bool]:
+    previous_centroid: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, float, bool, np.ndarray | None]:
     forward_flow = compute_dense_flow(
         previous_rgb,
         current_rgb,
@@ -586,17 +739,20 @@ def compute_flow_observation(
             quality=quality,
         )
     )
+    statistics, centroid = displacement_statistics(
+        flow_xy,
+        magnitude_percentile=normalization_percentile,
+        previous_centroid=previous_centroid,
+    )
     return (
         flow_to_rgb(
             flow_xy,
             normalization_percentile=normalization_percentile,
         ),
-        displacement_statistics(
-            flow_xy,
-            magnitude_percentile=normalization_percentile,
-        ),
+        statistics,
         reliable_fraction,
         quality_valid,
+        centroid,
     )
 
 

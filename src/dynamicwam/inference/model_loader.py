@@ -17,6 +17,7 @@ from dynamicwam.action_normalization import (
 )
 from dynamicwam.config import load_profile
 from dynamicwam.config.schema import require_exact_keys
+from dynamicwam.explicit_dynamics import validate_checkpoint_newton_metadata
 from dynamicwam.inference.models.compact_wan import CompactWANConfig, CompactWANModel
 from dynamicwam.models.small_wam import SmallWAMActionConfig, SmallWAMActionModel
 
@@ -85,7 +86,7 @@ def _load_checkpoint_payload(checkpoint_path: str | Path) -> dict[str, Any]:
         or payload.get("version") != ABSOLUTE_MOTION_CHECKPOINT_VERSION
     ):
         raise RuntimeError(
-            f"deployment accepts only absolute-motion checkpoint v2: {checkpoint_path}"
+            f"deployment accepts only absolute-motion checkpoint v3: {checkpoint_path}"
         )
     expected_keys = {
         "format",
@@ -96,7 +97,7 @@ def _load_checkpoint_payload(checkpoint_path: str | Path) -> dict[str, Any]:
     }
     if set(payload) != expected_keys:
         raise RuntimeError(
-            "deployment checkpoint keys differ from the Stage-3 v2 export: "
+            "deployment checkpoint keys differ from the Stage-3 v3 export: "
             f"{checkpoint_path}"
         )
     return payload
@@ -121,6 +122,7 @@ def _validate_model_config(
             "compact_wan",
             "action_expert",
             "absolute_motion",
+            "explicit_dynamics",
         },
         "checkpoint model",
     )
@@ -133,6 +135,9 @@ def _validate_model_config(
     }
     checkpoint_motion = validate_checkpoint_motion_metadata(
         checkpoint_model.get("absolute_motion")
+    )
+    checkpoint_newton = validate_checkpoint_newton_metadata(
+        checkpoint_model.get("explicit_dynamics")
     )
     actual = {
         "compact_wan": _select_keys(
@@ -159,6 +164,15 @@ def _validate_model_config(
         or runtime_motion["flow_contract"] != checkpoint_motion["flow_contract"]
     ):
         raise RuntimeError("deploy motion computation does not match the checkpoint")
+    runtime_newton = expected_model["explicit_dynamics"]
+    if (
+        int(runtime_newton["window_count"]) != int(checkpoint_newton["window_count"])
+        or int(runtime_newton["horizon_steps"])
+        != int(checkpoint_newton["horizon_steps"])
+        or float(runtime_newton["action_interval_seconds"])
+        != float(checkpoint_newton["action_interval_seconds"])
+    ):
+        raise RuntimeError("deploy newton rollout does not match the checkpoint")
 
 
 def _normalization_config(config: dict[str, Any], *, owner: str) -> dict[str, Any]:
@@ -248,6 +262,7 @@ def _build_model(
     compact_wan = CompactWANModel.from_config(compact_config, device=device)
     action = runtime_config["model"]["action_expert"]
     absolute_motion = checkpoint_config["model"]["absolute_motion"]
+    explicit_dynamics = checkpoint_config["model"]["explicit_dynamics"]
     model_config = SmallWAMActionConfig(
         compact_wan=compact_wan.config,
         action_dim=int(action["action_dim"]),
@@ -263,6 +278,17 @@ def _build_model(
         ),
         motion_feature_scale=tuple(
             float(value) for value in absolute_motion["feature_scale"]
+        ),
+        newton_window_count=int(explicit_dynamics["window_count"]),
+        newton_horizon_steps=int(explicit_dynamics["horizon_steps"]),
+        newton_action_interval_seconds=float(
+            explicit_dynamics["action_interval_seconds"]
+        ),
+        newton_feature_mean=tuple(
+            float(value) for value in explicit_dynamics["feature_mean"]
+        ),
+        newton_feature_scale=tuple(
+            float(value) for value in explicit_dynamics["feature_scale"]
         ),
     )
     model = SmallWAMActionModel(model_config, compact_wan)
@@ -363,7 +389,7 @@ def build_runtime_from_config(
     )
     model_config = require_exact_keys(
         config["model"],
-        {"compact_wan", "action_expert", "absolute_motion"},
+        {"compact_wan", "action_expert", "absolute_motion", "explicit_dynamics"},
         "resolved inference model",
     )
     require_exact_keys(
@@ -397,6 +423,15 @@ def build_runtime_from_config(
     )
     if model_config["absolute_motion"]["temporal_contract"] != TEMPORAL_CONTRACT:
         raise ValueError("inference requires exact simulator-time motion v2")
+    require_exact_keys(
+        model_config["explicit_dynamics"],
+        {
+            "window_count",
+            "horizon_steps",
+            "action_interval_seconds",
+        },
+        "resolved inference explicit_dynamics",
+    )
     require_exact_keys(
         inference,
         {

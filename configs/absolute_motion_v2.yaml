@@ -6,25 +6,25 @@ baseline: absolute_motion_v2
 
 paths:
   project_root: ..
-  raw_dataset: /SSD_DISK_1/users/wuruihan/DynamicWAM/data/raw
-  source_dataset: /SSD_DISK_1/users/wuruihan/DynamicWAM/data/converted/domino_exact_time
-  packed_dataset: /SSD_DISK_1/users/wuruihan/DynamicWAM/data/packed/domino_absolute_motion_v2
-  head_flow_cache: /SSD_DISK_1/users/wuruihan/DynamicWAM/data/flow_cache/domino_absolute_motion_v2
-  language_embeddings: /SSD_DISK_1/users/wuruihan/DynamicWAM/data/language_embeddings
-  wan_root: external/Wan2.2-TI2V-5B
+  raw_dataset: /SSD_DISK/users/wuruihan/wam/datasets/raw
+  source_dataset: /SSD_DISK/users/wuruihan/wam/datasets/converted/domino_exact_time
+  packed_dataset: /SSD_DISK/users/wuruihan/wam/datasets/domino_absolute_motion_v2
+  head_flow_cache: /SSD_DISK/users/wuruihan/wam/datasets/flow_cache/domino_absolute_motion_v2
+  language_embeddings: /SSD_DISK/users/wuruihan/wam/datasets/language_embeddings
+  wan_root: /SSD_DISK/users/wuruihan/wam/external/Wan2.2-TI2V-5B
   external_assets_manifest: manifests/external_assets.json
   checkpoint_manifest: manifests/checkpoints.json
-  training_runs: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training
-  collection_logs: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/collection
-  pca_artifacts: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/stage1_pca
-  stage1_checkpoint: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/absolute_motion_stage1_video/exports/stage1_step_80000.pt
-  base_checkpoint: /SSD_DISK_1/users/wuruihan/DynamicWAM/external/checkpoints/DynamicWAM_wo_motion.pt
-  base_action_stats: /SSD_DISK_1/users/wuruihan/DynamicWAM/external/checkpoints/DynamicWAM_wo_motion_action_stats.json
-  motion_init_checkpoint: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/checkpoint_init/absolute_motion_init.pt
-  stage2_checkpoint: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/absolute_motion_stage2_action/exports/stage2_step_80000.pt
-  stage3_checkpoint: external/checkpoints/DynamicWAM_full.pt
-  action_stats: /SSD_DISK_1/users/wuruihan/DynamicWAM/external/checkpoints/DynamicWAM_full_action_stats.json
-  evaluation_runs: /SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/evaluation
+  training_runs: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/training
+  collection_logs: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/collection
+  pca_artifacts: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/stage1_pca
+  stage1_checkpoint: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/training/absolute_motion_stage1_video/exports/stage1_step_80000.pt
+  base_checkpoint: /SSD_DISK/users/wuruihan/wam/external/checkpoints/DynamicWAM_wo_motion.pt
+  base_action_stats: /SSD_DISK/users/wuruihan/wam/external/checkpoints/DynamicWAM_wo_motion_action_stats.json
+  motion_init_checkpoint: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/checkpoint_init/absolute_motion_newton_init.pt
+  stage2_checkpoint: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/training/absolute_motion_stage2_action/exports/stage2_step_80000.pt
+  stage3_checkpoint: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/training/absolute_motion_stage3_joint/exports/stage3_step_40000.pt
+  action_stats: /SSD_DISK/users/wuruihan/wam/datasets/domino_absolute_motion_v2/action_stats.json
+  evaluation_runs: /SSD_DISK/users/wuruihan/wam/outputs/explicit_newton/evaluation
 
 method:
   flow_matching:
@@ -77,6 +77,9 @@ method:
     chunk_size: 16
     state_dim: 14
     action_dim: 14
+  explicit_dynamics:
+    window_count: 4
+    horizon_steps: 16
   normalization_epsilon: 1.0e-6
 
 collection:
@@ -214,9 +217,9 @@ benchmark:
   policy_registration_name: ciwam.adapters.domino.deploy_policy_sync_flow
   task_config: demo_clean_dynamic
   instruction_type: unseen
-  checkpoint_label: absolute-motion-v2-stage3-40k-sync-native-exec16-level1
+  checkpoint_label: absolute-motion-newton-v2-blob-stage3-40k-sync-native-exec16-level1-e20
   dynamic_coefficient: 0.1
-  episodes_per_task: 100
+  episodes_per_task: 20
   start_seed: 100000
   slot_seed_stride: 100000
   execute_steps: 16

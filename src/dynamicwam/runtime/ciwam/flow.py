@@ -72,6 +72,7 @@ class HeadFlowBuffer:
         starts = []
         ends = []
         valid = []
+        previous_centroid = None
         for offset in range(self.history_count, -1, -1):
             previous_frame, previous_time, previous_index = endpoint(
                 last - (offset + 1) * self.policy_stride
@@ -84,16 +85,23 @@ class HeadFlowBuffer:
                 and current_time > previous_time
             )
             if temporal_valid:
-                rgb, statistics, _reliable_fraction, quality_valid = (
-                    compute_flow_observation(
-                        previous_frame,
-                        current_frame,
-                        compute_size=self.compute_size,
-                        normalization_percentile=self.normalization_percentile,
-                        farneback=self.farneback,
-                        quality=self.quality,
-                    )
+                (
+                    rgb,
+                    statistics,
+                    _reliable_fraction,
+                    quality_valid,
+                    centroid,
+                ) = compute_flow_observation(
+                    previous_frame,
+                    current_frame,
+                    compute_size=self.compute_size,
+                    normalization_percentile=self.normalization_percentile,
+                    farneback=self.farneback,
+                    quality=self.quality,
+                    previous_centroid=previous_centroid,
                 )
+                if quality_valid:
+                    previous_centroid = centroid
             else:
                 rgb = np.zeros((*self.compute_size, 3), dtype=np.uint8)
                 statistics = np.zeros(4, dtype=np.float32)

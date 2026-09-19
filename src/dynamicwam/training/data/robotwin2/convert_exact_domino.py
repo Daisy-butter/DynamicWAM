@@ -322,6 +322,7 @@ def _convert_episode(job: tuple[str, str, str, str]) -> str:
         interval_valid = np.zeros(frame_count, dtype=np.bool_)
         head_history: deque[np.ndarray] = deque(maxlen=interval_stride)
         first_head_rgb: np.ndarray | None = None
+        previous_centroid: np.ndarray | None = None
         writer = None
         try:
             for index in range(frame_count):
@@ -363,6 +364,7 @@ def _convert_episode(job: tuple[str, str, str, str]) -> str:
                         statistics,
                         reliable_fraction,
                         quality_valid,
+                        centroid,
                     ) = compute_flow_observation(
                         previous_head,
                         head_rgb,
@@ -372,6 +374,7 @@ def _convert_episode(job: tuple[str, str, str, str]) -> str:
                         ),
                         farneback=dict(params["farneback"]),
                         quality=dict(params["quality"]),
+                        previous_centroid=previous_centroid,
                     )
                     flow_reliable_fraction[index] = reliable_fraction
                     flow_quality_valid[index] = quality_valid
@@ -379,6 +382,7 @@ def _convert_episode(job: tuple[str, str, str, str]) -> str:
                     if quality_valid:
                         flow_rgb[index] = rgb
                         displacement[index] = statistics
+                        previous_centroid = centroid
                 head_history.append(head_rgb)
         finally:
             if writer is not None:

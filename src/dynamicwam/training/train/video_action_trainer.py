@@ -21,6 +21,10 @@ from dynamicwam.absolute_motion import (
 )
 from dynamicwam.config import load_profile, write_config_snapshot
 from dynamicwam.config.schema import require_exact_keys
+from dynamicwam.explicit_dynamics import (
+    load_newton_checkpoint_metadata,
+    validate_checkpoint_newton_metadata,
+)
 from dynamicwam.models.small_wam import SmallWAMActionConfig, SmallWAMActionModel
 from dynamicwam.training.checkpoint_merge import (
     compact_wan_training_contract,
@@ -148,6 +152,7 @@ class VideoActionTrainer:
             "compact_wan",
             "action_expert",
             "absolute_motion",
+            "explicit_dynamics",
         }
         model = require_exact_keys(
             self.config["model"],
@@ -188,6 +193,11 @@ class VideoActionTrainer:
             model["absolute_motion"],
             {"history_count", "flow_contract"},
             f"{self.stage_title} absolute_motion",
+        )
+        require_exact_keys(
+            model["explicit_dynamics"],
+            {"window_count", "horizon_steps", "action_interval_seconds"},
+            f"{self.stage_title} explicit_dynamics",
         )
         expected_loss_keys = (
             {"action_weight"}
@@ -233,6 +243,9 @@ class VideoActionTrainer:
         self.motion_statistics = dict(raw_dataset.motion_statistics)
         self.motion_checkpoint_metadata = dict(raw_dataset.motion_checkpoint_metadata)
         self.motion_history_count = int(raw_dataset.motion_history_count)
+        self.newton_checkpoint_metadata = load_newton_checkpoint_metadata(
+            dataset_cfg["root"]
+        )
         self.dataset_identity = validate_dataset_identity(raw_dataset.dataset_identity)
         sampler = make_packed_training_sampler(raw_dataset, dataset_cfg)
         dl_cfg = get_dataloader_config(self.config)
@@ -288,6 +301,7 @@ class VideoActionTrainer:
                 "compact_wan",
                 "action_expert",
                 "absolute_motion",
+                "explicit_dynamics",
             },
             f"initial checkpoint model at {checkpoint_path}",
         )
@@ -324,6 +338,27 @@ class VideoActionTrainer:
         if checkpoint_motion != self.motion_checkpoint_metadata:
             raise RuntimeError(
                 "initial checkpoint motion statistics differ from the packed "
+                f"dataset: {checkpoint_path}"
+            )
+        checkpoint_newton = validate_checkpoint_newton_metadata(
+            checkpoint_model["explicit_dynamics"]
+        )
+        configured_newton = configured_model["explicit_dynamics"]
+        if (
+            int(configured_newton["window_count"])
+            != int(checkpoint_newton["window_count"])
+            or int(configured_newton["horizon_steps"])
+            != int(checkpoint_newton["horizon_steps"])
+            or float(configured_newton["action_interval_seconds"])
+            != float(checkpoint_newton["action_interval_seconds"])
+        ):
+            raise RuntimeError(
+                "initial checkpoint newton rollout differs from the launch "
+                f"config: {checkpoint_path}"
+            )
+        if checkpoint_newton != self.newton_checkpoint_metadata:
+            raise RuntimeError(
+                "initial checkpoint newton statistics differ from the packed "
                 f"dataset: {checkpoint_path}"
             )
         checkpoint_identity = validate_dataset_identity(
@@ -371,7 +406,7 @@ class VideoActionTrainer:
             or payload.get("version") != ABSOLUTE_MOTION_CHECKPOINT_VERSION
         ):
             raise RuntimeError(
-                "training accepts only absolute-motion checkpoint v2: "
+                "training accepts only absolute-motion checkpoint v3: "
                 f"{checkpoint_path}"
             )
         expected_payload_keys = {
@@ -386,7 +421,7 @@ class VideoActionTrainer:
         if set(payload) != expected_payload_keys:
             raise RuntimeError(
                 f"{self.stage_title} initialization checkpoint keys differ "
-                f"from v2: {checkpoint_path}"
+                f"from v3: {checkpoint_path}"
             )
         self._validate_initial_checkpoint_config(
             str(checkpoint_path),
@@ -418,6 +453,18 @@ class VideoActionTrainer:
             motion_feature_scale=tuple(
                 float(value) for value in self.motion_statistics["scale"]
             ),
+            newton_window_count=int(self.newton_checkpoint_metadata["window_count"]),
+            newton_horizon_steps=int(self.newton_checkpoint_metadata["horizon_steps"]),
+            newton_action_interval_seconds=float(
+                self.newton_checkpoint_metadata["action_interval_seconds"]
+            ),
+            newton_feature_mean=tuple(
+                float(value) for value in self.newton_checkpoint_metadata["feature_mean"]
+            ),
+            newton_feature_scale=tuple(
+                float(value)
+                for value in self.newton_checkpoint_metadata["feature_scale"]
+            ),
         )
         model = SmallWAMActionModel(config=small_wam_cfg, compact_wan=compact_wan).to(
             self.device
@@ -434,6 +481,18 @@ class VideoActionTrainer:
         ):
             raise RuntimeError(
                 "model motion computation differs from the packed dataset"
+            )
+        configured_newton = model_cfg["explicit_dynamics"]
+        if (
+            int(configured_newton["window_count"])
+            != int(self.newton_checkpoint_metadata["window_count"])
+            or int(configured_newton["horizon_steps"])
+            != int(self.newton_checkpoint_metadata["horizon_steps"])
+            or float(configured_newton["action_interval_seconds"])
+            != float(self.newton_checkpoint_metadata["action_interval_seconds"])
+        ):
+            raise RuntimeError(
+                "model newton rollout differs from the packed newton statistics"
             )
         self._load_initial_checkpoint(model)
         self._configure_trainable_parameters(model)
@@ -461,6 +520,8 @@ class VideoActionTrainer:
             param.requires_grad_(True)
         for param in model.absolute_motion_tokens.parameters():
             param.requires_grad_(True)
+        for param in model.explicit_dynamics_tokens.parameters():
+            param.requires_grad_(True)
         for param in model.compact_wan.parameters():
             param.requires_grad_(False)
         if not model.config.wan_frozen:
@@ -482,6 +543,7 @@ class VideoActionTrainer:
             for module in (
                 model.action_expert,
                 model.absolute_motion_tokens,
+                model.explicit_dynamics_tokens,
             )
             for p in module.parameters()
             if p.requires_grad
@@ -551,8 +613,10 @@ class VideoActionTrainer:
         context: str,
         verify_optimizer: bool,
     ) -> None:
-        action_parameters = list(model.action_expert.parameters()) + list(
-            model.absolute_motion_tokens.parameters()
+        action_parameters = (
+            list(model.action_expert.parameters())
+            + list(model.absolute_motion_tokens.parameters())
+            + list(model.explicit_dynamics_tokens.parameters())
         )
         action_trainable = self._count_trainable_parameters(action_parameters)
         video_trainable = self._count_trainable_parameters(
@@ -897,6 +961,9 @@ class VideoActionTrainer:
         checkpoint_config["model"] = dict(checkpoint_config["model"])
         checkpoint_config["model"]["absolute_motion"] = dict(
             self.motion_checkpoint_metadata
+        )
+        checkpoint_config["model"]["explicit_dynamics"] = dict(
+            self.newton_checkpoint_metadata
         )
         checkpoint_config["dataset_identity"] = dict(self.dataset_identity)
         return checkpoint_config
