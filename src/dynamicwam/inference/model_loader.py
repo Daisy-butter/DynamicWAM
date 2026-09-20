@@ -315,7 +315,10 @@ def build_runtime_from_config(
         config,
         {
             "checkpoint_path",
+            "checkpoint_artifact_id",
+            "checkpoint_manifest",
             "wan_root",
+            "external_assets_manifest",
             "normalization_epsilon",
             "device",
             "flow_matching",

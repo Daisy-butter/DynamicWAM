@@ -29,6 +29,31 @@ class _Runner(Protocol):
         motion_acceleration_valid_mask: Any,
     ) -> Any: ...
 
+    def sample_chunk_slow(
+        self,
+        *,
+        first_frame: Any,
+        state: Any,
+        flow_frames: Any,
+        motion_features: Any,
+        motion_interval_valid_mask: Any,
+        motion_acceleration_valid_mask: Any,
+        leftover_qpos: Any = None,
+        inference_delay: int = 0,
+    ) -> tuple[Any, Any]: ...
+
+    def sample_chunk_fast(
+        self,
+        *,
+        state: Any,
+        motion_features: Any,
+        motion_interval_valid_mask: Any,
+        motion_acceleration_valid_mask: Any,
+        video_cache: Any,
+        leftover_qpos: Any = None,
+        inference_delay: int = 0,
+    ) -> Any: ...
+
 
 class DynamicWAMPolicy:
     """Synchronous DynamicWAM head-flow policy."""
@@ -85,6 +110,46 @@ class DynamicWAMPolicy:
             motion_interval_valid_mask=packet["motion_interval_valid_mask"],
             motion_acceleration_valid_mask=packet["motion_acceleration_valid_mask"],
         )
+        return self._numpy_chunk(actions)
+
+    def sample_slow(
+        self,
+        packet: dict[str, Any],
+        leftover: np.ndarray | None = None,
+        inference_delay: int = 0,
+    ) -> tuple[np.ndarray, object]:
+        actions, video_cache = self._require_runner().sample_chunk_slow(
+            first_frame=self._frame_tensor(packet["frame"]),
+            state=self._state_tensor(packet["state"]),
+            flow_frames=packet["flow_frames"],
+            motion_features=packet["motion_features"],
+            motion_interval_valid_mask=packet["motion_interval_valid_mask"],
+            motion_acceleration_valid_mask=packet["motion_acceleration_valid_mask"],
+            leftover_qpos=leftover,
+            inference_delay=inference_delay,
+        )
+        return self._numpy_chunk(actions), video_cache
+
+    def sample_fast(
+        self,
+        packet: dict[str, Any],
+        video_cache: object,
+        leftover: np.ndarray | None = None,
+        inference_delay: int = 0,
+    ) -> np.ndarray:
+        actions = self._require_runner().sample_chunk_fast(
+            state=self._state_tensor(packet["state"]),
+            motion_features=packet["motion_features"],
+            motion_interval_valid_mask=packet["motion_interval_valid_mask"],
+            motion_acceleration_valid_mask=packet["motion_acceleration_valid_mask"],
+            video_cache=video_cache,
+            leftover_qpos=leftover,
+            inference_delay=inference_delay,
+        )
+        return self._numpy_chunk(actions)
+
+    @staticmethod
+    def _numpy_chunk(actions: Any) -> np.ndarray:
         return actions.squeeze(0).float().cpu().numpy()
 
     def _frame_tensor(self, frame: np.ndarray):

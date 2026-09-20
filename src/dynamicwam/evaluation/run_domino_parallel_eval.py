@@ -41,9 +41,16 @@ def _episode_summaries(log_path: Path, prefix: str) -> list[dict[str, Any]]:
 
 
 def _policy_summaries(log_path: Path) -> list[dict[str, Any]]:
-    """Read synchronous native episode telemetry emitted by the adapter."""
+    """Read native episode telemetry emitted by the deploy adapter."""
 
-    return _episode_summaries(log_path, "SYNC-EPISODE-SUMMARY ")
+    async_summaries = _episode_summaries(log_path, "ASYNC-EPISODE-SUMMARY ")
+    if async_summaries:
+        return [item for item in async_summaries if int(item.get("steps") or 0) > 0]
+    return [
+        item
+        for item in _episode_summaries(log_path, "SYNC-EPISODE-SUMMARY ")
+        if int(item.get("steps") or 0) > 0
+    ]
 
 
 def _safe_name(value: str) -> str:
@@ -96,6 +103,14 @@ def _child_env(
     if env.get("PYTHONPATH"):
         pythonpath.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    try:
+        from dynamicwam.evaluation.headless_render import apply_headless_nvidia_egl
+    except ImportError:
+        icd = Path(__file__).resolve().parents[3] / "configs" / "nvidia_icd_egl.json"
+        if icd.is_file() and not env.get("VK_ICD_FILENAMES"):
+            env["VK_ICD_FILENAMES"] = str(icd)
+    else:
+        apply_headless_nvidia_egl(env)
     return env
 
 

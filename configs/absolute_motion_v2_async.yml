@@ -1,0 +1,9 @@
+# Sidecar for the async deploy adapter. Not a canonical DynamicWAM profile.
+# Receding horizon: replan every 4 steps on a full aligned world snapshot.
+# inference_delay=0 disables leftover RTC on DOMINO's blocking eval loop.
+fast_horizon: 4
+max_world_age_steps: 4
+inference_delay: 0
+rtc_mode: hard_prefix
+max_guidance_weight: 10.0
+motion_refresh_ratio: 0.5
