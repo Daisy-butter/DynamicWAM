@@ -6,6 +6,7 @@ from typing import Dict, Protocol
 import torch
 import torch.nn as nn
 
+from dynamicwam.models.action_core_ops import ActionCoreOps, ActionAttentionSpec
 from dynamicwam.models.absolute_motion_tokens import AbsoluteMotionTokenModule
 from dynamicwam.models.action_expert import ActionExpert, ActionExpertConfig
 from dynamicwam.vendor.wan.modules.attention import flash_attention
@@ -34,7 +35,7 @@ class SmallWAMActionConfig:
     motion_feature_scale: tuple[float, ...]
 
 
-class SmallWAMActionModel(nn.Module):
+class SmallWAMActionModel(ActionCoreOps, nn.Module):
     """DynamicWAM mixture-of-tokens model for video-action flow matching."""
 
     def __init__(
@@ -78,6 +79,13 @@ class SmallWAMActionModel(nn.Module):
                 param.requires_grad_(False)
 
         self._rope_freq_grid_cache: Dict[tuple[object, ...], torch.Tensor] = {}
+
+    @property
+    def action_attention_spec(self):
+        return ActionAttentionSpec(
+            precision=self.compact_wan.video_model.precision,
+            window_sizes=tuple(tuple(b.self_attn.window_size) for b in self.compact_wan.video_model.wan_model.blocks),
+        )
 
     def _cached_rope_freq_grid(
         self,
@@ -251,33 +259,7 @@ class SmallWAMActionModel(nn.Module):
         )
         return attn.o(attended[:, :seq_len].flatten(2)), attended[:, seq_len:]
 
-    @staticmethod
-    def _expand_time_for_tokens(t: torch.Tensor, seq_len: int) -> torch.Tensor:
-        if t.dim() == 0:
-            t = t.unsqueeze(0)
-        if t.dim() == 1:
-            t = t.unsqueeze(1).expand(t.size(0), seq_len)
-        return t
 
-    def _build_action_time_embeddings(
-        self,
-        t: torch.Tensor,
-        seq_len: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        t = self._expand_time_for_tokens(t, seq_len)
-        with torch.amp.autocast("cuda", dtype=torch.float32, enabled=t.is_cuda):
-            batch = t.size(0)
-            flat_t = t.flatten()
-            emb = self.action_expert.time_embedding(
-                sinusoidal_embedding_1d(self.action_expert.freq_dim, flat_t)
-                .unflatten(0, (batch, seq_len))
-                .float()
-                .to(t.device)
-            )
-            adaln = self.action_expert.time_projection(emb).unflatten(
-                2, (6, self.config.ae_dim)
-            )
-        return emb, adaln
 
     def _build_video_time_embeddings(
         self,
@@ -286,35 +268,7 @@ class SmallWAMActionModel(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.compact_wan.prepare_time_embeddings(t, seq_len)
 
-    @staticmethod
-    def _block_modulation(block, adaln_params: torch.Tensor):
-        with torch.amp.autocast(
-            "cuda", dtype=torch.float32, enabled=adaln_params.is_cuda
-        ):
-            return (block.modulation.unsqueeze(0) + adaln_params).chunk(6, dim=2)
 
-    @staticmethod
-    def _action_qkv_for_wan(
-        block, norm_action: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        qkv = block.wan_action_qkv.to(
-            device=norm_action.device, dtype=norm_action.dtype
-        )
-        action_qkv = (
-            torch.einsum("btd,hdf->bthf", norm_action, qkv[0]),
-            torch.einsum("btd,hdf->bthf", norm_action, qkv[1]),
-            torch.einsum("btd,hdf->bthf", norm_action, qkv[2]),
-        )
-        action_q_h, action_k_h, action_v_h = action_qkv
-        batch, seq_len, heads, head_dim = action_q_h.shape
-        action_q = block.wan_action_norm_q(action_q_h.flatten(2)).view(
-            batch, seq_len, heads, head_dim
-        )
-        action_k = block.wan_action_norm_k(action_k_h.flatten(2)).view(
-            batch, seq_len, heads, head_dim
-        )
-        action_v = action_v_h.view(batch, seq_len, heads, head_dim)
-        return action_q, action_k, action_v
 
     def _joint_attention(
         self,
@@ -376,6 +330,8 @@ class SmallWAMActionModel(nn.Module):
         layer_idx: int,
         grid_sizes: Dict[str, torch.Tensor | int],
         freqs: torch.Tensor,
+        *,
+        detach_cache: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         wan_layer = self.compact_wan.video_model.wan_model.blocks[layer_idx]
         attn = wan_layer.self_attn
@@ -397,7 +353,9 @@ class SmallWAMActionModel(nn.Module):
                 grid_sizes,
                 freqs,
             )
-        return video_k.detach(), video_v.detach()
+        if detach_cache:
+            return video_k.detach(), video_v.detach()
+        return video_k, video_v
 
     def _empty_video_cache(
         self,
@@ -407,6 +365,8 @@ class SmallWAMActionModel(nn.Module):
     ) -> Dict[str, object]:
         return {
             "seq_lens": seq_lens.detach(),
+            # Proven by the dense token producer, never a CUDA-to-host reduction.
+            "all_video_tokens_valid": grid_sizes.get("all_video_tokens_valid", False),
             "grid_sizes": {
                 key: value.detach() if isinstance(value, torch.Tensor) else value
                 for key, value in grid_sizes.items()
@@ -424,6 +384,8 @@ class SmallWAMActionModel(nn.Module):
         layer_idx: int,
         grid_sizes: Dict[str, torch.Tensor | int],
         freqs: torch.Tensor,
+        *,
+        detach_cache: bool = True,
     ) -> None:
         video_k, video_v = self._video_attention_kv_for_cache(
             video_tokens,
@@ -431,178 +393,14 @@ class SmallWAMActionModel(nn.Module):
             layer_idx,
             grid_sizes,
             freqs,
+            detach_cache=detach_cache,
         )
         cache["video_k"].append(video_k)
         cache["video_v"].append(video_v)
 
-    def _action_attention_with_video_cache(
-        self,
-        action_tokens: torch.Tensor,
-        action_modulation: tuple[torch.Tensor, ...],
-        layer_idx: int,
-        video_cache: Dict[str, object],
-    ) -> torch.Tensor:
-        wan_layer = self.compact_wan.video_model.wan_model.blocks[layer_idx]
-        action_block = self.action_expert.blocks[layer_idx]
-        action_mod = action_modulation
 
-        norm_action = action_block.norm1(action_tokens).float() * (
-            1 + action_mod[1].squeeze(2)
-        ) + action_mod[0].squeeze(2)
-        action_q, action_k, action_v = self._action_qkv_for_wan(
-            action_block, norm_action
-        )
 
-        video_k = video_cache["video_k"][layer_idx].to(
-            device=action_q.device, dtype=action_q.dtype
-        )
-        video_v = video_cache["video_v"][layer_idx].to(
-            device=action_v.device, dtype=action_v.dtype
-        )
-        joint_k = torch.cat([video_k, action_k], dim=1)
-        joint_v = torch.cat([video_v, action_v], dim=1)
-        video_seq_lens = video_cache["seq_lens"].to(device=action_q.device)
-        joint_seq_lens = video_seq_lens + action_tokens.shape[1]
 
-        attention_dtype = self.compact_wan.video_model.precision
-        with torch.autocast("cuda", dtype=attention_dtype, enabled=action_q.is_cuda):
-            action_out_h = flash_attention(
-                q=action_q.to(dtype=attention_dtype),
-                k=joint_k.to(dtype=attention_dtype),
-                v=joint_v.to(dtype=attention_dtype),
-                k_lens=joint_seq_lens,
-                window_size=wan_layer.self_attn.window_size,
-            )
-
-        action_out_h = action_out_h.flatten(2).to(
-            device=action_block.wan_action_o.weight.device,
-            dtype=action_block.wan_action_o.weight.dtype,
-        )
-        action_out = action_block.wan_action_o(action_out_h)
-        with torch.amp.autocast(
-            "cuda", dtype=torch.float32, enabled=action_tokens.is_cuda
-        ):
-            return action_tokens + action_out * action_mod[2].squeeze(2)
-
-    def _build_action_tokens(
-        self,
-        batch: Dict[str, torch.Tensor],
-        noisy_actions: torch.Tensor,
-        initial_state: torch.Tensor,
-    ) -> tuple[torch.Tensor, int]:
-        required = {
-            "absolute_motion_features",
-            "absolute_motion_interval_valid_mask",
-            "absolute_motion_acceleration_valid_mask",
-        }
-        missing = sorted(required - batch.keys())
-        if missing:
-            raise KeyError(f"absolute motion inputs are missing: {missing}")
-        registers = self.action_expert.registers.expand(
-            noisy_actions.shape[0],
-            -1,
-            -1,
-        )
-        state_tokens = initial_state.unsqueeze(1)
-        base_tokens = self.action_expert.input_encoder(
-            state_tokens,
-            noisy_actions,
-            registers,
-        )
-        core_length = 1 + int(noisy_actions.shape[1])
-        register_count = int(self.action_expert.config.num_registers)
-        if int(base_tokens.shape[1]) != core_length + register_count:
-            raise RuntimeError("unexpected state/action/register token layout")
-        motion_tokens = self.absolute_motion_tokens(
-            batch["absolute_motion_features"],
-            batch["absolute_motion_interval_valid_mask"],
-            batch["absolute_motion_acceleration_valid_mask"],
-            dtype=base_tokens.dtype,
-            device=base_tokens.device,
-        )
-        return (
-            torch.cat(
-                (
-                    base_tokens[:, :core_length],
-                    motion_tokens,
-                    base_tokens[:, core_length:],
-                ),
-                dim=1,
-            ),
-            core_length,
-        )
-
-    def _decode_action_tokens(
-        self,
-        action_tokens: torch.Tensor,
-        action_head_time_emb: torch.Tensor,
-        core_length: int,
-    ) -> torch.Tensor:
-        if core_length != 1 + int(self.config.chunk_size):
-            raise RuntimeError(
-                f"action core length {core_length} differs from configured "
-                f"chunk size {self.config.chunk_size}"
-            )
-        action_pred_full = self.action_expert.decoder(
-            action_tokens[:, :core_length],
-            action_head_time_emb[:, :core_length],
-        )
-        return action_pred_full[:, 1:, :]
-
-    def forward_action_with_video_cache(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
-        video_cache = batch["video_cache"]
-        noisy_actions = batch["noisy_actions"]
-        action_t = batch["action_t"]
-        initial_state = batch["initial_state"]
-
-        action_tokens, action_core_length = self._build_action_tokens(
-            batch,
-            noisy_actions,
-            initial_state,
-        )
-        action_head_time_emb, action_adaln_params = self._build_action_time_embeddings(
-            action_t,
-            action_tokens.shape[1],
-        )
-        for layer_idx in range(self.config.ae_num_layers):
-            action_block = self.action_expert.blocks[layer_idx]
-            action_modulation = self._block_modulation(
-                action_block,
-                action_adaln_params,
-            )
-            action_tokens = self._action_attention_with_video_cache(
-                action_tokens,
-                action_modulation,
-                layer_idx,
-                video_cache,
-            )
-            action_ffn_in = action_block.norm2(action_tokens).float() * (
-                1 + action_modulation[4].squeeze(2)
-            ) + action_modulation[3].squeeze(2)
-            action_ffn_weight = action_block.ffn[0].weight
-            action_ffn = action_block.ffn(
-                action_ffn_in.to(
-                    device=action_ffn_weight.device,
-                    dtype=action_ffn_weight.dtype,
-                )
-            )
-            with torch.amp.autocast(
-                "cuda",
-                dtype=torch.float32,
-                enabled=action_tokens.is_cuda,
-            ):
-                action_tokens = action_tokens + action_ffn * action_modulation[
-                    5
-                ].squeeze(2)
-
-        action_pred = self._decode_action_tokens(
-            action_tokens,
-            action_head_time_emb,
-            action_core_length,
-        )
-        return {"action_pred": action_pred}
 
     def _forward_video_action(
         self,
@@ -610,6 +408,7 @@ class SmallWAMActionModel(nn.Module):
         *,
         include_video_prediction: bool,
         build_video_cache: bool,
+        detach_cache: bool = True,
     ) -> Dict[str, torch.Tensor]:
         text_embeddings = batch["text_embeddings"]
         noisy_actions = batch["noisy_actions"]
@@ -663,6 +462,7 @@ class SmallWAMActionModel(nn.Module):
                     layer_idx,
                     grid_sizes,
                     freqs,
+                    detach_cache=detach_cache,
                 )
             video_tokens, action_tokens = self._joint_attention(
                 video_tokens,

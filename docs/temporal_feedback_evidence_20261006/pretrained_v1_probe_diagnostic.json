@@ -1,0 +1,410 @@
+{
+  "format": "readonly_pretrained_probe_diagnostic",
+  "version": 1,
+  "source": {
+    "frozen_v1": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/temporal_feedback_preflight_20261006/feasibility_1/source",
+    "frozen_v2_head": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/temporal_feedback_preflight_20261006/feasibility_2/source/src/dynamicwam/models/temporal_plan_feedback.py",
+    "v2_head_sha256": "70b067456614284a48c322535b605db71f859388cc3a7c7d1d6279b66a443101"
+  },
+  "checkpoint": {
+    "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/stage3/exports/feedback_step_2000.pt",
+    "sha256": "be393d437a5c750b4642e8f685a86971a86cea07810b8e1a3f357014cb3bc17d",
+    "global_step": 2000
+  },
+  "fixed_cache": {
+    "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/temporal_feedback_preflight_20261006/feasibility_1/probe/fixed_targets.pt",
+    "sha256": "be2107b0445e30954bd2d9dc76b118b34de1a5c6d932a71b45ccc4cbae92e70b"
+  },
+  "matching_original_episode_partition": {
+    "partition_seed": 20260928,
+    "validation_fraction": 0.1,
+    "splits": [
+      "clean",
+      "randomized"
+    ],
+    "root": "/SSD_DISK/users/wuruihan/DynamicWAM/data/packed/domino_absolute_motion_v2",
+    "source_root": "/SSD_DISK/users/wuruihan/DynamicWAM/data/converted/domino_exact_time"
+  },
+  "evaluation": {
+    "ages": [
+      4,
+      8,
+      12
+    ],
+    "rows": 45,
+    "active_coordinates": 2160,
+    "zero_target_mse": 0.0010642814496855458,
+    "pretrained_target_mse": 0.0010267736768852316,
+    "relative_gain": 0.035242343847481705,
+    "precision": "CPU BF16 autocast; actual original parameters FP32, not claimed bitwise GPU parity"
+  },
+  "per_age": {
+    "4": {
+      "count": 17,
+      "coordinates": 816,
+      "zero_sse": 0.5475715165957808,
+      "pretrained_sse": 0.5786571518401615
+    },
+    "8": {
+      "count": 15,
+      "coordinates": 720,
+      "zero_sse": 0.4950570975197479,
+      "pretrained_sse": 0.42564998765010387
+    },
+    "12": {
+      "count": 13,
+      "coordinates": 624,
+      "zero_sse": 1.2562193172052503,
+      "pretrained_sse": 1.2135240025818348
+    }
+  },
+  "per_row": [
+    {
+      "record_id": "eaec71a269084e9c8c1d08f75299efbfdfdcfd22b4c1e93406228d8467f93aa8",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.10960368812084198,
+      "pretrained_sse": 0.11133179068565369
+    },
+    {
+      "record_id": "c1baac0d20689f5c5fbbe2549d2969a6d39a5fc0019f224024eef5401358b46e",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.040525298565626144,
+      "pretrained_sse": 0.020063700154423714
+    },
+    {
+      "record_id": "1187906204453595c797c97459c5b3f8ec6eedd5f1d2146df4e7329ab3117d66",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.01577332615852356,
+      "pretrained_sse": 0.01622091233730316
+    },
+    {
+      "record_id": "06c0587822302112809f0cd64577f0dad35a421aaf5cc3cfb4eb5ce70e0f344e",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.2164371907711029,
+      "pretrained_sse": 0.24439476430416107
+    },
+    {
+      "record_id": "e941907009535a61a5248176b3b4e0e5cd3e4e47bdc70a8b98c2de8259184b73",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.010616360232234001,
+      "pretrained_sse": 0.02030659280717373
+    },
+    {
+      "record_id": "d220eec27045a63b1734affef6ae0ea0b9b5a0d376432b4d3814bb31b2149201",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.017445869743824005,
+      "pretrained_sse": 0.01991797797381878
+    },
+    {
+      "record_id": "f91078dee12ab5fc7be630091e296784a4d3a440d1e5390c929ab8b56adac03d",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.08390632271766663,
+      "pretrained_sse": 0.08054102212190628
+    },
+    {
+      "record_id": "5ac9866fdd0db3920cb3dbfd9077f5301130ac81738f3c26439e4488dd8f3570",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.008710875175893307,
+      "pretrained_sse": 0.002583693014457822
+    },
+    {
+      "record_id": "752d98c13d565e17f7150b6bc650b7c30d75db57f18d36609386a26af2b0991b",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.03078276291489601,
+      "pretrained_sse": 0.01952650398015976
+    },
+    {
+      "record_id": "71ce37fc752d97fcd1590e554eac23e734a05b5ec8384ba8d2dcc0de7c61a51e",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.1639074832201004,
+      "pretrained_sse": 0.07403285056352615
+    },
+    {
+      "record_id": "6504cd27f1cf72673f03233db7558cf2efa6a46c5c275098eebec02e09e16921",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.01590825989842415,
+      "pretrained_sse": 0.016087152063846588
+    },
+    {
+      "record_id": "b671698a6d7a41269c3cd68d0032edbf3aea060c0547fc89710f80c7fc179f2c",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.08080549538135529,
+      "pretrained_sse": 0.0444326288998127
+    },
+    {
+      "record_id": "408606caf4b50b1a475a0482cb1233b6df0aea6924df761992b24b6fc7a741fb",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.052249468863010406,
+      "pretrained_sse": 0.02944849617779255
+    },
+    {
+      "record_id": "75d0db385207d01bbfddfeef266bcfc29ac75f41cc4c8c479657785b3bccd301",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.019486740231513977,
+      "pretrained_sse": 0.020551325753331184
+    },
+    {
+      "record_id": "9503e02c01c0197a8a637307b0b1818f47bcd95680c0202a33272e71de91344c",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.028313184157013893,
+      "pretrained_sse": 0.025072412565350533
+    },
+    {
+      "record_id": "5a0b3ccab004ae9046ff6dc4b56a8339fbaad5373f1bf2ce8363da5d2f51e509",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0024793578777462244,
+      "pretrained_sse": 0.0026663532480597496
+    },
+    {
+      "record_id": "6800803652faf7bdbfd6c2652dfd7427d0d8312d8cd0cdebae7b454b914334a4",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.002306917915120721,
+      "pretrained_sse": 0.002384856576099992
+    },
+    {
+      "record_id": "f3e81fb0012e0acd68da76d761b317af1517c5e79396700d6661640bdf033afa",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.01300865039229393,
+      "pretrained_sse": 0.013609268702566624
+    },
+    {
+      "record_id": "bf5805888f017a88d51fb480bf1a48e8428372c72b58a231e99704a17089f8ad",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0010455839801579714,
+      "pretrained_sse": 0.0015250449068844318
+    },
+    {
+      "record_id": "e9fd8dabb237a874cea48e798b0aa988d857db9a1fa12a65f155f49ff29c9be6",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0022059339098632336,
+      "pretrained_sse": 0.0009411464561708272
+    },
+    {
+      "record_id": "4aff15dca4ac422cb2aeb7c30fbfd2db034e180eb4ef86a4038ecdde4334696a",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.036288898438215256,
+      "pretrained_sse": 0.035060156136751175
+    },
+    {
+      "record_id": "f016e5904d1a3f8925b8c891b86921a8138d119dd8028e9d0097bcdeb1579b9b",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.004257275257259607,
+      "pretrained_sse": 0.0057443855330348015
+    },
+    {
+      "record_id": "c0df6ec1f4168801e28da7db8b60ccf13d9ae7f579d6fff31e72f951e662d024",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0327126607298851,
+      "pretrained_sse": 0.031585294753313065
+    },
+    {
+      "record_id": "18bf447f5bd090cfefcb20a6cfe01c42e67847f6ddc709ce998c9e1b9206df39",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.005148651544004679,
+      "pretrained_sse": 0.002835471648722887
+    },
+    {
+      "record_id": "cb0ad721ae42405dabfc6b0e2d7bd496589b5c7c8faf823e5ab0b1039fccd3a1",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.0074065024964511395,
+      "pretrained_sse": 0.004996786825358868
+    },
+    {
+      "record_id": "9952af7563bb43066d1bc82124a10a01e543dbc86db6d6d6260ce21029b8ca9a",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.09517808258533478,
+      "pretrained_sse": 0.0918891578912735
+    },
+    {
+      "record_id": "25ac81006e56a7057b54d78fa75ddc37e736402101c3f8589b8db219690143c1",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.053205106407403946,
+      "pretrained_sse": 0.06159279868006706
+    },
+    {
+      "record_id": "6a1369bbfb1206ec0bbde78c5f48a5929c81e2b417d62e7ce213521fc81de06f",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.001163485343568027,
+      "pretrained_sse": 0.0011660173768177629
+    },
+    {
+      "record_id": "7b1962e4006ad5ddd08615fc37643c6106f1448089ef6bb64ca4c5db219819b6",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.0019163110991939902,
+      "pretrained_sse": 0.0017653744434937835
+    },
+    {
+      "record_id": "eb83fc3ebf7489885c687b9527314ccf4eb1f1ecc498a7975b8e7a87411f63bd",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0011970394989475608,
+      "pretrained_sse": 0.0010615680366754532
+    },
+    {
+      "record_id": "bd2de398909cfd55923c0ac914421766bcd7f57c547b0ce0a917a41d646c37c3",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.0032805437222123146,
+      "pretrained_sse": 0.0033250823616981506
+    },
+    {
+      "record_id": "e71e07770f9bfab4c76f5b05a330220f790c9e74f8335dfbba911193eb5a4994",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.025713570415973663,
+      "pretrained_sse": 0.02241501957178116
+    },
+    {
+      "record_id": "9856ceeea02a416759c2c7eae8fe1407c55c615acfcfb9399f5c2905573c4ad7",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.0367886982858181,
+      "pretrained_sse": 0.029903700575232506
+    },
+    {
+      "record_id": "95fccc891f3027afc69d9e16af63955a06be15f9a2e84dc88a6b46b128eaf04a",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.233335942029953,
+      "pretrained_sse": 0.208516925573349
+    },
+    {
+      "record_id": "1c55d5e7e059f7d6271a9a948f8b19a5df6ea86acdcd987f23d386ca36adaa70",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.052136555314064026,
+      "pretrained_sse": 0.030404720455408096
+    },
+    {
+      "record_id": "361482abc70b63a3b9c7beb130b0575b638805b293bf37dff6ff99d0baed058d",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0057989126071333885,
+      "pretrained_sse": 0.017363369464874268
+    },
+    {
+      "record_id": "c3455cc1fda13a6fe69c95c6ee7242fa8c2b1168ba872c719909d761f08c254c",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.011234927922487259,
+      "pretrained_sse": 0.010684751905500889
+    },
+    {
+      "record_id": "fc1198fc628ae7f731d94edb71c4dc5af57fcc4ee626b3e5c0091fd8e3034455",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.03603764623403549,
+      "pretrained_sse": 0.03798910975456238
+    },
+    {
+      "record_id": "70e7cc72871d983ee13c838b91d2ef3d1d35ba4fa647b01984b0e8407dc07606",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.1113940179347992,
+      "pretrained_sse": 0.10695713013410568
+    },
+    {
+      "record_id": "d4484df565b944746f50427592162104751408c79f32d64b185621b63419f5b0",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.0037343637086451054,
+      "pretrained_sse": 0.0043035149574279785
+    },
+    {
+      "record_id": "5c77ecf10c868e078e1dc85afc78f648db5679e7691557e08f8381ee3b88cb9e",
+      "age": 8,
+      "coordinates": 48,
+      "zero_sse": 0.01872158981859684,
+      "pretrained_sse": 0.01469765231013298
+    },
+    {
+      "record_id": "e8316c9c3fa5dac3436b45d717c49f55937a35967c551af18f459a87a8522c41",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.07548069953918457,
+      "pretrained_sse": 0.07764267921447754
+    },
+    {
+      "record_id": "6ab905b62fbb441e3e83c37536172f00cb033565ad6c2e87c3bab2039a5ada2a",
+      "age": 12,
+      "coordinates": 48,
+      "zero_sse": 0.4761151671409607,
+      "pretrained_sse": 0.5818408131599426
+    },
+    {
+      "record_id": "ec6883f551088f53c6f6aacfd7271fa129e5cf4f3bc43821bd204f6e2c98b296",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.026166284456849098,
+      "pretrained_sse": 0.03832079842686653
+    },
+    {
+      "record_id": "d60afef65a706fa8f5bc15801ec45a6f319292ea298993df0719ad98d3e38e95",
+      "age": 4,
+      "coordinates": 48,
+      "zero_sse": 0.02891622856259346,
+      "pretrained_sse": 0.03013036958873272
+    }
+  ],
+  "scratch_same_45_rows": {
+    "static": {
+      "rows": 45,
+      "target_mse": 0.0012123065997406634
+    },
+    "temporal": {
+      "rows": 45,
+      "target_mse": 0.00123707124450313
+    },
+    "shuffled": {
+      "rows": 45,
+      "target_mse": 0.0012443890434008574
+    }
+  },
+  "migration": {
+    "precision": "CPU FP32",
+    "rows": 8,
+    "old_support_ages": [
+      4,
+      8,
+      12
+    ],
+    "masked_temporal_tokens_and_zero_time_max_absolute_difference": 1.862645149230957e-08,
+    "valid_zero_valued_temporal_tokens_max_absolute_difference": 0.014575468376278877,
+    "age_expansion": "nearest lower old embedding; identity is only claimed on original ages",
+    "original_parameters": 2236974,
+    "new_parameters": 2427822,
+    "original_vision_parameters": 355744,
+    "new_temporal_parameters": 147840
+  },
+  "cuda_initialized": false
+}
+

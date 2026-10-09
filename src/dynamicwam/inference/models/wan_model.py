@@ -123,6 +123,8 @@ class WanVideoModel(nn.Module):
             {
                 "condition_grid_sizes": condition_grid_sizes,
                 "future_grid_sizes": future_grid_sizes,
+                # This producer constructs dense equal-length batches, without padding.
+                "all_video_tokens_valid": True,
                 "condition_seq_len": int(condition_tokens.shape[1]),
                 "future_seq_len": int(future_tokens.shape[1]),
                 "condition_grid_shape": (

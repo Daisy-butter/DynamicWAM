@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Any, Dict, Optional
 
 import numpy as np
 
-from ...execution import NativeStepper
+from ...execution import NativeStepper, query_timing_summary
 from ...flow import HeadFlowBuffer
 from ...wam.policy import DynamicWAMPolicy
 from .composite import composite_robotwin_frame, extract_state, head_camera_frame
@@ -23,9 +24,22 @@ class DynamicWAMDeployModel:
             project_root=usr_args["dynamicwam_root"],
         )
         self.policy.setup()
+        self.execute_horizon = int(usr_args.get("execute_horizon", self.policy.runtime.chunk_size))
+        if not 1 <= self.execute_horizon <= int(self.policy.runtime.chunk_size):
+            raise ValueError("sync execute_horizon must fit the sampled action chunk")
+        # Optional backbone-only ablation: same fine-tuned world/action weights,
+        # original synchronous sampler. Default remains the deployment profile.
+        self.backbone_checkpoint = usr_args.get("multirate_backbone_checkpoint")
+        if self.backbone_checkpoint:
+            from dynamicwam.inference.multirate_model_loader import load_checkpoint_payload, extract_multirate_backbone
+            from dynamicwam.inference.fast_runtime import validate_runtime_contract
+            payload = load_checkpoint_payload(str(self.backbone_checkpoint))
+            validate_runtime_contract(payload, self.policy.runtime)
+            self.policy.runtime.model.load_state_dict(extract_multirate_backbone(payload), strict=True)
         self.flow = HeadFlowBuffer(self.policy.runtime.head_flow_config)
         self.stepper: Optional[NativeStepper] = None
         self.pending: deque[np.ndarray] = deque()
+        self.query_ms: list[float] = []
 
     def bind_env(self, task_env) -> None:
         if self.stepper is None or self.stepper.env is not task_env:
@@ -40,6 +54,12 @@ class DynamicWAMDeployModel:
             summary = self.stepper.telemetry.summary()
             logger.info("sync-flow episode: %s", summary)
             print(f"SYNC-EPISODE-SUMMARY {summary}", flush=True)
+            if self.query_ms:
+                timing = query_timing_summary(self.query_ms, int(summary["steps"]))
+                timing.update(execute_horizon=self.execute_horizon,
+                              multirate_backbone_checkpoint=self.backbone_checkpoint)
+                print(f"SYNC-QUERY-TIMING {timing}", flush=True)
+        self.query_ms.clear()
         self.stepper = None
         self.pending.clear()
         self.flow.reset()
@@ -76,13 +96,15 @@ def eval(TASK_ENV, model: DynamicWAMDeployModel, observation: Dict[str, Any]) ->
             "motion_interval_valid_mask": motion.interval_valid_mask,
             "motion_acceleration_valid_mask": (motion.acceleration_valid_mask),
         }
+        started = time.perf_counter()
         actions = model.policy.sample(packet)
+        model.query_ms.append((time.perf_counter() - started) * 1000.0)
         if actions.shape[0] != model.policy.runtime.chunk_size:
             raise RuntimeError(
                 "absolute-motion policy returned the wrong action chunk: "
                 f"expected {model.policy.runtime.chunk_size}, got {actions.shape}"
             )
-        model.pending.extend(actions)
+        model.pending.extend(actions[:model.execute_horizon])
     if model.stepper is None:
         raise RuntimeError("DOMINO environment was not bound before execution")
     model.stepper.execute(model.pending.popleft())

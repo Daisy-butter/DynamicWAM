@@ -1,0 +1,234 @@
+{
+  "common_tasks": [
+    "adjust_bottle",
+    "beat_block_hammer",
+    "click_alarmclock",
+    "click_bell",
+    "dump_bin_bigbin",
+    "grab_roller",
+    "handover_mic",
+    "hanging_mug",
+    "move_can_pot",
+    "move_pillbottle_pad",
+    "move_playingcard_away",
+    "move_stapler_pad",
+    "place_a2b_left",
+    "place_a2b_right",
+    "place_bread_skillet",
+    "place_container_plate",
+    "place_empty_cup",
+    "place_fan",
+    "place_mouse_pad",
+    "place_object_scale",
+    "place_object_stand",
+    "place_phone_stand",
+    "place_shoe",
+    "press_stapler",
+    "put_bottles_dustbin",
+    "scan_object",
+    "shake_bottle",
+    "shake_bottle_horizontally",
+    "stamp_seal"
+  ],
+  "cuda_initialized": false,
+  "format": "dynamicwam_temporal_time_coverage",
+  "history_augmentation_scope": "Real earlier frames can expand history dt support without changing current target. This does not repair source-plan/current-state physical-time mismatch.",
+  "limitation": "Old adapter logs only each four-command query; per-command simulator durations are not recoverable. A four-command sum above four times training max proves at least one component exceeds that max; dividing quantiles by four is not a one-command quantile.",
+  "one_command_online_distribution_identifiable": false,
+  "online": {
+    "feedback": {
+      "four_command_fraction_above_four_times_training_history_max": 0.9604197725744688,
+      "four_command_intervals": {
+        "count": 34209,
+        "max": 5.844000277575105,
+        "mean": 1.7732198801835484,
+        "min": 0.49200002336874604,
+        "p50": 1.6160000767558813,
+        "p95": 3.3200001576915383,
+        "p99": 4.355680206883692
+      },
+      "plan_age_by_action_age": {
+        "0": {
+          "count": 8879,
+          "fraction_above_sampled_training_max": null,
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "4": {
+          "count": 8757,
+          "fraction_above_sampled_training_max": 0.9748772410642914,
+          "max": 5.844000277575105,
+          "mean": 1.8931456877270592,
+          "min": 0.5520000262185931,
+          "p50": 1.7160000815056264,
+          "p95": 3.2920001563616097,
+          "p99": 4.349760206602515
+        },
+        "8": {
+          "count": 8631,
+          "fraction_above_sampled_training_max": 0.9772911597729116,
+          "max": 10.016000475734472,
+          "mean": 3.6540815082832205,
+          "min": 1.1160000530071557,
+          "p50": 3.2920001563616097,
+          "p95": 7.242000343976542,
+          "p99": 7.70680036605336
+        },
+        "12": {
+          "count": 8522,
+          "fraction_above_sampled_training_max": 0.9955409528279746,
+          "max": 14.932000709231943,
+          "mean": 5.385923747955634,
+          "min": 1.9000000902451575,
+          "p50": 4.93600023444742,
+          "p95": 9.367800444946624,
+          "p99": 10.927800519042629
+        }
+      }
+    },
+    "zero": {
+      "four_command_fraction_above_four_times_training_history_max": 0.9533551318035823,
+      "four_command_intervals": {
+        "count": 34559,
+        "max": 7.476000355090946,
+        "mean": 1.797443414174,
+        "min": 0.4600000218488276,
+        "p50": 1.6320000775158405,
+        "p95": 3.428000162821263,
+        "p99": 4.400000208988786
+      },
+      "plan_age_by_action_age": {
+        "0": {
+          "count": 8976,
+          "fraction_above_sampled_training_max": null,
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "4": {
+          "count": 8840,
+          "fraction_above_sampled_training_max": 0.9739819004524887,
+          "max": 5.772000274155289,
+          "mean": 1.922226788133448,
+          "min": 0.5560000264085829,
+          "p50": 1.7200000816956162,
+          "p95": 3.4400001633912325,
+          "p99": 4.4368802107404965
+        },
+        "8": {
+          "count": 8711,
+          "fraction_above_sampled_training_max": 0.9745149810584318,
+          "max": 10.016000475734472,
+          "mean": 3.700486457476444,
+          "min": 1.0840000514872372,
+          "p50": 3.308000157121569,
+          "p95": 7.3000003467313945,
+          "p99": 7.77960036951117
+        },
+        "12": {
+          "count": 8612,
+          "fraction_above_sampled_training_max": 0.9936135624709708,
+          "max": 14.920000708661973,
+          "mean": 5.449154462258001,
+          "min": 1.8400000873953104,
+          "p50": 4.916000233497471,
+          "p95": 9.552000453695655,
+          "p99": 11.036000524181873
+        }
+      }
+    }
+  },
+  "training_history_lag_actions": {
+    "1": {
+      "count": 511,
+      "max": 0.18000000854954123,
+      "mean": 0.15928767879863512,
+      "min": 0.00800000037997961,
+      "missing": 1,
+      "p50": 0.18000000854954123,
+      "p95": 0.18000000854954123,
+      "p99": 0.18000000854954123
+    },
+    "2": {
+      "count": 509,
+      "max": 0.36000001709908247,
+      "mean": 0.31612575175387014,
+      "min": 0.16400000778958201,
+      "missing": 3,
+      "p50": 0.36000001709908247,
+      "p95": 0.36000001709908247,
+      "p99": 0.36000001709908247
+    },
+    "3": {
+      "count": 507,
+      "max": 0.5400000256486237,
+      "mean": 0.47727023963164356,
+      "min": 0.2960000140592456,
+      "missing": 5,
+      "p50": 0.5280000250786543,
+      "p95": 0.5400000256486237,
+      "p99": 0.5400000256486237
+    },
+    "4": {
+      "count": 503,
+      "max": 0.7200000341981649,
+      "mean": 0.6379403881534238,
+      "min": 0.472000022418797,
+      "missing": 9,
+      "p50": 0.6040000286884606,
+      "p95": 0.7200000341981649,
+      "p99": 0.7200000341981649
+    },
+    "6": {
+      "count": 493,
+      "max": 1.0800000512972474,
+      "mean": 0.9643976117293473,
+      "min": 0.7480000355280936,
+      "missing": 19,
+      "p50": 0.9520000452175736,
+      "p95": 1.0800000512972474,
+      "p99": 1.0800000512972474
+    },
+    "8": {
+      "count": 474,
+      "max": 1.4400000683963299,
+      "mean": 1.2869789640818043,
+      "min": 1.0120000480674207,
+      "missing": 38,
+      "p50": 1.292000061366707,
+      "p95": 1.4400000683963299,
+      "p99": 1.4400000683963299
+    },
+    "12": {
+      "count": 415,
+      "max": 2.160000102594495,
+      "mean": 1.9294940675496606,
+      "min": 1.5720000746659935,
+      "missing": 97,
+      "p50": 1.9040000904351473,
+      "p95": 2.0400000968948007,
+      "p99": 2.160000102594495
+    }
+  },
+  "training_one_row_full_clock_scan": {
+    "clock_maxima": {
+      "count": 478,
+      "max": 0.18000000854954123,
+      "mean": 0.18000000854954123,
+      "min": 0.18000000854954123,
+      "p50": 0.18000000854954123,
+      "p95": 0.18000000854954123,
+      "p99": 0.18000000854954123
+    },
+    "episodes": 478,
+    "maximum": 0.18000000854954123
+  },
+  "version": 1
+}

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from dynamicwam.config import load_profile, write_config_snapshot
+from dynamicwam.evaluation.run_domino_parallel_eval import validate_fixed_episode_seeds
 
 
 def _worker_env(extra_pythonpath: tuple[Path, ...]) -> dict[str, str]:
@@ -43,11 +45,50 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_episode_seed_manifest(path: Path, *, tasks: list[str], episodes_per_task: int, start_seed: int):
+    """Read once, validate all 35 task lists, and fingerprint the exact bytes."""
+    raw = path.read_bytes()
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise ValueError("episode seed manifest requires schema_version=1")
+    if value.get("source_arm") != "official_sync_h16":
+        raise ValueError("episode seed manifest must identify source_arm=official_sync_h16")
+    seeds = value.get("tasks")
+    if (len(tasks) != 35 or len(set(tasks)) != 35 or not isinstance(seeds, dict)
+            or set(seeds) != set(tasks)):
+        raise ValueError("episode seed manifest must contain exactly the official 35 task keys")
+    if "episodes_per_task" in value and value["episodes_per_task"] != episodes_per_task:
+        raise ValueError("episode manifest episodes_per_task differs from the launch")
+    validated = {}
+    for task in tasks:
+        if not isinstance(seeds[task], list):
+            raise ValueError(f"episode seed manifest task {task} is not a seed list")
+        validated[task] = validate_fixed_episode_seeds(seeds[task], requested=episodes_per_task,
+            slot_count=1, start_seed=start_seed)
+    evidence = {"schema_version": 1, "source_arm": value["source_arm"],
+                "sha256": hashlib.sha256(raw).hexdigest(), "task_count": 35,
+                "episodes_per_task": episodes_per_task}
+    return validated, evidence, raw
+
+
+def snapshot_episode_seed_manifest(path: Path, raw: bytes) -> None:
+    """Do not replace a run's already-published pairing contract."""
+    if path.exists():
+        if path.read_bytes() != raw:
+            raise RuntimeError("run root contains a different episode seed manifest")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(raw)
+    temporary.replace(path)
+
+
 def valid_task_aggregate(
     path: Path,
     requested: int,
     *,
     expected_start_seed: int | None = None,
+    expected_episode_seeds: list[int] | None = None,
 ) -> dict[str, Any] | None:
     if not path.is_file():
         return None
@@ -76,6 +117,8 @@ def valid_task_aggregate(
     ):
         return None
     seeds = [int(seed) for seed in raw_seeds]
+    if expected_episode_seeds is not None and seeds != expected_episode_seeds:
+        return None
     if len(set(seeds)) != requested or any(
         left >= right for left, right in pairwise(seeds)
     ):
@@ -201,6 +244,8 @@ def summarize(
     start_seed: int,
     bootstrap_replicates: int,
     bootstrap_seed: int,
+    expected_episode_seeds: dict[str, list[int]] | None = None,
+    episode_seed_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     total_reported = 0
@@ -216,6 +261,7 @@ def summarize(
             aggregate_path,
             episodes_per_task,
             expected_start_seed=start_seed,
+            expected_episode_seeds=expected_episode_seeds[task] if expected_episode_seeds is not None else None,
         )
         if aggregate is None:
             record = {
@@ -257,6 +303,9 @@ def summarize(
         "success_rate": total_success / total_requested,
         "success_rate_denominator": "requested_episodes",
         "start_seed": start_seed,
+        **({"episode_seed_manifest": episode_seed_manifest,
+            "episode_seeds_match": completed_tasks == len(tasks)}
+           if expected_episode_seeds is not None else {}),
         "manipulation_score_mean": (
             sum(manipulation_scores) / len(manipulation_scores)
             if manipulation_scores
@@ -302,12 +351,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-root")
     parser.add_argument("--gpus")
     parser.add_argument("--episodes-per-task", type=int)
+    parser.add_argument("--episode-seed-manifest", type=Path,
+                        help="Fixed official-H16 task seed lists; never substitute another episode.")
     parser.add_argument(
         "--start-seed",
         type=int,
         help="Raw seed at the start of every task's paired episode sequence.",
     )
     parser.add_argument("--task-timeout-seconds", type=float)
+    parser.add_argument("--policy-overrides", help="JSON object of explicit policy-only overrides; recorded in the run contract.")
     return parser.parse_args()
 
 
@@ -366,6 +418,14 @@ def main() -> int:
 
     tasks = list(benchmark["tasks"])
     base_config = profile.domino_base_config()
+    policy_overrides = load_json(Path(args.policy_overrides)) if args.policy_overrides else {}
+    allowed = {"policy_name", "ckpt_setting", "multirate_checkpoint", "multirate_backbone_checkpoint",
+               "execute_horizon", "bridge_refresh_ratio", "multirate_scheduling",
+               "multirate_reuse_action_noise", "multirate_disable_feedback", "eval_video_log",
+               "plan_feedback_checkpoint", "plan_feedback_disabled", "plan_graph_enabled"}
+    if not isinstance(policy_overrides, dict) or set(policy_overrides) - allowed:
+        raise ValueError("policy overrides contain unknown or benchmark-changing keys")
+    base_config.update(policy_overrides)
     raw_start_seed = (
         args.start_seed if args.start_seed is not None else benchmark["start_seed"]
     )
@@ -380,6 +440,12 @@ def main() -> int:
         )
     start_seed = int(raw_start_seed)
     base_config["start_seed"] = start_seed
+    fixed_seeds, seed_manifest, seed_manifest_raw = None, None, None
+    if args.episode_seed_manifest is not None:
+        fixed_seeds, seed_manifest, seed_manifest_raw = load_episode_seed_manifest(
+            args.episode_seed_manifest.expanduser().resolve(), tasks=tasks,
+            episodes_per_task=episodes_per_task, start_seed=start_seed,
+        )
     task_timeout_seconds = float(
         args.task_timeout_seconds
         if args.task_timeout_seconds is not None
@@ -388,6 +454,10 @@ def main() -> int:
     if task_timeout_seconds <= 0.0:
         raise ValueError("task-timeout-seconds must be positive")
     run_root.mkdir(parents=True, exist_ok=True)
+    if seed_manifest_raw is not None:
+        manifest_snapshot = run_root / "episode_seed_manifest.json"
+        snapshot_episode_seed_manifest(manifest_snapshot, seed_manifest_raw)
+        seed_manifest = dict(seed_manifest, snapshot=str(manifest_snapshot))
     tasks_root = run_root / "tasks"
     configs_root = run_root / "configs"
     logs_root = run_root / "logs"
@@ -402,6 +472,9 @@ def main() -> int:
     resolved_launch = {
         "benchmark": benchmark,
         "base_config": base_config,
+        **({"episode_seed_manifest": {**seed_manifest,
+             "source_file": str(args.episode_seed_manifest.expanduser().resolve())}}
+           if seed_manifest is not None else {}),
         "launch": {
             "python": str(python),
             "parallel_runner": str(parallel_runner),
@@ -425,7 +498,7 @@ def main() -> int:
     )
 
     contract = {
-        "version": 3,
+        "version": 4 if seed_manifest is not None else 3,
         "benchmark": "DOMINO",
         "level": 1,
         "python": str(python),
@@ -437,9 +510,11 @@ def main() -> int:
         "scheduling": "one_complete_task_per_gpu",
         "task_config": base_config["task_config"],
         "dynamic_coefficient": benchmark["dynamic_coefficient"],
-        "protocol": (f"native_sync_execute{int(benchmark['execute_steps'])}"),
+        "protocol": (f"native_sync_execute{int(base_config.get('execute_horizon', benchmark['execute_steps']))}"),
+        **({"policy_overrides": policy_overrides} if policy_overrides else {}),
         "action_interval_ms": profile.raw["inference"]["action_interval_ms"],
         "tasks": tasks,
+        **({"episode_seed_manifest": seed_manifest} if seed_manifest is not None else {}),
     }
     contract_path = run_root / "run_contract.json"
     if contract_path.is_file():
@@ -461,6 +536,7 @@ def main() -> int:
                 aggregate_path,
                 episodes_per_task,
                 expected_start_seed=start_seed,
+                expected_episode_seeds=fixed_seeds[task] if fixed_seeds is not None else None,
             )
             is None
         ):
@@ -478,6 +554,8 @@ def main() -> int:
             task_root = tasks_root / task
             task_config = dict(base_config)
             task_config["task_name"] = task
+            if fixed_seeds is not None:
+                task_config["fixed_episode_seeds"] = fixed_seeds[task]
             checkpoint_label = str(base_config["ckpt_setting"])
             task_config["ckpt_setting"] = f"{checkpoint_label}-{task}"
             config_path = configs_root / f"{task}.yml"
@@ -558,6 +636,7 @@ def main() -> int:
                 aggregate_path,
                 episodes_per_task,
                 expected_start_seed=start_seed,
+                expected_episode_seeds=fixed_seeds[task] if fixed_seeds is not None else None,
             )
             task_status = (
                 "complete" if return_code == 0 and aggregate is not None else "failed"
@@ -598,6 +677,8 @@ def main() -> int:
             start_seed=start_seed,
             bootstrap_replicates=int(benchmark["bootstrap_replicates"]),
             bootstrap_seed=int(benchmark["bootstrap_seed"]),
+            expected_episode_seeds=fixed_seeds,
+            episode_seed_manifest=seed_manifest,
         )
         write_json(run_root / "aggregate.json", summary)
         print(
@@ -616,6 +697,8 @@ def main() -> int:
         start_seed=start_seed,
         bootstrap_replicates=int(benchmark["bootstrap_replicates"]),
         bootstrap_seed=int(benchmark["bootstrap_seed"]),
+        expected_episode_seeds=fixed_seeds,
+        episode_seed_manifest=seed_manifest,
     )
     write_json(run_root / "aggregate.json", summary)
     print(

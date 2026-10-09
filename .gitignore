@@ -26,3 +26,4 @@ dist/
 *.mov
 *.avi
 *.mkv
+.codex_backups/

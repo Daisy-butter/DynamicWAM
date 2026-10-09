@@ -55,6 +55,8 @@ class HeadFlowRunner(DynamicWAMRunner):
         self,
         first_frame: torch.Tensor,
         flow_frames: np.ndarray,
+        *,
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         video_dtype = self.model.compact_wan.video_model.precision
         first_frame = first_frame.to(self.device, dtype=video_dtype)
@@ -82,6 +84,7 @@ class HeadFlowRunner(DynamicWAMRunner):
             ),
             device=self.device,
             dtype=video_dtype,
+            generator=generator,
         )
         return future_latent, condition_latent
 
@@ -117,11 +120,12 @@ class HeadFlowRunner(DynamicWAMRunner):
             ).unsqueeze(0),
         }
 
-    def _fresh_noisy_actions(self) -> torch.Tensor:
+    def _fresh_noisy_actions(self, *, generator: torch.Generator | None = None) -> torch.Tensor:
         return torch.randn(
             (1, self.runtime.chunk_size, self.model.config.action_dim),
             device=self.device,
             dtype=self._action_dtype(),
+            generator=generator,
         )
 
     def _action_timesteps(self) -> torch.Tensor:

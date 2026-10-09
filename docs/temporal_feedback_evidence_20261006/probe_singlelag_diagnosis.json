@@ -1,0 +1,3126 @@
+{
+  "format": "dynamicwam_probe_singlelag_readonly_diagnosis",
+  "version": 1,
+  "scope": "Preserved feasibility_1 contract v1; CPU arithmetic only; no model inference, training, GPU or remote mutation",
+  "source_report": {
+    "path": "C:\\Users\\31521\\Documents\\Codex\\2026-09-20\\192-22-ssd-lila\\work\\plan-feedback-v2-20261006\\probe_singlelag_report.json",
+    "sha256": "2c806294c53a56ab2c87dc96fa22e82e2f1da1c68fab2780e03da90f65f42e2d"
+  },
+  "cache": {
+    "remote_path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/temporal_feedback_preflight_20261006/feasibility_1/probe/fixed_targets.pt",
+    "sha256": "be2107b0445e30954bd2d9dc76b118b34de1a5c6d932a71b45ccc4cbae92e70b"
+  },
+  "all": {
+    "rows": 244,
+    "episodes": 223,
+    "active_coordinates": 10704.0,
+    "target_mse": {
+      "zero": 0.0007734663383439885,
+      "static": 0.0009722265931105962,
+      "temporal": 0.0009768163941711674,
+      "shuffled": 0.0009749911582655647
+    },
+    "temporal_relative_gain_vs_static": -0.004720917009569092,
+    "temporal_relative_gain_vs_zero": -0.2629074411467689,
+    "teacher_clip_fraction": 0.03634155455904335,
+    "expert_clip_fraction": 0.0515695067264574,
+    "sign_conflict_fraction": 0.2484118086696562,
+    "static": {
+      "prediction_mean": 0.001277951146856191,
+      "prediction_second_moment": 0.00023939444305762312,
+      "prediction_target_covariance": 2.0435138500942303e-05,
+      "prediction_target_coordinate_correlation": 0.04765283064135162,
+      "in_sample_diagnostic_optimal_scale": 0.08486869572247042,
+      "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704",
+      "heldout_training_objective": 0.001293272874429133,
+      "first_epoch_online_training_objective": 0.0011630439730652142,
+      "final_epoch_online_training_objective": 0.000709197764081182,
+      "note": "training trace averages moving minibatch losses; heldout is pooled final-model objective, not an exact generalization-gap estimate"
+    },
+    "temporal": {
+      "prediction_mean": 0.0012214441642513908,
+      "prediction_second_moment": 0.00023734764726579755,
+      "prediction_target_covariance": 1.7111620524406987e-05,
+      "prediction_target_coordinate_correlation": 0.040063567525406824,
+      "in_sample_diagnostic_optimal_scale": 0.07161981976704795,
+      "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704",
+      "heldout_training_objective": 0.0012989896554994008,
+      "first_epoch_online_training_objective": 0.0011629748332779855,
+      "final_epoch_online_training_objective": 0.0007313113746931776,
+      "note": "training trace averages moving minibatch losses; heldout is pooled final-model objective, not an exact generalization-gap estimate"
+    },
+    "shuffled": {
+      "prediction_mean": 0.0012074094881273677,
+      "prediction_second_moment": 0.00023474868267637502,
+      "prediction_target_covariance": 1.6723459799375605e-05,
+      "prediction_target_coordinate_correlation": 0.03936941567401381,
+      "in_sample_diagnostic_optimal_scale": 0.07076474801905738,
+      "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+    }
+  },
+  "bootstrap": {
+    "episodes": 223,
+    "replicates": 20000,
+    "seed": 20261006,
+    "method": "paired episode-cluster percentile bootstrap, active-coordinate weighted",
+    "ci95": {
+      "temporal_minus_static": [
+        -1.3896010116746722e-05,
+        2.1727074300958995e-05
+      ],
+      "temporal_minus_shuffled": [
+        -2.7824341483879826e-06,
+        6.827665356719248e-06
+      ],
+      "temporal_minus_zero": [
+        0.00013928304411017336,
+        0.00027056334374457206
+      ],
+      "static_minus_zero": [
+        0.00013382368994927188,
+        0.0002670615755837356
+      ],
+      "temporal_relative_gain_vs_static": [
+        -0.023042437835935903,
+        0.014058801306591236
+      ],
+      "temporal_relative_gain_vs_zero": [
+        -0.38220096538396314,
+        -0.16774623395051175
+      ]
+    }
+  },
+  "tail_bootstrap": {
+    "episodes": 39,
+    "replicates": 20000,
+    "seed": 20261007,
+    "method": "paired episode-cluster percentile bootstrap, active-coordinate weighted",
+    "ci95": {
+      "temporal_minus_static": [
+        -2.1888903843489288e-05,
+        0.00010794578299297311
+      ],
+      "temporal_minus_shuffled": [
+        -6.265914425556958e-06,
+        2.3207218828876267e-05
+      ],
+      "temporal_minus_zero": [
+        0.00017735721617944897,
+        0.0004727489404688607
+      ],
+      "static_minus_zero": [
+        0.0001205569570473866,
+        0.0004349624489407037
+      ],
+      "temporal_relative_gain_vs_static": [
+        -0.06903693219785727,
+        0.012921612601317946
+      ],
+      "temporal_relative_gain_vs_zero": [
+        -0.3769277238107197,
+        -0.12095149194489947
+      ]
+    }
+  },
+  "groups": {
+    "age_1": {
+      "rows": 19,
+      "episodes": 17,
+      "active_coordinates": 912.0,
+      "target_mse": {
+        "zero": 0.00038368736440724316,
+        "static": 0.0004641490724456513,
+        "temporal": 0.00043594613089226186,
+        "shuffled": 0.0004393169523641598
+      },
+      "temporal_relative_gain_vs_static": 0.060762679982931105,
+      "temporal_relative_gain_vs_zero": -0.13620142681986158,
+      "teacher_clip_fraction": 0.010964912280701754,
+      "expert_clip_fraction": 0.03070175438596491,
+      "sign_conflict_fraction": 0.3223684210526316,
+      "static": {
+        "prediction_mean": 0.00029133737348673635,
+        "prediction_second_moment": 0.00011564309508621431,
+        "prediction_target_covariance": 1.7907732610155066e-05,
+        "prediction_target_coordinate_correlation": 0.08517706675857728,
+        "in_sample_diagnostic_optimal_scale": 0.15211192255611003,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": -0.000817143923006625,
+        "prediction_second_moment": 9.71067698596846e-05,
+        "prediction_target_covariance": 2.153476952468299e-05,
+        "prediction_target_coordinate_correlation": 0.1121234035573769,
+        "in_sample_diagnostic_optimal_scale": 0.23092109561192006,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": -0.0006289677081727668,
+        "prediction_second_moment": 9.48947341193592e-05,
+        "prediction_target_covariance": 1.8948117993655373e-05,
+        "prediction_target_coordinate_correlation": 0.09966316231534335,
+        "in_sample_diagnostic_optimal_scale": 0.20688790862227732,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_2": {
+      "rows": 15,
+      "episodes": 15,
+      "active_coordinates": 720.0,
+      "target_mse": {
+        "zero": 0.0002737516110048293,
+        "static": 0.00045500717889000145,
+        "temporal": 0.00047939939379122937,
+        "shuffled": 0.00048410589806735516
+      },
+      "temporal_relative_gain_vs_static": -0.05360841769734972,
+      "temporal_relative_gain_vs_zero": -0.7512203564083217,
+      "teacher_clip_fraction": 0.005555555555555556,
+      "expert_clip_fraction": 0.008333333333333333,
+      "sign_conflict_fraction": 0.30277777777777776,
+      "static": {
+        "prediction_mean": 0.001144801706282629,
+        "prediction_second_moment": 0.00021917690804305797,
+        "prediction_target_covariance": 1.8202257463107914e-05,
+        "prediction_target_coordinate_correlation": 0.07459337545228102,
+        "in_sample_diagnostic_optimal_scale": 0.08650852066595456,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.00024137970047175057,
+        "prediction_second_moment": 0.00022644485240258899,
+        "prediction_target_covariance": 1.0238624660302411e-05,
+        "prediction_target_coordinate_correlation": 0.04116104082771335,
+        "in_sample_diagnostic_optimal_scale": 0.04592082662849515,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.00030552635823066033,
+        "prediction_second_moment": 0.00022326456811343732,
+        "prediction_target_covariance": 6.252734254325455e-06,
+        "prediction_target_coordinate_correlation": 0.025317507581438442,
+        "in_sample_diagnostic_optimal_scale": 0.02891251657171137,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_3": {
+      "rows": 15,
+      "episodes": 15,
+      "active_coordinates": 720.0,
+      "target_mse": {
+        "zero": 0.0004404276787277518,
+        "static": 0.0005449529384754391,
+        "temporal": 0.0005557154386123228,
+        "shuffled": 0.0005531184905622568
+      },
+      "temporal_relative_gain_vs_static": -0.019749412062980892,
+      "temporal_relative_gain_vs_zero": -0.26176320302483885,
+      "teacher_clip_fraction": 0.0125,
+      "expert_clip_fraction": 0.034722222222222224,
+      "sign_conflict_fraction": 0.2972222222222222,
+      "static": {
+        "prediction_mean": 0.00044704034872767,
+        "prediction_second_moment": 8.624621518214958e-05,
+        "prediction_target_covariance": -9.41763768460385e-06,
+        "prediction_target_coordinate_correlation": -0.04839821096512312,
+        "in_sample_diagnostic_optimal_scale": -0.1059701259176006,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0005326233403239813,
+        "prediction_second_moment": 8.39336953100024e-05,
+        "prediction_target_covariance": -1.6008391089107208e-05,
+        "prediction_target_coordinate_correlation": -0.08343884816528988,
+        "in_sample_diagnostic_optimal_scale": -0.18677876899596085,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0004526980686932802,
+        "prediction_second_moment": 8.732942676740802e-05,
+        "prediction_target_covariance": -1.2962327749794395e-05,
+        "prediction_target_coordinate_correlation": -0.0662012939259174,
+        "in_sample_diagnostic_optimal_scale": -0.14520526474222822,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_4": {
+      "rows": 17,
+      "episodes": 17,
+      "active_coordinates": 816.0,
+      "target_mse": {
+        "zero": 0.0006710435517757729,
+        "static": 0.00105294044952447,
+        "temporal": 0.0010942878485794233,
+        "shuffled": 0.0010954350048753743
+      },
+      "temporal_relative_gain_vs_static": -0.0392685066602073,
+      "temporal_relative_gain_vs_zero": -0.6307255254649643,
+      "teacher_clip_fraction": 0.03799019607843137,
+      "expert_clip_fraction": 0.04411764705882353,
+      "sign_conflict_fraction": 0.3075980392156863,
+      "static": {
+        "prediction_mean": 0.0025400708568757216,
+        "prediction_second_moment": 0.00033831321314780737,
+        "prediction_target_covariance": -1.750432302293995e-05,
+        "prediction_target_coordinate_correlation": -0.03717197525959489,
+        "in_sample_diagnostic_optimal_scale": -0.06441321666890998,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.002013628795633421,
+        "prediction_second_moment": 0.0003706042784067583,
+        "prediction_target_covariance": -2.29210991815671e-05,
+        "prediction_target_coordinate_correlation": -0.046314573967983996,
+        "in_sample_diagnostic_optimal_scale": -0.07101917255676805,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0023974719589722215,
+        "prediction_second_moment": 0.00037204258985059594,
+        "prediction_target_covariance": -2.212761253142655e-05,
+        "prediction_target_coordinate_correlation": -0.04472679970905988,
+        "in_sample_diagnostic_optimal_scale": -0.07035332066421136,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_5": {
+      "rows": 16,
+      "episodes": 16,
+      "active_coordinates": 768.0,
+      "target_mse": {
+        "zero": 0.00047930604614521144,
+        "static": 0.0009750932398067865,
+        "temporal": 0.0009425210688884059,
+        "shuffled": 0.0009226739790998787
+      },
+      "temporal_relative_gain_vs_static": 0.03340416032915451,
+      "temporal_relative_gain_vs_zero": -0.966428499011377,
+      "teacher_clip_fraction": 0.014322916666666666,
+      "expert_clip_fraction": 0.0390625,
+      "sign_conflict_fraction": 0.3020833333333333,
+      "static": {
+        "prediction_mean": 0.005510705940347786,
+        "prediction_second_moment": 0.0005757398497128937,
+        "prediction_target_covariance": 4.126181819189731e-05,
+        "prediction_target_coordinate_correlation": 0.08070866339542165,
+        "in_sample_diagnostic_optimal_scale": 0.06943470743877553,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.004411336257665728,
+        "prediction_second_moment": 0.0005036532741845198,
+        "prediction_target_covariance": 2.1248164366633396e-05,
+        "prediction_target_coordinate_correlation": 0.04410930256451216,
+        "in_sample_diagnostic_optimal_scale": 0.040144930564384985,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0043259567028144374,
+        "prediction_second_moment": 0.00048736044664110523,
+        "prediction_target_covariance": 2.300537887971221e-05,
+        "prediction_target_coordinate_correlation": 0.04854280640802654,
+        "in_sample_diagnostic_optimal_scale": 0.04513344690735058,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_6": {
+      "rows": 20,
+      "episodes": 20,
+      "active_coordinates": 960.0,
+      "target_mse": {
+        "zero": 0.0006445870683819521,
+        "static": 0.0009434808860532939,
+        "temporal": 0.0009149243038943192,
+        "shuffled": 0.000899959763288886
+      },
+      "temporal_relative_gain_vs_static": 0.03026726092823211,
+      "temporal_relative_gain_vs_zero": -0.4193959959373215,
+      "teacher_clip_fraction": 0.022916666666666665,
+      "expert_clip_fraction": 0.051041666666666666,
+      "sign_conflict_fraction": 0.27291666666666664,
+      "static": {
+        "prediction_mean": 0.00016099149361252784,
+        "prediction_second_moment": 0.000306057419948047,
+        "prediction_target_covariance": 3.619634774155398e-06,
+        "prediction_target_coordinate_correlation": 0.008150035424899477,
+        "in_sample_diagnostic_optimal_scale": 0.01170303643989618,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.002264751705418651,
+        "prediction_second_moment": 0.00027911181981229066,
+        "prediction_target_covariance": 4.919517730853548e-06,
+        "prediction_target_coordinate_correlation": 0.011706815000769836,
+        "in_sample_diagnostic_optimal_scale": 0.015718761580617722,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0020919860883926353,
+        "prediction_second_moment": 0.000270483373121048,
+        "prediction_target_covariance": 8.0469640867175e-06,
+        "prediction_target_coordinate_correlation": 0.0194304004631089,
+        "in_sample_diagnostic_optimal_scale": 0.02793273028163497,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_7": {
+      "rows": 20,
+      "episodes": 20,
+      "active_coordinates": 960.0,
+      "target_mse": {
+        "zero": 0.0007198093207989587,
+        "static": 0.0007052834201507115,
+        "temporal": 0.0007139968788881863,
+        "shuffled": 0.0007211491619576311
+      },
+      "temporal_relative_gain_vs_static": -0.012354549233005972,
+      "temporal_relative_gain_vs_zero": 0.008074974500636824,
+      "teacher_clip_fraction": 0.0375,
+      "expert_clip_fraction": 0.03854166666666667,
+      "sign_conflict_fraction": 0.23229166666666667,
+      "static": {
+        "prediction_mean": -0.0017386315487480412,
+        "prediction_second_moment": 8.408752267617577e-05,
+        "prediction_target_covariance": 4.877051661204852e-05,
+        "prediction_target_coordinate_correlation": 0.20191169419766192,
+        "in_sample_diagnostic_optimal_scale": 0.5863736984153223,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": -0.0018915129223993669,
+        "prediction_second_moment": 7.838345130342836e-05,
+        "prediction_target_covariance": 4.151460284629021e-05,
+        "prediction_target_coordinate_correlation": 0.17891786450609512,
+        "in_sample_diagnostic_optimal_scale": 0.5370769710577803,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": -0.001984068726111824,
+        "prediction_second_moment": 8.447723072701289e-05,
+        "prediction_target_covariance": 4.095680675597337e-05,
+        "prediction_target_coordinate_correlation": 0.17011332957586603,
+        "in_sample_diagnostic_optimal_scale": 0.492069808946495,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_8": {
+      "rows": 15,
+      "episodes": 15,
+      "active_coordinates": 720.0,
+      "target_mse": {
+        "zero": 0.0006875793118120378,
+        "static": 0.0007989407258315219,
+        "temporal": 0.0008086682310224408,
+        "shuffled": 0.000832241296949279
+      },
+      "temporal_relative_gain_vs_static": -0.012175502983396792,
+      "temporal_relative_gain_vs_zero": -0.17610902063252426,
+      "teacher_clip_fraction": 0.02638888888888889,
+      "expert_clip_fraction": 0.022222222222222223,
+      "sign_conflict_fraction": 0.24027777777777778,
+      "static": {
+        "prediction_mean": 0.0011434909861741795,
+        "prediction_second_moment": 0.00012901522293557518,
+        "prediction_target_covariance": 9.672679405887493e-06,
+        "prediction_target_coordinate_correlation": 0.03265500660547098,
+        "in_sample_diagnostic_optimal_scale": 0.06841754218766362,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": -0.0001961088040843606,
+        "prediction_second_moment": 0.000133675896601441,
+        "prediction_target_covariance": 6.148438218032732e-06,
+        "prediction_target_coordinate_correlation": 0.02029140804052137,
+        "in_sample_diagnostic_optimal_scale": 0.047080205598195694,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": -0.0001645309307302038,
+        "prediction_second_moment": 0.0001392491386569519,
+        "prediction_target_covariance": -2.8281173689477972e-06,
+        "prediction_target_coordinate_correlation": -0.00914439188647844,
+        "in_sample_diagnostic_optimal_scale": -0.019435834693470308,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_9": {
+      "rows": 21,
+      "episodes": 20,
+      "active_coordinates": 1008.0,
+      "target_mse": {
+        "zero": 0.0007065369272678499,
+        "static": 0.0010920548719161795,
+        "temporal": 0.0010611561971480056,
+        "shuffled": 0.001058585637818194
+      },
+      "temporal_relative_gain_vs_static": 0.028294067965611888,
+      "temporal_relative_gain_vs_zero": -0.5019118692797194,
+      "teacher_clip_fraction": 0.022817460317460316,
+      "expert_clip_fraction": 0.040674603174603176,
+      "sign_conflict_fraction": 0.22321428571428573,
+      "static": {
+        "prediction_mean": 0.001636936225824886,
+        "prediction_second_moment": 0.00033286125038839166,
+        "prediction_target_covariance": -2.0475761697843626e-05,
+        "prediction_target_coordinate_correlation": -0.042781975903033745,
+        "in_sample_diagnostic_optimal_scale": -0.07909706251252853,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0026399282136163305,
+        "prediction_second_moment": 0.00030038211104785285,
+        "prediction_target_covariance": -1.767996772125654e-05,
+        "prediction_target_coordinate_correlation": -0.039186740292851886,
+        "in_sample_diagnostic_optimal_scale": -0.09028027441964144,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0026158716618305163,
+        "prediction_second_moment": 0.00029753013453926775,
+        "prediction_target_covariance": -1.790668639601363e-05,
+        "prediction_target_coordinate_correlation": -0.03987488346772758,
+        "in_sample_diagnostic_optimal_scale": -0.0916185785609577,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_10": {
+      "rows": 16,
+      "episodes": 16,
+      "active_coordinates": 768.0,
+      "target_mse": {
+        "zero": 0.0008977968739903494,
+        "static": 0.001063531955878716,
+        "temporal": 0.0011015294003300369,
+        "shuffled": 0.0010960625356043845
+      },
+      "temporal_relative_gain_vs_static": -0.03572760013583842,
+      "temporal_relative_gain_vs_zero": -0.22692496737505627,
+      "teacher_clip_fraction": 0.046875,
+      "expert_clip_fraction": 0.0546875,
+      "sign_conflict_fraction": 0.19401041666666666,
+      "static": {
+        "prediction_mean": -0.0019668008001948087,
+        "prediction_second_moment": 0.000258977842653015,
+        "prediction_target_covariance": 4.865815675514783e-05,
+        "prediction_target_coordinate_correlation": 0.10173322208508187,
+        "in_sample_diagnostic_optimal_scale": 0.18002073036336438,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": -0.00034531465886781615,
+        "prediction_second_moment": 0.00030043296283110976,
+        "prediction_target_covariance": 4.8707818638339625e-05,
+        "prediction_target_coordinate_correlation": 0.0938602241448756,
+        "in_sample_diagnostic_optimal_scale": 0.16093513105248555,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": -0.00045346196808774647,
+        "prediction_second_moment": 0.00029079572717212915,
+        "prediction_target_covariance": 4.673462818620964e-05,
+        "prediction_target_coordinate_correlation": 0.09155221985967527,
+        "in_sample_diagnostic_optimal_scale": 0.15909804875386502,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_11": {
+      "rows": 16,
+      "episodes": 16,
+      "active_coordinates": 768.0,
+      "target_mse": {
+        "zero": 0.0009222695380231016,
+        "static": 0.0010440072910569143,
+        "temporal": 0.0010440152206380542,
+        "shuffled": 0.0010408374825298476
+      },
+      "temporal_relative_gain_vs_static": -7.595331189595656e-06,
+      "temporal_relative_gain_vs_zero": -0.13200661801745747,
+      "teacher_clip_fraction": 0.04296875,
+      "expert_clip_fraction": 0.06380208333333333,
+      "sign_conflict_fraction": 0.19791666666666666,
+      "static": {
+        "prediction_mean": 0.0021890762885353374,
+        "prediction_second_moment": 0.00014590864945300078,
+        "prediction_target_covariance": 9.059130210784377e-06,
+        "prediction_target_coordinate_correlation": 0.025137320595998342,
+        "in_sample_diagnostic_optimal_scale": 0.08282886761615191,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0028864181804237887,
+        "prediction_second_moment": 0.00017462648611399345,
+        "prediction_target_covariance": 2.245003406007244e-05,
+        "prediction_target_coordinate_correlation": 0.05738505928391686,
+        "in_sample_diagnostic_optimal_scale": 0.151411176722989,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.002751658140671983,
+        "prediction_second_moment": 0.00017020413300391132,
+        "prediction_target_covariance": 2.2014027391114323e-05,
+        "prediction_target_coordinate_correlation": 0.05690066540585576,
+        "in_sample_diagnostic_optimal_scale": 0.151688997164301,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_12": {
+      "rows": 13,
+      "episodes": 13,
+      "active_coordinates": 624.0,
+      "target_mse": {
+        "zero": 0.0020131719356868416,
+        "static": 0.0018976691122262333,
+        "temporal": 0.0019180991624195415,
+        "shuffled": 0.001914730185839849
+      },
+      "temporal_relative_gain_vs_static": -0.010765865377521392,
+      "temporal_relative_gain_vs_zero": 0.04722536191865985,
+      "teacher_clip_fraction": 0.14102564102564102,
+      "expert_clip_fraction": 0.16506410256410256,
+      "sign_conflict_fraction": 0.15064102564102563,
+      "static": {
+        "prediction_mean": 0.0032088012219621586,
+        "prediction_second_moment": 0.00017716701087267257,
+        "prediction_target_covariance": 0.0001303156069403565,
+        "prediction_target_coordinate_correlation": 0.22624091118793008,
+        "in_sample_diagnostic_optimal_scale": 0.8259715871811448,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.001951064315970796,
+        "prediction_second_moment": 0.00017714328005706938,
+        "prediction_target_covariance": 0.00012636772105052807,
+        "prediction_target_coordinate_correlation": 0.21525617191011245,
+        "in_sample_diagnostic_optimal_scale": 0.7683499290423859,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.001764730696614163,
+        "prediction_second_moment": 0.00017314905282826378,
+        "prediction_target_covariance": 0.00012698532974409344,
+        "prediction_target_coordinate_correlation": 0.21839832456159247,
+        "in_sample_diagnostic_optimal_scale": 0.7842688084024093,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_13": {
+      "rows": 12,
+      "episodes": 11,
+      "active_coordinates": 432.0,
+      "target_mse": {
+        "zero": 0.0009918340785791064,
+        "static": 0.0013244050744645021,
+        "temporal": 0.0013114574054876964,
+        "shuffled": 0.0013060497176074594
+      },
+      "temporal_relative_gain_vs_static": 0.009776215167433473,
+      "temporal_relative_gain_vs_zero": -0.32225483456515214,
+      "teacher_clip_fraction": 0.02546296296296296,
+      "expert_clip_fraction": 0.05787037037037037,
+      "sign_conflict_fraction": 0.20601851851851852,
+      "static": {
+        "prediction_mean": 0.0037889022130036245,
+        "prediction_second_moment": 0.00029760386893974136,
+        "prediction_target_covariance": -2.010442851484892e-05,
+        "prediction_target_coordinate_correlation": -0.037939666249524565,
+        "in_sample_diagnostic_optimal_scale": -0.058747769426234386,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0033767740932051783,
+        "prediction_second_moment": 0.00030250428379211507,
+        "prediction_target_covariance": -1.0895308727753824e-05,
+        "prediction_target_coordinate_correlation": -0.020281611174884206,
+        "in_sample_diagnostic_optimal_scale": -0.028295538333994886,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0034072653700908027,
+        "prediction_second_moment": 0.00031113020048468133,
+        "prediction_target_covariance": -3.8995979124917915e-06,
+        "prediction_target_coordinate_correlation": -0.007156351188076674,
+        "in_sample_diagnostic_optimal_scale": -0.004958436273407778,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_14": {
+      "rows": 15,
+      "episodes": 15,
+      "active_coordinates": 360.0,
+      "target_mse": {
+        "zero": 0.0017342060416315993,
+        "static": 0.0020229729707352817,
+        "temporal": 0.0021310296103668708,
+        "shuffled": 0.0021160062699992622
+      },
+      "temporal_relative_gain_vs_static": -0.05341477182085836,
+      "temporal_relative_gain_vs_zero": -0.2288214659671734,
+      "teacher_clip_fraction": 0.10555555555555556,
+      "expert_clip_fraction": 0.125,
+      "sign_conflict_fraction": 0.16111111111111112,
+      "static": {
+        "prediction_mean": 0.004053087175513307,
+        "prediction_second_moment": 0.00035248622750966914,
+        "prediction_target_covariance": 3.0271578313500084e-05,
+        "prediction_target_coordinate_correlation": 0.039654854637996347,
+        "in_sample_diagnostic_optimal_scale": 0.09038551499751707,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.003122215643007722,
+        "prediction_second_moment": 0.00042949787457473575,
+        "prediction_target_covariance": 1.5113813879965937e-05,
+        "prediction_target_coordinate_correlation": 0.017715270085042225,
+        "in_sample_diagnostic_optimal_scale": 0.03803779689459064,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0030875229897598428,
+        "prediction_second_moment": 0.0004204359157787015,
+        "prediction_target_covariance": 1.8108097857884543e-05,
+        "prediction_target_coordinate_correlation": 0.02145220759721236,
+        "in_sample_diagnostic_optimal_scale": 0.04594717763286277,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "age_15": {
+      "rows": 14,
+      "episodes": 14,
+      "active_coordinates": 168.0,
+      "target_mse": {
+        "zero": 0.0016398183867013792,
+        "static": 0.00174628513299727,
+        "temporal": 0.0017984449611200641,
+        "shuffled": 0.0017971365935712431
+      },
+      "temporal_relative_gain_vs_static": -0.029869021465737687,
+      "temporal_relative_gain_vs_zero": -0.09673423331822405,
+      "teacher_clip_fraction": 0.10714285714285714,
+      "expert_clip_fraction": 0.11904761904761904,
+      "sign_conflict_fraction": 0.1488095238095238,
+      "static": {
+        "prediction_mean": -0.0015790733284250433,
+        "prediction_second_moment": 0.00023188083754835783,
+        "prediction_target_covariance": 6.159174763868588e-05,
+        "prediction_target_coordinate_correlation": 0.10043983131798795,
+        "in_sample_diagnostic_optimal_scale": 0.27042788998532974,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": -0.0023731556554724064,
+        "prediction_second_moment": 0.00021669678192535815,
+        "prediction_target_covariance": 2.73589461746855e-05,
+        "prediction_target_coordinate_correlation": 0.04651141328159006,
+        "in_sample_diagnostic_optimal_scale": 0.13398954749285494,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": -0.0023717518280526356,
+        "prediction_second_moment": 0.00021374188205906344,
+        "prediction_target_covariance": 2.65366715379179e-05,
+        "prediction_target_coordinate_correlation": 0.045431931723346634,
+        "in_sample_diagnostic_optimal_scale": 0.13199021793400317,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "tail_13_15": {
+      "rows": 41,
+      "episodes": 39,
+      "active_coordinates": 960.0,
+      "target_mse": {
+        "zero": 0.0013836208186451889,
+        "static": 0.0016601970458092789,
+        "temporal": 0.0017040198045530511,
+        "shuffled": 0.0016957236280480477
+      },
+      "temporal_relative_gain_vs_static": -0.026396118975389706,
+      "temporal_relative_gain_vs_zero": -0.23156560062574796,
+      "teacher_clip_fraction": 0.06979166666666667,
+      "expert_clip_fraction": 0.09375,
+      "sign_conflict_fraction": 0.17916666666666667,
+      "static": {
+        "prediction_mean": 0.0029485758541947385,
+        "prediction_second_moment": 0.00030668322290997214,
+        "prediction_target_covariance": 1.4066892797791489e-05,
+        "prediction_target_coordinate_correlation": 0.021908215253101482,
+        "in_sample_diagnostic_optimal_scale": 0.04908484308370536,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.002275076968362555,
+        "prediction_second_moment": 0.00033511056750891536,
+        "prediction_target_covariance": 6.594541100896435e-06,
+        "prediction_target_coordinate_correlation": 0.009760671153701137,
+        "in_sample_diagnostic_optimal_scale": 0.021950339719832422,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.002276033967791591,
+        "prediction_second_moment": 0.0003350768879954558,
+        "prediction_target_covariance": 1.0725469380896294e-05,
+        "prediction_target_coordinate_correlation": 0.015875830134315524,
+        "in_sample_diagnostic_optimal_scale": 0.03428180130541927,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "conflict_zero": {
+      "rows": 5,
+      "episodes": 5,
+      "active_coordinates": 132.0,
+      "target_mse": {
+        "zero": 0.006060975702535926,
+        "static": 0.005896174179559404,
+        "temporal": 0.005890052892606367,
+        "shuffled": 0.005850409693790205
+      },
+      "temporal_relative_gain_vs_static": 0.0010381794646193263,
+      "temporal_relative_gain_vs_zero": 0.02820054366131913,
+      "teacher_clip_fraction": 0.4696969696969697,
+      "expert_clip_fraction": 0.5909090909090909,
+      "sign_conflict_fraction": 0.0,
+      "static": {
+        "prediction_mean": 0.002719346615556402,
+        "prediction_second_moment": 0.0001516008659646931,
+        "prediction_target_covariance": 0.00014706621614883717,
+        "prediction_target_coordinate_correlation": 0.15752572585831226,
+        "in_sample_diagnostic_optimal_scale": 1.0435375382845862,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0017771774084504807,
+        "prediction_second_moment": 0.00021176579034407482,
+        "prediction_target_covariance": 0.00018406724622841436,
+        "prediction_target_coordinate_correlation": 0.16392375502567197,
+        "in_sample_diagnostic_optimal_scale": 0.9035656789792282,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0016801960088989952,
+        "prediction_second_moment": 0.00021062536027536473,
+        "prediction_target_covariance": 0.00020371574282587943,
+        "prediction_target_coordinate_correlation": 0.18177312820120103,
+        "in_sample_diagnostic_optimal_scale": 0.9998591064020828,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "conflict_0_to_25pct": {
+      "rows": 139,
+      "episodes": 133,
+      "active_coordinates": 5940.0,
+      "target_mse": {
+        "zero": 0.0009735049493101297,
+        "static": 0.0011381825874324399,
+        "temporal": 0.0011424989997713454,
+        "shuffled": 0.00114168871022833
+      },
+      "temporal_relative_gain_vs_static": -0.0037923724950340828,
+      "temporal_relative_gain_vs_zero": -0.17359341683981439,
+      "teacher_clip_fraction": 0.04579124579124579,
+      "expert_clip_fraction": 0.05909090909090909,
+      "sign_conflict_fraction": 0.16700336700336701,
+      "static": {
+        "prediction_mean": 0.0013545809717384805,
+        "prediction_second_moment": 0.00024280967606840693,
+        "prediction_target_covariance": 3.8654246974052964e-05,
+        "prediction_target_coordinate_correlation": 0.07981103561465147,
+        "in_sample_diagnostic_optimal_scale": 0.1608915246114089,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.00144323826703221,
+        "prediction_second_moment": 0.00023231070187559777,
+        "prediction_target_covariance": 3.121960323977013e-05,
+        "prediction_target_coordinate_correlation": 0.0659477619475084,
+        "in_sample_diagnostic_optimal_scale": 0.13627579552552854,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0013959227370487068,
+        "prediction_second_moment": 0.00022903815196658115,
+        "prediction_target_covariance": 3.0002856257753014e-05,
+        "prediction_target_coordinate_correlation": 0.06381393944931808,
+        "in_sample_diagnostic_optimal_scale": 0.13284771669232673,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "conflict_gt_25pct": {
+      "rows": 100,
+      "episodes": 95,
+      "active_coordinates": 4632.0,
+      "target_mse": {
+        "zero": 0.00036625982167468474,
+        "static": 0.0006190876277213488,
+        "temporal": 0.0006243332562051691,
+        "shuffled": 0.0006222841838812649
+      },
+      "temporal_relative_gain_vs_static": -0.008473159935577566,
+      "temporal_relative_gain_vs_zero": -0.7046184682515012,
+      "teacher_clip_fraction": 0.011873920552677029,
+      "expert_clip_fraction": 0.02655440414507772,
+      "sign_conflict_fraction": 0.3598877374784111,
+      "static": {
+        "prediction_mean": 0.0011386062933006588,
+        "prediction_second_moment": 0.0002375166943728673,
+        "prediction_target_covariance": -6.835793245979367e-06,
+        "prediction_target_coordinate_correlation": -0.023256440133593632,
+        "in_sample_diagnostic_optimal_scale": -0.032231653682752354,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0009211821265242003,
+        "prediction_second_moment": 0.00024453595916809764,
+        "prediction_target_covariance": -6.105514009243761e-06,
+        "prediction_target_coordinate_correlation": -0.02045119127262683,
+        "in_sample_diagnostic_optimal_scale": -0.02767992774649728,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0009521900323124695,
+        "prediction_second_moment": 0.00024275922476901514,
+        "prediction_target_covariance": -5.9470202789675345e-06,
+        "prediction_target_coordinate_correlation": -0.019995716753611694,
+        "in_sample_diagnostic_optimal_scale": -0.027321592928521463,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "no_clipped_coordinates": {
+      "rows": 150,
+      "episodes": 140,
+      "active_coordinates": 6696.0,
+      "target_mse": {
+        "zero": 0.00023752800360643428,
+        "static": 0.00045516135304856915,
+        "temporal": 0.0004543142210923885,
+        "shuffled": 0.0004528458106410528
+      },
+      "temporal_relative_gain_vs_static": 0.0018611684636815678,
+      "temporal_relative_gain_vs_zero": -0.9126764600150155,
+      "teacher_clip_fraction": 0.0,
+      "expert_clip_fraction": 0.0,
+      "sign_conflict_fraction": 0.26359020310633213,
+      "static": {
+        "prediction_mean": 0.0010676689720946267,
+        "prediction_second_moment": 0.00023607393706660677,
+        "prediction_target_covariance": 9.459385904100623e-06,
+        "prediction_target_coordinate_correlation": 0.040047778410066626,
+        "in_sample_diagnostic_optimal_scale": 0.03905680536701721,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.001169652708741005,
+        "prediction_second_moment": 0.0002306278694922529,
+        "prediction_target_covariance": 7.182756170829883e-06,
+        "prediction_target_coordinate_correlation": 0.030783332080938277,
+        "in_sample_diagnostic_optimal_scale": 0.03000862826503191,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0011425177720953959,
+        "prediction_second_moment": 0.0002276280510688448,
+        "prediction_target_covariance": 6.410975630229694e-06,
+        "prediction_target_coordinate_correlation": 0.027653398064228937,
+        "in_sample_diagnostic_optimal_scale": 0.027040261462553804,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "at_least_one_clipped_coordinate": {
+      "rows": 94,
+      "episodes": 91,
+      "active_coordinates": 4008.0,
+      "target_mse": {
+        "zero": 0.001668836370630082,
+        "static": 0.001836066125908833,
+        "temporal": 0.001849739186320744,
+        "shuffled": 0.0018473178168717853
+      },
+      "temporal_relative_gain_vs_static": -0.0074469324492019515,
+      "temporal_relative_gain_vs_zero": -0.10840057112511327,
+      "teacher_clip_fraction": 0.09705588822355289,
+      "expert_clip_fraction": 0.1377245508982036,
+      "sign_conflict_fraction": 0.22305389221556887,
+      "static": {
+        "prediction_mean": 0.0016292608879249126,
+        "prediction_second_moment": 0.0002449418752222552,
+        "prediction_target_covariance": 3.864843366115617e-05,
+        "prediction_target_coordinate_correlation": 0.06078014502886172,
+        "in_sample_diagnostic_optimal_scale": 0.15863379806533634,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.001307970009086107,
+        "prediction_second_moment": 0.00024857410234854576,
+        "prediction_target_covariance": 3.366896100730182e-05,
+        "prediction_target_coordinate_correlation": 0.05245618107430536,
+        "in_sample_diagnostic_optimal_scale": 0.13611894002335834,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0013158213969472492,
+        "prediction_second_moment": 0.0002466448276973387,
+        "prediction_target_covariance": 3.3914007857581184e-05,
+        "prediction_target_coordinate_correlation": 0.05304788101031761,
+        "in_sample_diagnostic_optimal_scale": 0.1381812505293635,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "dt_below_08": {
+      "rows": 27,
+      "episodes": 27,
+      "active_coordinates": 1224.0,
+      "target_mse": {
+        "zero": 0.0008558602757284758,
+        "static": 0.0009376133327582376,
+        "temporal": 0.0010046614977885708,
+        "shuffled": 0.0010066190958015462
+      },
+      "temporal_relative_gain_vs_static": -0.0715093980512129,
+      "temporal_relative_gain_vs_zero": -0.1738615826437803,
+      "teacher_clip_fraction": 0.03839869281045752,
+      "expert_clip_fraction": 0.07924836601307189,
+      "sign_conflict_fraction": 0.23937908496732027,
+      "static": {
+        "prediction_mean": 0.0007712202766009308,
+        "prediction_second_moment": 0.00018932149148990517,
+        "prediction_target_covariance": 5.4886102975490496e-05,
+        "prediction_target_coordinate_correlation": 0.13672968731730026,
+        "in_sample_diagnostic_optimal_scale": 0.28408933822993604,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0011087245797872349,
+        "prediction_second_moment": 0.00020346765975571342,
+        "prediction_target_covariance": 2.8917315956157536e-05,
+        "prediction_target_coordinate_correlation": 0.06958943188699121,
+        "in_sample_diagnostic_optimal_scale": 0.13433692057315635,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.001107198402309924,
+        "prediction_second_moment": 0.0001981214467425423,
+        "prediction_target_covariance": 2.5263229907563783e-05,
+        "prediction_target_coordinate_correlation": 0.06161522299857693,
+        "in_sample_diagnostic_optimal_scale": 0.11952927723927698,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "dt_08_to_16": {
+      "rows": 22,
+      "episodes": 22,
+      "active_coordinates": 900.0,
+      "target_mse": {
+        "zero": 0.0011366506910093852,
+        "static": 0.001216964516788721,
+        "temporal": 0.0012566782052939136,
+        "shuffled": 0.0012429380608308647
+      },
+      "temporal_relative_gain_vs_static": -0.03263339888494655,
+      "temporal_relative_gain_vs_zero": -0.10559753777824193,
+      "teacher_clip_fraction": 0.06444444444444444,
+      "expert_clip_fraction": 0.10444444444444445,
+      "sign_conflict_fraction": 0.21888888888888888,
+      "static": {
+        "prediction_mean": 0.0010547138957513703,
+        "prediction_second_moment": 0.000212358884099457,
+        "prediction_target_covariance": 6.236941065348547e-05,
+        "prediction_target_coordinate_correlation": 0.12795799721181209,
+        "in_sample_diagnostic_optimal_scale": 0.31090071620992016,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.0005164863614158498,
+        "prediction_second_moment": 0.0002318479610969209,
+        "prediction_target_covariance": 5.4121315634257065e-05,
+        "prediction_target_coordinate_correlation": 0.10604915414617082,
+        "in_sample_diagnostic_optimal_scale": 0.2411503777806515,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.0005185557508634196,
+        "prediction_second_moment": 0.00023608144372701644,
+        "prediction_target_covariance": 6.310096162105912e-05,
+        "prediction_target_coordinate_correlation": 0.12253017183557938,
+        "in_sample_diagnostic_optimal_scale": 0.27489257913811155,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    },
+    "dt_16_to_32": {
+      "rows": 195,
+      "episodes": 180,
+      "active_coordinates": 8580.0,
+      "target_mse": {
+        "zero": 0.0007236159774165444,
+        "static": 0.0009514926186771433,
+        "temporal": 0.0009434879516492357,
+        "shuffled": 0.0009423728822920437
+      },
+      "temporal_relative_gain_vs_static": 0.008412747372687478,
+      "temporal_relative_gain_vs_zero": -0.3038517405567504,
+      "teacher_clip_fraction": 0.0331002331002331,
+      "expert_clip_fraction": 0.042074592074592077,
+      "sign_conflict_fraction": 0.2527972027972028,
+      "static": {
+        "prediction_mean": 0.0013736565211203843,
+        "prediction_second_moment": 0.00024937361506009823,
+        "prediction_target_covariance": 1.1125871130712055e-05,
+        "prediction_target_coordinate_correlation": 0.026292185324163202,
+        "in_sample_diagnostic_optimal_scale": 0.04310194122645782,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "temporal": {
+        "prediction_mean": 0.001311471063311544,
+        "prediction_second_moment": 0.00024275776641082458,
+        "prediction_target_covariance": 1.180319612844885e-05,
+        "prediction_target_coordinate_correlation": 0.028263478688518303,
+        "in_sample_diagnostic_optimal_scale": 0.04713709578997198,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      },
+      "shuffled": {
+        "prediction_mean": 0.001293962720362578,
+        "prediction_second_moment": 0.000239834026713372,
+        "prediction_target_covariance": 1.0894050896678239e-05,
+        "prediction_target_coordinate_correlation": 0.0262436266794402,
+        "in_sample_diagnostic_optimal_scale": 0.04394105816991153,
+        "coordinate_correlation_warning": "pooled heterogeneous coordinates, descriptive association only; not episode-independent N=10704"
+      }
+    }
+  },
+  "task_age_counts": {
+    "adjust_bottle": {
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 1,
+      "7": 0,
+      "8": 0,
+      "9": 1,
+      "10": 0,
+      "11": 1,
+      "12": 0,
+      "13": 0,
+      "14": 2,
+      "15": 1
+    },
+    "beat_block_hammer": {
+      "1": 0,
+      "2": 1,
+      "3": 0,
+      "4": 1,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "click_alarmclock": {
+      "1": 0,
+      "2": 2,
+      "3": 0,
+      "4": 0,
+      "5": 1,
+      "6": 1,
+      "7": 0,
+      "8": 1,
+      "9": 1,
+      "10": 1,
+      "11": 1,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "click_bell": {
+      "1": 0,
+      "2": 1,
+      "3": 1,
+      "4": 2,
+      "5": 1,
+      "6": 0,
+      "7": 0,
+      "8": 1,
+      "9": 3,
+      "10": 1,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "dump_bin_bigbin": {
+      "1": 0,
+      "2": 1,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 1,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 1,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 1
+    },
+    "grab_roller": {
+      "1": 1,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 2,
+      "6": 0,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 1,
+      "12": 0,
+      "13": 1,
+      "14": 0,
+      "15": 1
+    },
+    "handover_block": {
+      "1": 0,
+      "2": 1,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 2,
+      "10": 2,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "handover_mic": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 2,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 1,
+      "13": 1,
+      "14": 0,
+      "15": 0
+    },
+    "hanging_mug": {
+      "1": 2,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 1,
+      "7": 0,
+      "8": 1,
+      "9": 0,
+      "10": 0,
+      "11": 4,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 1
+    },
+    "move_can_pot": {
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 1,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 1,
+      "12": 2,
+      "13": 0,
+      "14": 2,
+      "15": 0
+    },
+    "move_pillbottle_pad": {
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 1,
+      "5": 0,
+      "6": 0,
+      "7": 0,
+      "8": 1,
+      "9": 1,
+      "10": 0,
+      "11": 1,
+      "12": 1,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "move_playingcard_away": {
+      "1": 2,
+      "2": 1,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 0,
+      "8": 1,
+      "9": 1,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 1
+    },
+    "move_stapler_pad": {
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 1,
+      "6": 1,
+      "7": 2,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 1
+    },
+    "place_a2b_left": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 1,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 1,
+      "14": 0,
+      "15": 0
+    },
+    "place_a2b_right": {
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 1,
+      "6": 0,
+      "7": 1,
+      "8": 1,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 1
+    },
+    "place_bread_basket": {
+      "1": 1,
+      "2": 0,
+      "3": 2,
+      "4": 2,
+      "5": 1,
+      "6": 0,
+      "7": 0,
+      "8": 2,
+      "9": 1,
+      "10": 0,
+      "11": 2,
+      "12": 0,
+      "13": 1,
+      "14": 0,
+      "15": 1
+    },
+    "place_bread_skillet": {
+      "1": 1,
+      "2": 1,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 2,
+      "7": 1,
+      "8": 1,
+      "9": 1,
+      "10": 2,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "place_can_basket": {
+      "1": 1,
+      "2": 0,
+      "3": 0,
+      "4": 1,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 1,
+      "9": 1,
+      "10": 0,
+      "11": 1,
+      "12": 0,
+      "13": 1,
+      "14": 0,
+      "15": 0
+    },
+    "place_container_plate": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 2,
+      "5": 1,
+      "6": 0,
+      "7": 0,
+      "8": 1,
+      "9": 1,
+      "10": 1,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 1
+    },
+    "place_empty_cup": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 0,
+      "6": 1,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 0
+    },
+    "place_fan": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 1,
+      "6": 0,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 2,
+      "13": 1,
+      "14": 0,
+      "15": 2
+    },
+    "place_mouse_pad": {
+      "1": 0,
+      "2": 1,
+      "3": 0,
+      "4": 0,
+      "5": 1,
+      "6": 1,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 2,
+      "11": 0,
+      "12": 1,
+      "13": 3,
+      "14": 1,
+      "15": 0
+    },
+    "place_object_basket": {
+      "1": 2,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 1,
+      "7": 1,
+      "8": 0,
+      "9": 0,
+      "10": 1,
+      "11": 1,
+      "12": 1,
+      "13": 1,
+      "14": 2,
+      "15": 0
+    },
+    "place_object_scale": {
+      "1": 0,
+      "2": 1,
+      "3": 1,
+      "4": 0,
+      "5": 1,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 1
+    },
+    "place_object_stand": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 2,
+      "10": 0,
+      "11": 2,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "place_phone_stand": {
+      "1": 3,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 0,
+      "6": 0,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 1,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 0
+    },
+    "place_shoe": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 1,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 1,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "press_stapler": {
+      "1": 2,
+      "2": 1,
+      "3": 0,
+      "4": 1,
+      "5": 1,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 0,
+      "10": 1,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "put_bottles_dustbin": {
+      "1": 0,
+      "2": 0,
+      "3": 1,
+      "4": 0,
+      "5": 0,
+      "6": 1,
+      "7": 0,
+      "8": 0,
+      "9": 0,
+      "10": 0,
+      "11": 0,
+      "12": 2,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "put_object_cabinet": {
+      "1": 0,
+      "2": 2,
+      "3": 0,
+      "4": 1,
+      "5": 1,
+      "6": 2,
+      "7": 1,
+      "8": 0,
+      "9": 1,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0
+    },
+    "rotate_qrcode": {
+      "1": 0,
+      "2": 1,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 1,
+      "8": 0,
+      "9": 1,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 1,
+      "14": 0,
+      "15": 0
+    },
+    "scan_object": {
+      "1": 1,
+      "2": 0,
+      "3": 0,
+      "4": 1,
+      "5": 0,
+      "6": 2,
+      "7": 1,
+      "8": 0,
+      "9": 0,
+      "10": 2,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 1
+    },
+    "shake_bottle": {
+      "1": 2,
+      "2": 0,
+      "3": 1,
+      "4": 2,
+      "5": 0,
+      "6": 3,
+      "7": 0,
+      "8": 2,
+      "9": 1,
+      "10": 0,
+      "11": 0,
+      "12": 2,
+      "13": 0,
+      "14": 1,
+      "15": 1
+    },
+    "shake_bottle_horizontally": {
+      "1": 1,
+      "2": 0,
+      "3": 0,
+      "4": 1,
+      "5": 1,
+      "6": 2,
+      "7": 0,
+      "8": 0,
+      "9": 1,
+      "10": 1,
+      "11": 0,
+      "12": 0,
+      "13": 1,
+      "14": 0,
+      "15": 0
+    },
+    "stamp_seal": {
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 2,
+      "6": 0,
+      "7": 1,
+      "8": 1,
+      "9": 1,
+      "10": 1,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 1,
+      "15": 0
+    }
+  },
+  "empty_task_age_cells": 330,
+  "target_diagnostics": {
+    "train": {
+      "active_coordinates": 20952.0,
+      "weighted_target_zero_mse": 0.0008677392453595886,
+      "teacher_clipped_delta_mse": 0.0009038872621186353,
+      "expert_clipped_delta_mse": 0.001000144557953088,
+      "sign_conflict_fraction": 0.2584478808705613,
+      "sign_conflict_both_abs_gt_01_fraction": 0.022623138602520045,
+      "sign_conflict_both_abs_gt_05_fraction": 0.001718213058419244,
+      "target_energy_in_sign_conflict_fraction": 0.03104823223866233,
+      "any_clipped_fraction": 0.06247613592974418,
+      "target_energy_in_any_clipped_fraction": 0.6024140834858717,
+      "clipped_teacher_expert_disagreement_mse": 0.0003462466503084148,
+      "unclipped_teacher_expert_disagreement_mse": 0.0030551634537403127,
+      "oracle_min_teacher_plus_quarter_expert_loss": 6.924933006168297e-05,
+      "deterministic_state_error_clipped_baseline_mse": 0.00038063183564586233,
+      "state_error_baseline_scope": "diagnostic only, no fitted parameter: clamp(current state - plan[age-1], plus/minus .1) broadcast over valid tail",
+      "teacher_raw_error_irreducible_under_bound": 0.023007501034015627,
+      "expert_raw_error_irreducible_under_bound": 0.026865595515614692
+    },
+    "validation": {
+      "active_coordinates": 10704.0,
+      "weighted_target_zero_mse": 0.0007734663288167256,
+      "teacher_clipped_delta_mse": 0.000807351474460529,
+      "expert_clipped_delta_mse": 0.0009403085815802046,
+      "sign_conflict_fraction": 0.2484118086696562,
+      "sign_conflict_both_abs_gt_01_fraction": 0.023075485799701045,
+      "sign_conflict_both_abs_gt_05_fraction": 0.002522421524663677,
+      "target_energy_in_sign_conflict_fraction": 0.03990899847574487,
+      "any_clipped_fraction": 0.05605381165919283,
+      "target_energy_in_any_clipped_fraction": 0.5662191721705908,
+      "clipped_teacher_expert_disagreement_mse": 0.00037797850196343144,
+      "unclipped_teacher_expert_disagreement_mse": 0.002631995055104492,
+      "oracle_min_teacher_plus_quarter_expert_loss": 7.559570039268628e-05,
+      "deterministic_state_error_clipped_baseline_mse": 0.00030485994853742313,
+      "state_error_baseline_scope": "diagnostic only, no fitted parameter: clamp(current state - plan[age-1], plus/minus .1) broadcast over valid tail",
+      "teacher_raw_error_irreducible_under_bound": 0.07625760828241966,
+      "expert_raw_error_irreducible_under_bound": 0.08082211051091617
+    }
+  },
+  "top_teacher_energy": [
+    {
+      "index": 224,
+      "record": {
+        "episode_index": 9522,
+        "source_sample_id": 1246513,
+        "fast_sample_id": 1246549,
+        "source_frame": 2,
+        "fast_frame": 38,
+        "lang_group_id": 28,
+        "lang_id": 2800,
+        "offset": 36,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "put_bottles_dustbin",
+        "episode_name": "72",
+        "dataset_index": 1651752
+      },
+      "age": 12,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 10.38735294342041,
+      "expert_delta_mse": 10.690409660339355,
+      "teacher_expert_mse": 0.03635696321725845,
+      "teacher_energy": 498.5929260253906,
+      "expert_energy": 513.1396484375,
+      "max_teacher_delta": 7.991091251373291,
+      "max_expert_delta": 8.385061264038086,
+      "clip_teacher_count": 46,
+      "clip_expert_count": 48,
+      "top_coordinates": [
+        {
+          "slot": 3,
+          "dimension": 0,
+          "base": 0.7629913687705994,
+          "teacher": 8.754082679748535,
+          "expert": 9.148052215576172
+        },
+        {
+          "slot": 2,
+          "dimension": 0,
+          "base": 0.7593742609024048,
+          "teacher": 8.389810562133789,
+          "expert": 8.555815696716309
+        },
+        {
+          "slot": 1,
+          "dimension": 0,
+          "base": 0.7555698156356812,
+          "teacher": 7.997138023376465,
+          "expert": 7.912941932678223
+        }
+      ]
+    },
+    {
+      "index": 205,
+      "record": {
+        "episode_index": 9201,
+        "source_sample_id": 1217376,
+        "fast_sample_id": 1217400,
+        "source_frame": 95,
+        "fast_frame": 119,
+        "lang_group_id": 26,
+        "lang_id": 2600,
+        "offset": 24,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "place_shoe",
+        "episode_name": "51",
+        "dataset_index": 1616265
+      },
+      "age": 8,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 6.526723861694336,
+      "expert_delta_mse": 6.765928745269775,
+      "teacher_expert_mse": 0.005692597012966871,
+      "teacher_energy": 313.2827453613281,
+      "expert_energy": 324.76458740234375,
+      "max_teacher_delta": 8.891509056091309,
+      "max_expert_delta": 9.056785583496094,
+      "clip_teacher_count": 8,
+      "clip_expert_count": 4,
+      "top_coordinates": [
+        {
+          "slot": 3,
+          "dimension": 12,
+          "base": -5.609513759613037,
+          "teacher": 3.2819952964782715,
+          "expert": 3.4472720623016357
+        },
+        {
+          "slot": 2,
+          "dimension": 12,
+          "base": -5.579657077789307,
+          "teacher": 3.2860491275787354,
+          "expert": 3.4496078491210938
+        },
+        {
+          "slot": 1,
+          "dimension": 12,
+          "base": -5.575762748718262,
+          "teacher": 3.277416706085205,
+          "expert": 3.4496078491210938
+        }
+      ]
+    },
+    {
+      "index": 178,
+      "record": {
+        "episode_index": 5162,
+        "source_sample_id": 700719,
+        "fast_sample_id": 700749,
+        "source_frame": 45,
+        "fast_frame": 75,
+        "lang_group_id": 34,
+        "lang_id": 3400,
+        "offset": 30,
+        "offset_label": "steady_state",
+        "split": "clean",
+        "task_name": "stamp_seal",
+        "episode_name": "62",
+        "dataset_index": 939614
+      },
+      "age": 10,
+      "history_dt": 0.06400000303983688,
+      "active_count": 48,
+      "teacher_delta_mse": 0.3063286244869232,
+      "expert_delta_mse": 0.31187185645103455,
+      "teacher_expert_mse": 5.5489970691269264e-05,
+      "teacher_energy": 14.703774452209473,
+      "expert_energy": 14.9698486328125,
+      "max_teacher_delta": 1.5837180614471436,
+      "max_expert_delta": 1.5932466983795166,
+      "clip_teacher_count": 12,
+      "clip_expert_count": 12,
+      "top_coordinates": [
+        {
+          "slot": 3,
+          "dimension": 9,
+          "base": 1.8849875926971436,
+          "teacher": 3.468705654144287,
+          "expert": 3.477595806121826
+        },
+        {
+          "slot": 2,
+          "dimension": 9,
+          "base": 1.8843491077423096,
+          "teacher": 3.460801601409912,
+          "expert": 3.477595806121826
+        },
+        {
+          "slot": 0,
+          "dimension": 9,
+          "base": 1.8916125297546387,
+          "teacher": 3.4670276641845703,
+          "expert": 3.477595806121826
+        }
+      ]
+    },
+    {
+      "index": 210,
+      "record": {
+        "episode_index": 6621,
+        "source_sample_id": 897882,
+        "fast_sample_id": 897924,
+        "source_frame": 44,
+        "fast_frame": 86,
+        "lang_group_id": 9,
+        "lang_id": 900,
+        "offset": 42,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "move_can_pot",
+        "episode_name": "21",
+        "dataset_index": 1201527
+      },
+      "age": 14,
+      "history_dt": 0.18000000715255737,
+      "active_count": 24,
+      "teacher_delta_mse": 0.4081409275531769,
+      "expert_delta_mse": 0.445109099149704,
+      "teacher_expert_mse": 0.0014830309664830565,
+      "teacher_energy": 9.795382499694824,
+      "expert_energy": 10.682618141174316,
+      "max_teacher_delta": 1.871232271194458,
+      "max_expert_delta": 1.9386712312698364,
+      "clip_teacher_count": 6,
+      "clip_expert_count": 6,
+      "top_coordinates": [
+        {
+          "slot": 0,
+          "dimension": 9,
+          "base": 1.6722412109375,
+          "teacher": 3.543473482131958,
+          "expert": 3.557668685913086
+        },
+        {
+          "slot": 1,
+          "dimension": 9,
+          "base": 1.619212031364441,
+          "teacher": 3.433612823486328,
+          "expert": 3.5578832626342773
+        },
+        {
+          "slot": 0,
+          "dimension": 10,
+          "base": -1.154111623764038,
+          "teacher": -2.1950182914733887,
+          "expert": -2.267834424972534
+        }
+      ]
+    },
+    {
+      "index": 27,
+      "record": {
+        "episode_index": 5201,
+        "source_sample_id": 706658,
+        "fast_sample_id": 706700,
+        "source_frame": 34,
+        "fast_frame": 76,
+        "lang_group_id": 34,
+        "lang_id": 3400,
+        "offset": 42,
+        "offset_label": "steady_state",
+        "split": "clean",
+        "task_name": "stamp_seal",
+        "episode_name": "101",
+        "dataset_index": 948947
+      },
+      "age": 14,
+      "history_dt": 0.12400000542402267,
+      "active_count": 24,
+      "teacher_delta_mse": 0.3104649484157562,
+      "expert_delta_mse": 0.32196950912475586,
+      "teacher_expert_mse": 0.00013329686771612614,
+      "teacher_energy": 7.4511590003967285,
+      "expert_energy": 7.727268218994141,
+      "max_teacher_delta": 1.603896975517273,
+      "max_expert_delta": 1.63381826877594,
+      "clip_teacher_count": 6,
+      "clip_expert_count": 6,
+      "top_coordinates": [
+        {
+          "slot": 0,
+          "dimension": 9,
+          "base": 1.8436976671218872,
+          "teacher": 3.44759464263916,
+          "expert": 3.477515935897827
+        },
+        {
+          "slot": 1,
+          "dimension": 9,
+          "base": 1.8598496913909912,
+          "teacher": 3.4514412879943848,
+          "expert": 3.477515935897827
+        },
+        {
+          "slot": 1,
+          "dimension": 10,
+          "base": -1.2530043125152588,
+          "teacher": -2.1574952602386475,
+          "expert": -2.1635656356811523
+        }
+      ]
+    },
+    {
+      "index": 100,
+      "record": {
+        "episode_index": 10008,
+        "source_sample_id": 1325211,
+        "fast_sample_id": 1325241,
+        "source_frame": 140,
+        "fast_frame": 170,
+        "lang_group_id": 31,
+        "lang_id": 3100,
+        "offset": 30,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "scan_object",
+        "episode_name": "108",
+        "dataset_index": 1753067
+      },
+      "age": 10,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 0.07200858741998672,
+      "expert_delta_mse": 0.16870416700839996,
+      "teacher_expert_mse": 0.026809176430106163,
+      "teacher_energy": 3.4564120769500732,
+      "expert_energy": 8.097800254821777,
+      "max_teacher_delta": 0.7714338302612305,
+      "max_expert_delta": 1.1876182556152344,
+      "clip_teacher_count": 15,
+      "clip_expert_count": 16,
+      "top_coordinates": [
+        {
+          "slot": 1,
+          "dimension": 11,
+          "base": -2.1492743492126465,
+          "teacher": -1.377840518951416,
+          "expert": -1.0964078903198242
+        },
+        {
+          "slot": 0,
+          "dimension": 11,
+          "base": -1.483975887298584,
+          "teacher": -0.7224024534225464,
+          "expert": -0.5996753573417664
+        },
+        {
+          "slot": 2,
+          "dimension": 11,
+          "base": -2.8398706912994385,
+          "teacher": -2.1198625564575195,
+          "expert": -1.679776668548584
+        }
+      ]
+    },
+    {
+      "index": 245,
+      "record": {
+        "episode_index": 8672,
+        "source_sample_id": 1164005,
+        "fast_sample_id": 1164026,
+        "source_frame": 15,
+        "fast_frame": 36,
+        "lang_group_id": 22,
+        "lang_id": 2200,
+        "offset": 21,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "place_object_basket",
+        "episode_name": "122",
+        "dataset_index": 1546881
+      },
+      "age": 7,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 0.04264676198363304,
+      "expert_delta_mse": 0.056396398693323135,
+      "teacher_expert_mse": 0.0014135338133201003,
+      "teacher_energy": 2.047044515609741,
+      "expert_energy": 2.7070271968841553,
+      "max_teacher_delta": 0.60479736328125,
+      "max_expert_delta": 0.7006245851516724,
+      "clip_teacher_count": 16,
+      "clip_expert_count": 16,
+      "top_coordinates": [
+        {
+          "slot": 1,
+          "dimension": 9,
+          "base": 1.3128492832183838,
+          "teacher": 1.9176466464996338,
+          "expert": 1.9751969575881958
+        },
+        {
+          "slot": 2,
+          "dimension": 9,
+          "base": 1.227980375289917,
+          "teacher": 1.8153471946716309,
+          "expert": 1.9286049604415894
+        },
+        {
+          "slot": 0,
+          "dimension": 9,
+          "base": 1.3944042921066284,
+          "teacher": 1.9566998481750488,
+          "expert": 1.9790223836898804
+        }
+      ]
+    },
+    {
+      "index": 17,
+      "record": {
+        "episode_index": 1400,
+        "source_sample_id": 190431,
+        "fast_sample_id": 190443,
+        "source_frame": 2,
+        "fast_frame": 14,
+        "lang_group_id": 9,
+        "lang_id": 900,
+        "offset": 12,
+        "offset_label": "steady_state",
+        "split": "clean",
+        "task_name": "move_can_pot",
+        "episode_name": "50",
+        "dataset_index": 247840
+      },
+      "age": 4,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 0.03210235387086868,
+      "expert_delta_mse": 0.03825479745864868,
+      "teacher_expert_mse": 0.0010683288564905524,
+      "teacher_energy": 1.5409129858016968,
+      "expert_energy": 1.8362302780151367,
+      "max_teacher_delta": 0.4576326012611389,
+      "max_expert_delta": 0.46858489513397217,
+      "clip_teacher_count": 19,
+      "clip_expert_count": 20,
+      "top_coordinates": [
+        {
+          "slot": 1,
+          "dimension": 2,
+          "base": 0.6499550342559814,
+          "teacher": 0.19232244789600372,
+          "expert": 0.18137012422084808
+        },
+        {
+          "slot": 0,
+          "dimension": 2,
+          "base": 0.25333818793296814,
+          "teacher": -0.18095353245735168,
+          "expert": -0.17660899460315704
+        },
+        {
+          "slot": 2,
+          "dimension": 2,
+          "base": 0.9999333620071411,
+          "teacher": 0.5828335881233215,
+          "expert": 0.5856610536575317
+        }
+      ]
+    },
+    {
+      "index": 211,
+      "record": {
+        "episode_index": 6147,
+        "source_sample_id": 788409,
+        "fast_sample_id": 788454,
+        "source_frame": 3,
+        "fast_frame": 48,
+        "lang_group_id": 5,
+        "lang_id": 500,
+        "offset": 45,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "grab_roller",
+        "episode_name": "147",
+        "dataset_index": 1041956
+      },
+      "age": 15,
+      "history_dt": 0.18000000715255737,
+      "active_count": 12,
+      "teacher_delta_mse": 0.09178346395492554,
+      "expert_delta_mse": 0.09241825342178345,
+      "teacher_expert_mse": 0.0001391745900036767,
+      "teacher_energy": 1.1014015674591064,
+      "expert_energy": 1.1090190410614014,
+      "max_teacher_delta": 0.7633980512619019,
+      "max_expert_delta": 0.7673074007034302,
+      "clip_teacher_count": 9,
+      "clip_expert_count": 8,
+      "top_coordinates": [
+        {
+          "slot": 0,
+          "dimension": 0,
+          "base": -0.7779442071914673,
+          "teacher": -1.5413422584533691,
+          "expert": -1.5452516078948975
+        },
+        {
+          "slot": 0,
+          "dimension": 9,
+          "base": 0.81582111120224,
+          "teacher": 0.2952781319618225,
+          "expert": 0.31253933906555176
+        },
+        {
+          "slot": 0,
+          "dimension": 8,
+          "base": 1.1388025283813477,
+          "teacher": 0.8167130947113037,
+          "expert": 0.811719536781311
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "record": {
+        "episode_index": 9951,
+        "source_sample_id": 1315976,
+        "fast_sample_id": 1315988,
+        "source_frame": 118,
+        "fast_frame": 130,
+        "lang_group_id": 31,
+        "lang_id": 3100,
+        "offset": 12,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "scan_object",
+        "episode_name": "51",
+        "dataset_index": 1744080
+      },
+      "age": 4,
+      "history_dt": 0.08000000566244125,
+      "active_count": 48,
+      "teacher_delta_mse": 0.022281790152192116,
+      "expert_delta_mse": 0.0835363045334816,
+      "teacher_expert_mse": 0.04909401014447212,
+      "teacher_energy": 1.069525957107544,
+      "expert_energy": 4.009742736816406,
+      "max_teacher_delta": 0.7745344638824463,
+      "max_expert_delta": 1.1335690021514893,
+      "clip_teacher_count": 5,
+      "clip_expert_count": 13,
+      "top_coordinates": [
+        {
+          "slot": 3,
+          "dimension": 11,
+          "base": -2.059082269668579,
+          "teacher": -1.2845478057861328,
+          "expert": -1.4005317687988281
+        },
+        {
+          "slot": 2,
+          "dimension": 11,
+          "base": -1.177913784980774,
+          "teacher": -0.6858862638473511,
+          "expert": -0.7719988226890564
+        },
+        {
+          "slot": 3,
+          "dimension": 12,
+          "base": 0.3692133128643036,
+          "teacher": 0.6470271944999695,
+          "expert": 1.5027823448181152
+        }
+      ]
+    },
+    {
+      "index": 190,
+      "record": {
+        "episode_index": 6748,
+        "source_sample_id": 911677,
+        "fast_sample_id": 911713,
+        "source_frame": 11,
+        "fast_frame": 47,
+        "lang_group_id": 9,
+        "lang_id": 900,
+        "offset": 36,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "move_can_pot",
+        "episode_name": "148",
+        "dataset_index": 1218531
+      },
+      "age": 12,
+      "history_dt": 0.12400000542402267,
+      "active_count": 48,
+      "teacher_delta_mse": 0.020088376477360725,
+      "expert_delta_mse": 0.021589897572994232,
+      "teacher_expert_mse": 0.00023783139477018267,
+      "teacher_energy": 0.9642421007156372,
+      "expert_energy": 1.0363150835037231,
+      "max_teacher_delta": 0.3847379684448242,
+      "max_expert_delta": 0.40844154357910156,
+      "clip_teacher_count": 21,
+      "clip_expert_count": 23,
+      "top_coordinates": [
+        {
+          "slot": 0,
+          "dimension": 9,
+          "base": 2.118886709213257,
+          "teacher": 2.503624677658081,
+          "expert": 2.5273282527923584
+        },
+        {
+          "slot": 1,
+          "dimension": 9,
+          "base": 1.9677035808563232,
+          "teacher": 2.3044493198394775,
+          "expert": 2.3154549598693848
+        },
+        {
+          "slot": 0,
+          "dimension": 12,
+          "base": -0.4210096299648285,
+          "teacher": -0.1555711328983307,
+          "expert": -0.1602495312690735
+        }
+      ]
+    },
+    {
+      "index": 98,
+      "record": {
+        "episode_index": 2563,
+        "source_sample_id": 323418,
+        "fast_sample_id": 323451,
+        "source_frame": 63,
+        "fast_frame": 96,
+        "lang_group_id": 17,
+        "lang_id": 1700,
+        "offset": 33,
+        "offset_label": "steady_state",
+        "split": "clean",
+        "task_name": "place_can_basket",
+        "episode_name": "13",
+        "dataset_index": 424044
+      },
+      "age": 11,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 0.011315569281578064,
+      "expert_delta_mse": 0.020132197067141533,
+      "teacher_expert_mse": 0.0013830945827066898,
+      "teacher_energy": 0.5431473255157471,
+      "expert_energy": 0.9663454294204712,
+      "max_teacher_delta": 0.3268282413482666,
+      "max_expert_delta": 0.4675588607788086,
+      "clip_teacher_count": 8,
+      "clip_expert_count": 11,
+      "top_coordinates": [
+        {
+          "slot": 3,
+          "dimension": 4,
+          "base": 2.480059862136841,
+          "teacher": 2.153231620788574,
+          "expert": 2.0125010013580322
+        },
+        {
+          "slot": 2,
+          "dimension": 4,
+          "base": 1.843242883682251,
+          "teacher": 1.5340849161148071,
+          "expert": 1.397960901260376
+        },
+        {
+          "slot": 1,
+          "dimension": 4,
+          "base": 1.2298518419265747,
+          "teacher": 0.9564459323883057,
+          "expert": 0.844703733921051
+        }
+      ]
+    },
+    {
+      "index": 184,
+      "record": {
+        "episode_index": 1293,
+        "source_sample_id": 168431,
+        "fast_sample_id": 168464,
+        "source_frame": 232,
+        "fast_frame": 265,
+        "lang_group_id": 8,
+        "lang_id": 800,
+        "offset": 33,
+        "offset_label": "steady_state",
+        "split": "clean",
+        "task_name": "hanging_mug",
+        "episode_name": "93",
+        "dataset_index": 226427
+      },
+      "age": 11,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 0.009852462448179722,
+      "expert_delta_mse": 0.008294547908008099,
+      "teacher_expert_mse": 0.0017561520216986537,
+      "teacher_energy": 0.47291821241378784,
+      "expert_energy": 0.39813828468322754,
+      "max_teacher_delta": 0.43144094944000244,
+      "max_expert_delta": 0.396012544631958,
+      "clip_teacher_count": 7,
+      "clip_expert_count": 6,
+      "top_coordinates": [
+        {
+          "slot": 3,
+          "dimension": 11,
+          "base": -1.1116901636123657,
+          "teacher": -1.5431311130523682,
+          "expert": -1.5077027082443237
+        },
+        {
+          "slot": 2,
+          "dimension": 11,
+          "base": -0.6050882935523987,
+          "teacher": -0.8701684474945068,
+          "expert": -0.8382517099380493
+        },
+        {
+          "slot": 3,
+          "dimension": 7,
+          "base": 0.0742676854133606,
+          "teacher": -0.16664546728134155,
+          "expert": 0.02488342858850956
+        }
+      ]
+    },
+    {
+      "index": 198,
+      "record": {
+        "episode_index": 3653,
+        "source_sample_id": 481242,
+        "fast_sample_id": 481269,
+        "source_frame": 6,
+        "fast_frame": 33,
+        "lang_group_id": 24,
+        "lang_id": 2400,
+        "offset": 27,
+        "offset_label": "steady_state",
+        "split": "clean",
+        "task_name": "place_object_stand",
+        "episode_name": "53",
+        "dataset_index": 636444
+      },
+      "age": 9,
+      "history_dt": 0.18000000715255737,
+      "active_count": 48,
+      "teacher_delta_mse": 0.009820339269936085,
+      "expert_delta_mse": 0.010288718156516552,
+      "teacher_expert_mse": 6.585999653907493e-05,
+      "teacher_energy": 0.47137629985809326,
+      "expert_energy": 0.4938584566116333,
+      "max_teacher_delta": 0.32811737060546875,
+      "max_expert_delta": 0.3284010887145996,
+      "clip_teacher_count": 6,
+      "clip_expert_count": 7,
+      "top_coordinates": [
+        {
+          "slot": 1,
+          "dimension": 12,
+          "base": -2.7548489570617676,
+          "teacher": -2.426731586456299,
+          "expert": -2.426447868347168
+        },
+        {
+          "slot": 0,
+          "dimension": 12,
+          "base": -2.7451837062835693,
+          "teacher": -2.4233717918395996,
+          "expert": -2.426447868347168
+        },
+        {
+          "slot": 2,
+          "dimension": 12,
+          "base": -2.7493767738342285,
+          "teacher": -2.4292991161346436,
+          "expert": -2.4263291358947754
+        }
+      ]
+    },
+    {
+      "index": 111,
+      "record": {
+        "episode_index": 5903,
+        "source_sample_id": 760303,
+        "fast_sample_id": 760345,
+        "source_frame": 9,
+        "fast_frame": 51,
+        "lang_group_id": 4,
+        "lang_id": 400,
+        "offset": 42,
+        "offset_label": "steady_state",
+        "split": "randomized",
+        "task_name": "dump_bin_bigbin",
+        "episode_name": "53",
+        "dataset_index": 1001402
+      },
+      "age": 14,
+      "history_dt": 0.12400000542402267,
+      "active_count": 24,
+      "teacher_delta_mse": 0.01900751143693924,
+      "expert_delta_mse": 0.01892933063209057,
+      "teacher_expert_mse": 5.72033750358969e-05,
+      "teacher_energy": 0.45618027448654175,
+      "expert_energy": 0.45430392026901245,
+      "max_teacher_delta": 0.3566157817840576,
+      "max_expert_delta": 0.341137170791626,
+      "clip_teacher_count": 8,
+      "clip_expert_count": 8,
+      "top_coordinates": [
+        {
+          "slot": 0,
+          "dimension": 0,
+          "base": -1.635634422302246,
+          "teacher": -1.9922502040863037,
+          "expert": -1.976771593093872
+        },
+        {
+          "slot": 1,
+          "dimension": 0,
+          "base": -1.6447765827178955,
+          "teacher": -1.9860526323318481,
+          "expert": -1.976771593093872
+        },
+        {
+          "slot": 1,
+          "dimension": 2,
+          "base": 0.5692883133888245,
+          "teacher": 0.32696133852005005,
+          "expert": 0.31974923610687256
+        }
+      ]
+    }
+  ],
+  "tracking_rule": {
+    "formula": "clip(current_state - source_plan[age_actions-1], -0.1, 0.1), broadcast to four slots; age>0, valid tail, arm dimensions excluding 6/13",
+    "fitted_parameters": 0,
+    "preregistered": false,
+    "uses_teacher_or_expert_label": false,
+    "caveat": "current_state is on the expert offline trajectory; source_plan was not executed; not online policy effectiveness evidence"
+  },
+  "old_eval_artifacts": {
+    "zero": {
+      "root": "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control",
+      "extension_counts": {
+        ".json": 137,
+        ".jsonl": 1,
+        ".yml": 71,
+        ".txt": 62,
+        ".log": 70,
+        ".yaml": 1
+      },
+      "examples": {
+        ".json": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/run_contract.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/aggregate.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/episode_seed_manifest.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/launch.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/aggregate.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/results/shake_bottle_horizontally/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-shake_bottle_horizontally-slot0/2026-10-05 12:49:49/_episodes_detail.json"
+        ],
+        ".jsonl": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/STATUS.jsonl"
+        ],
+        ".yml": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/base_config.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/config_snapshots/shake_bottle_horizontally.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/rotate_qrcode/config_snapshots/rotate_qrcode.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_stand/config_snapshots/place_object_stand.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_playingcard_away/config_snapshots/move_playingcard_away.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle/config_snapshots/shake_bottle.yml"
+        ],
+        ".txt": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/results/shake_bottle_horizontally/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-shake_bottle_horizontally-slot0/2026-10-05 12:49:49/_result.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/results/shake_bottle_horizontally/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-shake_bottle_horizontally-slot0/2026-10-05 12:49:49/_metrics_report.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_stand/results/place_object_stand/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-place_object_stand-slot0/2026-10-05 13:25:09/_result.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_stand/results/place_object_stand/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-place_object_stand-slot0/2026-10-05 13:25:09/_metrics_report.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_playingcard_away/results/move_playingcard_away/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-move_playingcard_away-slot0/2026-10-05 11:53:03/_result.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_playingcard_away/results/move_playingcard_away/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/zero_plan_control-move_playingcard_away-slot0/2026-10-05 11:53:03/_metrics_report.txt"
+        ],
+        ".log": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/logs/slot0_gpu4.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/rotate_qrcode/logs/slot0_gpu3.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_stand/logs/slot0_gpu5.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_playingcard_away/logs/slot0_gpu2.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle/logs/slot0_gpu3.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_pillbottle_pad/logs/slot0_gpu5.log"
+        ],
+        ".yaml": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/config_audit/profile.yaml"
+        ]
+      },
+      "query_keys": [
+        "adapter_preprocess_ms",
+        "age_actions",
+        "decision_interval_sim_ms",
+        "decision_interval_wall_ms",
+        "feedback_enabled",
+        "mode",
+        "observation_to_action_ms",
+        "planner_graph",
+        "query_ms",
+        "residual_abs_max"
+      ],
+      "episode_summary_keys": [
+        "kinds",
+        "overrun_steps",
+        "steps"
+      ],
+      "other_potential_payload_prefixes": {
+        "PLAN-FEEDBACK-TIMING": 663
+      },
+      "raw_payload_key_matches": [],
+      "save_config_lines": {
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/base_config.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle_horizontally/config_snapshots/shake_bottle_horizontally.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/rotate_qrcode/config_snapshots/rotate_qrcode.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_stand/config_snapshots/place_object_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_playingcard_away/config_snapshots/move_playingcard_away.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/shake_bottle/config_snapshots/shake_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_pillbottle_pad/config_snapshots/move_pillbottle_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_bread_skillet/config_snapshots/place_bread_skillet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_a2b_right/config_snapshots/place_a2b_right.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_phone_stand/config_snapshots/place_phone_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/stamp_seal/config_snapshots/stamp_seal.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/hanging_mug/config_snapshots/hanging_mug.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/handover_mic/config_snapshots/handover_mic.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/handover_block/config_snapshots/handover_block.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_stapler_pad/config_snapshots/move_stapler_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/click_alarmclock/config_snapshots/click_alarmclock.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_shoe/config_snapshots/place_shoe.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/press_stapler/config_snapshots/press_stapler.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_mouse_pad/config_snapshots/place_mouse_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_fan/config_snapshots/place_fan.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/put_object_cabinet/config_snapshots/put_object_cabinet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/scan_object/config_snapshots/scan_object.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/put_bottles_dustbin/config_snapshots/put_bottles_dustbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_bread_basket/config_snapshots/place_bread_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/adjust_bottle/config_snapshots/adjust_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/grab_roller/config_snapshots/grab_roller.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_a2b_left/config_snapshots/place_a2b_left.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/move_can_pot/config_snapshots/move_can_pot.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/beat_block_hammer/config_snapshots/beat_block_hammer.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/click_bell/config_snapshots/click_bell.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_empty_cup/config_snapshots/place_empty_cup.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_container_plate/config_snapshots/place_container_plate.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_basket/config_snapshots/place_object_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_can_basket/config_snapshots/place_can_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/place_object_scale/config_snapshots/place_object_scale.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/tasks/dump_bin_bigbin/config_snapshots/dump_bin_bigbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/grab_roller.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/click_alarmclock.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_a2b_right.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_bread_skillet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/hanging_mug.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/move_can_pot.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_mouse_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/move_pillbottle_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/shake_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/stamp_seal.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/put_bottles_dustbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/dump_bin_bigbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/click_bell.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/rotate_qrcode.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/handover_mic.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_empty_cup.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_object_scale.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/move_playingcard_away.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_container_plate.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_object_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_bread_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/press_stapler.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/shake_bottle_horizontally.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_can_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/adjust_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_shoe.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_fan.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/scan_object.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_phone_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/handover_block.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_a2b_left.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/place_object_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/put_object_cabinet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/beat_block_hammer.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/eval/zero_plan_control/configs/move_stapler_pad.yml": [
+          "eval_video_log: false"
+        ]
+      }
+    },
+    "feedback": {
+      "root": "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback",
+      "extension_counts": {
+        ".json": 135,
+        ".jsonl": 1,
+        ".yml": 71,
+        ".txt": 60,
+        ".log": 70,
+        ".yaml": 1
+      },
+      "examples": {
+        ".json": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/run_contract.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/aggregate.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/episode_seed_manifest.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/launch.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/aggregate.json",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/results/shake_bottle_horizontally/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-shake_bottle_horizontally-slot0/2026-10-06 03:52:42/_episodes_detail.json"
+        ],
+        ".jsonl": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/STATUS.jsonl"
+        ],
+        ".yml": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/base_config.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/config_snapshots/shake_bottle_horizontally.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/rotate_qrcode/config_snapshots/rotate_qrcode.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_stand/config_snapshots/place_object_stand.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_playingcard_away/config_snapshots/move_playingcard_away.yml",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle/config_snapshots/shake_bottle.yml"
+        ],
+        ".txt": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/results/shake_bottle_horizontally/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-shake_bottle_horizontally-slot0/2026-10-06 03:52:42/_result.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/results/shake_bottle_horizontally/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-shake_bottle_horizontally-slot0/2026-10-06 03:52:42/_metrics_report.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/rotate_qrcode/results/rotate_qrcode/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-rotate_qrcode-slot0/2026-10-06 03:31:29/_result.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/rotate_qrcode/results/rotate_qrcode/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-rotate_qrcode-slot0/2026-10-06 03:31:29/_metrics_report.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_stand/results/place_object_stand/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-place_object_stand-slot0/2026-10-06 04:25:58/_result.txt",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_stand/results/place_object_stand/ciwam.adapters.domino.deploy_policy_plan_feedback/demo_clean_dynamic/feedback-place_object_stand-slot0/2026-10-06 04:25:58/_metrics_report.txt"
+        ],
+        ".log": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/logs/slot0_gpu3.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/rotate_qrcode/logs/slot0_gpu3.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_stand/logs/slot0_gpu6.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_playingcard_away/logs/slot0_gpu2.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle/logs/slot0_gpu6.log",
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_pillbottle_pad/logs/slot0_gpu1.log"
+        ],
+        ".yaml": [
+          "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/config_audit/profile.yaml"
+        ]
+      },
+      "query_keys": [
+        "adapter_preprocess_ms",
+        "age_actions",
+        "decision_interval_sim_ms",
+        "decision_interval_wall_ms",
+        "feedback_enabled",
+        "mode",
+        "observation_to_action_ms",
+        "planner_graph",
+        "query_ms",
+        "residual_abs_max"
+      ],
+      "episode_summary_keys": [
+        "kinds",
+        "overrun_steps",
+        "steps"
+      ],
+      "other_potential_payload_prefixes": {
+        "PLAN-FEEDBACK-TIMING": 653
+      },
+      "raw_payload_key_matches": [],
+      "save_config_lines": {
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/base_config.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle_horizontally/config_snapshots/shake_bottle_horizontally.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/rotate_qrcode/config_snapshots/rotate_qrcode.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_stand/config_snapshots/place_object_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_playingcard_away/config_snapshots/move_playingcard_away.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/shake_bottle/config_snapshots/shake_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_pillbottle_pad/config_snapshots/move_pillbottle_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_bread_skillet/config_snapshots/place_bread_skillet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_a2b_right/config_snapshots/place_a2b_right.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_phone_stand/config_snapshots/place_phone_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/stamp_seal/config_snapshots/stamp_seal.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/hanging_mug/config_snapshots/hanging_mug.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/handover_mic/config_snapshots/handover_mic.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/handover_block/config_snapshots/handover_block.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_stapler_pad/config_snapshots/move_stapler_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/click_alarmclock/config_snapshots/click_alarmclock.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_shoe/config_snapshots/place_shoe.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/press_stapler/config_snapshots/press_stapler.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_mouse_pad/config_snapshots/place_mouse_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_fan/config_snapshots/place_fan.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/put_object_cabinet/config_snapshots/put_object_cabinet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/scan_object/config_snapshots/scan_object.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/put_bottles_dustbin/config_snapshots/put_bottles_dustbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_bread_basket/config_snapshots/place_bread_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/adjust_bottle/config_snapshots/adjust_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/grab_roller/config_snapshots/grab_roller.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_a2b_left/config_snapshots/place_a2b_left.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/move_can_pot/config_snapshots/move_can_pot.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/beat_block_hammer/config_snapshots/beat_block_hammer.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/click_bell/config_snapshots/click_bell.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_empty_cup/config_snapshots/place_empty_cup.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_container_plate/config_snapshots/place_container_plate.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_basket/config_snapshots/place_object_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_can_basket/config_snapshots/place_can_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/place_object_scale/config_snapshots/place_object_scale.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/tasks/dump_bin_bigbin/config_snapshots/dump_bin_bigbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/grab_roller.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/click_alarmclock.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_a2b_right.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_bread_skillet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/hanging_mug.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/move_can_pot.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_mouse_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/move_pillbottle_pad.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/shake_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/stamp_seal.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/put_bottles_dustbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/dump_bin_bigbin.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/click_bell.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/rotate_qrcode.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/handover_mic.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_empty_cup.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_object_scale.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/move_playingcard_away.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_container_plate.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_object_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_bread_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/press_stapler.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/shake_bottle_horizontally.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_can_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/adjust_bottle.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_shoe.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_fan.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/scan_object.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_phone_stand.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/handover_block.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_a2b_left.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/place_object_basket.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/put_object_cabinet.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/beat_block_hammer.yml": [
+          "eval_video_log: false"
+        ],
+        "/SSD_DISK_1/users/wuruihan/DynamicWAM/outputs/training/plan_feedback_v1_20261005/continuation_20261006/eval/feedback/configs/move_stapler_pad.yml": [
+          "eval_video_log: false"
+        ]
+      }
+    }
+  },
+  "onpolicy_recoverable": false,
+  "onpolicy_limit": "Scoped to two formal eval output roots and their frozen writer code; seeds/timing cannot reconstruct exact RGB, state, source plan, executed actions or RNG",
+  "files": {
+    "analyze_singlelag_probe.py": "3b94e91f2533d0adf8323a45400d07f906ec2839f8f76bcc185def6fe6418a5f",
+    "read_singlelag_targets.sh": "27a801ba5d382fbef7ed695d15e0abf7cb7ee7b38a10abe7b34435cb07b9a3f3",
+    "read_onpolicy_artifacts.sh": "c4b0713cc6573873e6ea5578afd178558f3f03c4ff56f5b9744520055b18a3da",
+    "singlelag_probe_audit.json": "5ea28b5080c57fdf693ec4e1aaadf798fc0de1d74ee706f9a7d47e60788574be",
+    "singlelag_targets_raw.json": "5a1e8baae72aefe5814c13cd45e19137ec12e7511c3dc1accd1a6ef2404ddfad",
+    "onpolicy_artifacts_raw.json": "18068c7274d58c0b5ec6a5f51e7968b384619942c1dda7265eed23147f837c9f"
+  },
+  "independent_pretrained_subset_diagnostic": {
+    "path": "C:\\Users\\31521\\Documents\\Codex\\2026-09-20\\192-22-ssd-lila\\work\\plan-feedback-v2-20261006\\tree\\docs\\temporal_feedback_evidence_20261006\\pretrained_v1_probe_diagnostic.json",
+    "sha256": "ce099dab42873ced2967fb11f6388dfb2a34493f0acce6c58fb20bee82f7ec30",
+    "scope": "Independent agent CPU model forward on 45 old-age rows from the same preserved cache; descriptive, not preregistered gate",
+    "metrics": {
+      "zero": 0.00106428,
+      "pretrained_v1": 0.00102677,
+      "scratch_static": 0.00121231,
+      "scratch_temporal": 0.00123707
+    }
+  }
+}

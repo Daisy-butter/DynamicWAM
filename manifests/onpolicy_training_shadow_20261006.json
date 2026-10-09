@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "purpose": "on-policy training-state diagnostic; not official evaluation",
+  "tasks": {
+    "place_shoe": [
+      0,
+      8
+    ],
+    "place_fan": [
+      1,
+      3
+    ],
+    "adjust_bottle": [
+      1,
+      5
+    ]
+  },
+  "source_split": "clean",
+  "task_config": "absolute_motion_clean",
+  "equivalent_eval_task_config": "demo_clean_dynamic",
+  "source_episode_names": [
+    "0",
+    "1"
+  ],
+  "selection": "first two ascending accepted source episode indices in existing training partition",
+  "partition": {
+    "seed": 20260928,
+    "validation_fraction": 0.1
+  },
+  "episode_partition_evidence": {
+    "episode_manifest_path": "/SSD_DISK/users/wuruihan/DynamicWAM/data/packed/domino_absolute_motion_v2/episodes.jsonl",
+    "episode_manifest_sha256": "ddca297bf06d184a3912f199d77db2aa6777ef2de762f18cb9147e311e4f0d48",
+    "row_example": {
+      "episode_id": 0,
+      "episode_name": "0",
+      "first_sample_id": 0,
+      "lang_group_id": 0,
+      "sample_count": 87,
+      "split": "clean",
+      "task_name": "adjust_bottle"
+    },
+    "selected": {
+      "place_shoe": {
+        "episodes_in_packed": 150,
+        "validation_episode_names": [
+          "12",
+          "33",
+          "34",
+          "37",
+          "43",
+          "47",
+          "55",
+          "104",
+          "108",
+          "113",
+          "122",
+          "125",
+          "131",
+          "142",
+          "147"
+        ],
+        "episodes": [
+          {
+            "episode_id": 3900,
+            "episode_name": "0",
+            "first_sample_id": 502285,
+            "lang_group_id": 26,
+            "sample_count": 128,
+            "split": "clean",
+            "task_name": "place_shoe",
+            "environment_seed": 0,
+            "partition": "train"
+          },
+          {
+            "episode_id": 3901,
+            "episode_name": "1",
+            "first_sample_id": 502413,
+            "lang_group_id": 26,
+            "sample_count": 127,
+            "split": "clean",
+            "task_name": "place_shoe",
+            "environment_seed": 8,
+            "partition": "train"
+          }
+        ],
+        "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/data/raw/clean/place_shoe/absolute_motion_clean/seed.txt"
+      },
+      "place_fan": {
+        "episodes_in_packed": 150,
+        "validation_episode_names": [
+          "17",
+          "19",
+          "21",
+          "22",
+          "35",
+          "53",
+          "74",
+          "78",
+          "85",
+          "87",
+          "91",
+          "99",
+          "102",
+          "106",
+          "138"
+        ],
+        "episodes": [
+          {
+            "episode_id": 3000,
+            "episode_name": "0",
+            "first_sample_id": 391243,
+            "lang_group_id": 20,
+            "sample_count": 110,
+            "split": "clean",
+            "task_name": "place_fan",
+            "environment_seed": 1,
+            "partition": "train"
+          },
+          {
+            "episode_id": 3001,
+            "episode_name": "1",
+            "first_sample_id": 391353,
+            "lang_group_id": 20,
+            "sample_count": 132,
+            "split": "clean",
+            "task_name": "place_fan",
+            "environment_seed": 3,
+            "partition": "train"
+          }
+        ],
+        "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/data/raw/clean/place_fan/absolute_motion_clean/seed.txt"
+      },
+      "adjust_bottle": {
+        "episodes_in_packed": 150,
+        "validation_episode_names": [
+          "6",
+          "8",
+          "31",
+          "32",
+          "37",
+          "41",
+          "53",
+          "66",
+          "67",
+          "71",
+          "83",
+          "98",
+          "102",
+          "116",
+          "133"
+        ],
+        "episodes": [
+          {
+            "episode_id": 0,
+            "episode_name": "0",
+            "first_sample_id": 0,
+            "lang_group_id": 0,
+            "sample_count": 87,
+            "split": "clean",
+            "task_name": "adjust_bottle",
+            "environment_seed": 1,
+            "partition": "train"
+          },
+          {
+            "episode_id": 1,
+            "episode_name": "1",
+            "first_sample_id": 87,
+            "lang_group_id": 0,
+            "sample_count": 102,
+            "split": "clean",
+            "task_name": "adjust_bottle",
+            "environment_seed": 5,
+            "partition": "train"
+          }
+        ],
+        "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/data/raw/clean/adjust_bottle/absolute_motion_clean/seed.txt"
+      }
+    }
+  },
+  "official_exclusion": {
+    "episodes": 700,
+    "tasks": 35,
+    "min_seed": 100000,
+    "max_seed": 100469,
+    "overlap": [],
+    "evidence_sha256": "885e4cef95cb08db1f0caca6af53db661911d3649b6275df5b787941bd353e2f"
+  },
+  "restrictions": [
+    "Do not replace a fixed seed if preparation fails; record the missing diagnostic episode.",
+    "Existing expert acceptance does not guarantee regenerated preparation or trajectory equivalence.",
+    "New observations must come from actual behavior-policy execution; old expert trajectories are not on-policy states.",
+    "Current task config was inspected; this is not a claim of bit-identical historic configuration or motion replay."
+  ]
+}

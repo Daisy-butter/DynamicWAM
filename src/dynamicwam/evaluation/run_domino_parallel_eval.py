@@ -17,6 +17,37 @@ from pathlib import Path
 from typing import Any
 
 
+def validate_fixed_episode_seeds(value, *, requested: int, slot_count: int, start_seed: int):
+    """Validate explicit environment seeds before launching a worker.
+
+    A fixed manifest is one ordered task trajectory list. It cannot be split
+    with the legacy GPU-slot seed-stride rule or silently expanded by DOMINO.
+    """
+    if value is None:
+        return None
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
+        raise ValueError("fixed_episode_seeds requires a positive requested episode count")
+    if isinstance(start_seed, bool) or not isinstance(start_seed, int) or start_seed < 0:
+        raise ValueError("fixed_episode_seeds requires a nonnegative integer start_seed")
+    if slot_count != 1:
+        raise ValueError("fixed_episode_seeds requires exactly one GPU slot per task")
+    if not isinstance(value, list) or len(value) != requested:
+        raise ValueError("fixed_episode_seeds length must equal requested episodes")
+    if any(isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or seed < start_seed for seed in value):
+        raise ValueError("fixed_episode_seeds must contain nonnegative integers >= start_seed")
+    if any(left >= right for left, right in zip(value, value[1:])):
+        raise ValueError("fixed_episode_seeds must be unique and strictly increasing")
+    return list(value)
+
+
+def episode_seed_sequence_matches(episodes, expected_seeds):
+    """Compare report order exactly; equal start seeds are insufficient."""
+    if expected_seeds is None:
+        return True
+    values = [episode.get("seed") for episode in episodes]
+    return all(isinstance(seed, int) and not isinstance(seed, bool) for seed in values) and values == expected_seeds
+
+
 def _write_json(path: Path, value: Any) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
@@ -310,6 +341,13 @@ def main() -> int:
     config_path = Path(args.config).resolve()
     if not config_path.exists():
         raise FileNotFoundError(config_path)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError(f"eval config must be a mapping: {config_path}")
+    fixed_episode_seeds = validate_fixed_episode_seeds(
+        config.get("fixed_episode_seeds"), requested=int(args.total_episodes),
+        slot_count=len(gpus), start_seed=args.start_seed,
+    )
     curobo_root = _validated_curobo_root(args.curobo_root)
     probe_env = _child_env(
         gpu=gpus[0],
@@ -332,9 +370,6 @@ def main() -> int:
     snapshots_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_path, snapshots_root / config_path.name)
 
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(config, dict):
-        raise ValueError(f"eval config must be a mapping: {config_path}")
     task_name = str(config["task_name"])
     policy_name = str(config["policy_name"])
     task_config = str(config["task_config"])
@@ -365,6 +400,7 @@ def main() -> int:
         "base_start_seed": base_start_seed,
         "slot_seed_stride": int(args.slot_seed_stride),
         "episodes_per_slot": episode_counts,
+        **({"fixed_episode_seeds": fixed_episode_seeds} if fixed_episode_seeds is not None else {}),
         "slots": [],
     }
 
@@ -484,12 +520,13 @@ def main() -> int:
                     report,
                     telemetry=telemetry,
                 )
+                seeds_match = episode_seed_sequence_matches(compact, fixed_episode_seeds)
                 videos = [
                     run_dir / f"episode{index}.mp4" for index in range(len(report))
                 ]
                 record.update(
                     {
-                        "status": "complete",
+                        "status": "complete" if seeds_match else "seed_manifest_mismatch",
                         "run_dir": str(run_dir),
                         "report": str(report_path),
                         "metrics": str(run_dir / "_metrics.json"),
@@ -503,6 +540,9 @@ def main() -> int:
                         "policy_summary": telemetry[-1] if telemetry else None,
                         "seeds_reported": True,
                         "seed_sequence": [episode["seed"] for episode in compact],
+                        **({"fixed_episode_seeds": fixed_episode_seeds,
+                            "episode_seed_manifest_matches": seeds_match}
+                           if fixed_episode_seeds is not None else {}),
                     }
                 )
                 if len(report) == 1:
@@ -529,6 +569,7 @@ def main() -> int:
     seeds_reported = len(episodes) == total_episodes and all(
         episode.get("seed_source") == "report" for episode in episodes
     )
+    seeds_match = episode_seed_sequence_matches(episodes, fixed_episode_seeds)
     aggregate = {
         "finished_unix": time.time(),
         "requested_episodes": total_episodes,
@@ -539,6 +580,9 @@ def main() -> int:
         "base_start_seed": base_start_seed,
         "seeds_reported": seeds_reported,
         "seed_sequence": [episode["seed"] for episode in episodes],
+        **({"fixed_episode_seeds": fixed_episode_seeds,
+            "episode_seed_manifest_matches": seeds_match}
+           if fixed_episode_seeds is not None else {}),
         "episodes": episodes,
         "slots": slot_records,
     }
@@ -554,6 +598,7 @@ def main() -> int:
         if len(episodes) == total_episodes
         and complete_slots == len(gpus)
         and seeds_reported
+        and seeds_match
         else 2
     )
 

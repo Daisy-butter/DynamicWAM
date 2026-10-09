@@ -55,21 +55,8 @@ class AbsoluteMotionTokenModule(nn.Module):
             torch.randn(1, 1, self.dim) * init_scale
         )
 
-    def forward(
-        self,
-        features: torch.Tensor,
-        interval_valid: torch.Tensor,
-        acceleration_valid: torch.Tensor,
-        *,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        features = features.to(device=device, dtype=torch.float32)
-        interval_valid = interval_valid.to(device=device, dtype=torch.bool)
-        acceleration_valid = acceleration_valid.to(
-            device=device,
-            dtype=torch.bool,
-        )
+    def validate_inputs(self, features, interval_valid, acceleration_valid) -> None:
+        """Validate before CUDA capture; regular training still validates every call."""
         expected_features = (
             features.shape[0],
             self.history_count,
@@ -96,6 +83,21 @@ class AbsoluteMotionTokenModule(nn.Module):
         if not bool(torch.isfinite(features).all()):
             raise ValueError("absolute_motion_features contains non-finite values")
 
+    def forward(
+        self,
+        features: torch.Tensor,
+        interval_valid: torch.Tensor,
+        acceleration_valid: torch.Tensor,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+        validate_inputs: bool = True,
+    ) -> torch.Tensor:
+        features = features.to(device=device, dtype=torch.float32)
+        interval_valid = interval_valid.to(device=device, dtype=torch.bool)
+        acceleration_valid = acceleration_valid.to(device=device, dtype=torch.bool)
+        if validate_inputs:
+            self.validate_inputs(features, interval_valid, acceleration_valid)
         normalized = (
             features - self.feature_mean.to(device=device)
         ) / self.feature_scale.to(device=device)
@@ -119,3 +121,8 @@ class AbsoluteMotionTokenModule(nn.Module):
             + (interval_valid & ~acceleration_valid)[..., None].to(dtype=dtype)
             * self.invalid_acceleration.to(device=device, dtype=dtype)
         )
+
+    def encode_validated(self, features, interval_valid, acceleration_valid, *, dtype, device):
+        """Encode inputs checked outside the capture; never the default train path."""
+        return self(features, interval_valid, acceleration_valid, dtype=dtype, device=device,
+                    validate_inputs=False)

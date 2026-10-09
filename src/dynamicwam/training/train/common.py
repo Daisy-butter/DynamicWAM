@@ -113,9 +113,11 @@ def get_tracker_init_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def build_accelerator(
     config: Dict[str, Any],
     deepspeed_config: Dict[str, Any],
+    *,
+    even_batches: bool = True,
 ):
     from accelerate import Accelerator
-    from accelerate.utils import DeepSpeedPlugin, ProjectConfiguration
+    from accelerate.utils import DataLoaderConfiguration, DeepSpeedPlugin, ProjectConfiguration
 
     run_dir = get_run_dir(config)
     log_dir = get_log_dir(config)
@@ -130,6 +132,7 @@ def build_accelerator(
             logging_dir=str(log_dir),
             total_limit=int(config["checkpoint_total_limit"]),
         ),
+        dataloader_config=DataLoaderConfiguration(even_batches=bool(even_batches)),
     )
     if config["device"] != "cuda" or accelerator.device.type != "cuda":
         raise RuntimeError(
