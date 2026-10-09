@@ -149,6 +149,33 @@ def external_source_identity(root):
     return dict(root=str(root),sha256=object_hash(files),files=files)
 
 
+def compare_external_source_identities(expected,actual):
+    """Permit only a storage-root relocation, never different source contents.
+
+    Callers obtain ``actual`` with external_source_identity(), which hashes the
+    current bytes. The legacy manifest has no explicit format/version fields;
+    if either side adds them (or any other metadata), those fields must match
+    exactly. Historical manifests are evidence and are never rewritten here.
+    """
+    for value in (expected,actual):
+        if (not isinstance(value,dict) or not isinstance(value.get('root'),str) or not value['root'] or
+            not isinstance(value.get('files'),dict) or not value['files']):
+            raise IdentityViolation('external source identity schema is incomplete')
+        for name,digest in value['files'].items():
+            if (not isinstance(name,str) or not name or name.startswith('/') or '\\' in name or
+                any(part in ('','..','.') for part in name.split('/')) or
+                not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest)):
+                raise IdentityViolation('external source file identity is malformed')
+        if value.get('sha256')!=object_hash(value['files']):
+            raise IdentityViolation('external source aggregate hash does not match its file manifest')
+    if {k:v for k,v in expected.items() if k!='root'}!={k:v for k,v in actual.items() if k!='root'}:
+        raise IdentityViolation('external source format, file map or content hash changed')
+    return dict(format='dynamicwam_external_source_path_comparison',version=1,
+        old_root=expected['root'],new_root=actual['root'],relocated=expected['root']!=actual['root'],
+        content_sha256=actual['sha256'],file_count=len(actual['files']),
+        scope='root path only; current file bytes rehashed; historical manifest unchanged')
+
+
 def validate_profile(report):
     xs = report.get('fast_samples_ms')
     if (not isinstance(xs,list) or len(xs)<20 or
@@ -380,8 +407,10 @@ class Pipeline:
         self.scenes=read_json(self.run/'scene_manifest.json'); self.accepted={}
         self.preparation_missing={};self.domino_source=None
         self.external=read_json(self.run/'external_source_manifest.json')
-        if external_source_identity(self.external['root'])!=self.external:
-            raise IdentityViolation('external DOMINO source changed before execution')
+        self.external_path_comparison=compare_external_source_identities(self.external,
+            external_source_identity(self.external['root']))
+        if self.external_path_comparison['relocated']:
+            write_json(self.run/'external_source_relocation.json',self.external_path_comparison,exclusive=True)
         self.external_stats={name:(Path(self.external['root'])/name).stat() for name in self.external['files']}
         self.base=identity(self.config['base_checkpoint'])
         self.input_stats={}

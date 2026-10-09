@@ -7,15 +7,15 @@ __pycache__/
 .cache/
 .coverage
 htmlcov/
-.venv/
+/.venv
 .venv-*/
 build/
 dist/
 *.egg-info/
 
-/outputs/
-/data/
-/external/*
+/outputs
+/data
+/external
 /_trash/
 
 *.pt

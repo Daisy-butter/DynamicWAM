@@ -395,7 +395,10 @@ def freeze(args):
         sample_budgets=RECIPES,seed=20261009)
     if args.accepted_run:
         external=read_json(args.accepted_run/'external_source_manifest.json')
-        if external!=read_json(run/'external_source_manifest.json'):raise core.IdentityViolation('old accepted source differs')
+        comparison=core.compare_external_source_identities(external,read_json(run/'external_source_manifest.json'))
+        config['accepted_external_source_comparison']=dict(comparison,
+            original_manifest=identity(args.accepted_run/'external_source_manifest.json'),
+            current_manifest=identity(run/'external_source_manifest.json'))
         config['accepted_pairing']=identity(args.accepted_run/'paired_scene_manifest.json')
     scenes=read_json(run/'scene_manifest.json')
     subset=mechanism_scenes([s for s in scenes['episodes'] if s['role']=='formal'])
