@@ -1,0 +1,178 @@
+{
+  "audit_date": "2026-10-09",
+  "scope": "Read-only timing contract audit; no eval success metrics used for parameter choice.",
+  "checkpoint": {
+    "path": "/SSD_DISK/users/wuruihan/wam/external/hf_dynamicwam_release/external/checkpoints/DynamicWAM_full.pt",
+    "sha256": "7c0dfc44a785ea1f6bd1f833f09dcadc2e470dadb1ba5508fa98918e147671d7",
+    "matches_release_manifest": true,
+    "hub_repo": "KhalilGao/DynamicWAM",
+    "hub_revision": "925cbb7aef5033c924f809ae87479d39fe9f76ff",
+    "format": "dynamicwam_absolute_motion_checkpoint",
+    "version": 2,
+    "public_network_verification": "Unavailable on this audit. Manifest and actual artifact hash matched; checkpoint contents directly inspected.",
+    "dataset_identity": {
+      "action_stats_sha256": "730a91e41b6a23c70cec49cd222835373ba9364680da5753f4408c5534319b04",
+      "dataset_fingerprint": "2feac8645817e3a896afd855341130f23a6d92bfd28917f4cb3e2dbb4eb68154",
+      "format": "dynamicwam_absolute_motion_dataset",
+      "motion_statistics_sha256": "7a2109f0d93418e9bc3b5c1c6c9961ac7afbda61f672a153b999e8df385a01b4",
+      "root": "/data/wam-project/experiments/absolute_motion_v2/data/packed/DOMINO_absolute_motion_v2",
+      "version": 2
+    },
+    "action_normalization": {
+      "enabled": true,
+      "type": "mean_std",
+      "epsilon": 1e-06,
+      "stats_sha256": "730a91e41b6a23c70cec49cd222835373ba9364680da5753f4408c5534319b04"
+    },
+    "action_dimension": 14,
+    "motion_dt_feature_mean_seconds": 0.6448150904876828,
+    "motion_dt_feature_scale_seconds": 0.06971438394612384,
+    "motion_policy_stride": 4,
+    "motion_history_count": 4,
+    "timestamp_source": "domino_schema_v2.sim_time_seconds"
+  },
+  "training_sampling": {
+    "action_indices": "condition_raw_index + 3 * (action_step + 1), action_step=0..15",
+    "action0_offset_raw_frames": 3,
+    "action_stride_raw_frames": 3,
+    "chunk_last_offset_raw_frames": 48,
+    "flow_endpoint_offsets_raw_frames": [
+      -48,
+      -36,
+      -24,
+      -12,
+      0
+    ],
+    "flow_interval_raw_frames": 12,
+    "no_fixed_raw_frame_time_guarantee": true,
+    "container_fps_is_not_physics_clock": true,
+    "action_stats_do_not_encode_time": true
+  },
+  "local_training_data_cross_check": {
+    "root": "/SSD_DISK/users/wuruihan/wam/datasets/raw",
+    "sample_rule": "First 2 numeric episode IDs per task for both clean and randomized; timestamps only; no eval-based selection",
+    "sample_episodes": 140,
+    "raw_stride_seconds": {
+      "1": {
+        "n": 25167,
+        "mean": 0.05373481401171746,
+        "std": 0.017399207500366016,
+        "minimum": 0.0,
+        "p05": 0.004000000189989805,
+        "median": 0.06000000284984708,
+        "p95": 0.06000000284984708,
+        "maximum": 0.06000000284984708
+      },
+      "3": {
+        "n": 24887,
+        "mean": 0.16183196814789066,
+        "std": 0.03994534832357568,
+        "minimum": 0.004000000189989805,
+        "p05": 0.06400000303983688,
+        "median": 0.18000000854954123,
+        "p95": 0.18000000854954123,
+        "maximum": 0.18000000854954123
+      },
+      "6": {
+        "n": 24467,
+        "mean": 0.32346688911216614,
+        "std": 0.05679383417414546,
+        "minimum": 0.16400000778958201,
+        "p05": 0.20400000968948007,
+        "median": 0.36000001709908247,
+        "p95": 0.36000001709908247,
+        "maximum": 0.36000001709908247
+      },
+      "12": {
+        "n": 23627,
+        "mean": 0.645027668509095,
+        "std": 0.06951983274119611,
+        "minimum": 0.3720000176690519,
+        "p05": 0.5480000260286033,
+        "median": 0.636000030208379,
+        "p95": 0.7200000341981649,
+        "maximum": 0.7200000341981649
+      },
+      "48": {
+        "n": 18587,
+        "mean": 2.559980753216809,
+        "std": 0.08925609570820255,
+        "minimum": 2.076000098604709,
+        "p05": 2.4212001150008295,
+        "median": 2.5800001225434244,
+        "p95": 2.7160001290030777,
+        "maximum": 2.8800001367926598
+      }
+    },
+    "official_training_dataset_identity_match": false,
+    "official_pinned_dataset_copy_search": {
+      "search_roots": [
+        "/SSD_DISK/users/wuruihan/wam/datasets",
+        "/SSD_DISK/users/wuruihan/wam/external/hf_dynamicwam_release",
+        "/home/wuruihan/DynamicWAM"
+      ],
+      "max_depth": 4,
+      "filename_filter": [
+        "dataset.json",
+        "dataset_manifest.json",
+        "manifest.json"
+      ],
+      "rows": [
+        {
+          "path": "/SSD_DISK/users/wuruihan/wam/datasets/interception_v1/manifest.json",
+          "format": null,
+          "dataset_fingerprint": null,
+          "dataset_identity": null,
+          "episode_count": null
+        },
+        {
+          "path": "/SSD_DISK/users/wuruihan/wam/datasets/domino_absolute_motion_v2/dataset.json",
+          "format": "dynamicwam_absolute_motion_dataset",
+          "dataset_fingerprint": "3e20d9217b13c7ac508094f1d1b77395f2f338131ca5a23ec3238bf18176494e",
+          "dataset_identity": null,
+          "episode_count": 10500
+        }
+      ],
+      "official_dataset_fingerprint": "2feac8645817e3a896afd855341130f23a6d92bfd28917f4cb3e2dbb4eb68154",
+      "matching_copies": [],
+      "status": "Unknown beyond inspected roots; no broad filesystem scan or large dataset download."
+    },
+    "official_pinned_dataset_availability": "No matching dataset fingerprint found within the inspected existing data/release/project roots. Availability elsewhere is unknown.",
+    "limitation": "The local recollected 10500-episode dataset is not the identical official training dataset. Its small timestamp-only sample corroborates the same collection/sampling time scale, rather than proving the full official action-time distribution.",
+    "local_packed_motion_stats_warning": "Local packed motion statistics were changed by later blob experiments. Use checkpoint embedded official motion normalization, never overwrite it with local packed metadata."
+  },
+  "recommended_continuous_sync_contract": {
+    "selection_rule": "Nearest physics tick to official checkpoint delta_t mean / policy_stride; cross-check against local raw action/flow timestamps. No parameter selected from evaluation outcomes.",
+    "physics_dt_seconds": 0.004,
+    "unquantized_action_interval_seconds": 0.1612037726219207,
+    "nominal_action_interval_ticks": 40,
+    "nominal_action_interval_seconds": 0.16,
+    "nominal_full16_duration_seconds": 2.56,
+    "nominal_history_frame_interval_seconds": 0.16,
+    "nominal_flow_endpoint_interval_seconds": 0.64,
+    "flow_history_endpoint_offsets_seconds": [
+      -2.56,
+      -1.92,
+      -1.28,
+      -0.64,
+      0.0
+    ],
+    "actual_observation_timestamps_required": true,
+    "robot_limits_may_extend_trajectory_duration": true,
+    "trajectory_limits_note": "160 ms is the training-calibrated nominal waypoint spacing, not permission to violate velocity/acceleration bounds. Use one continuous time-parameterized 16-waypoint trajectory and record any stretching.",
+    "history_note": "Schedule history by physical time, independently of waypoint completions. Use exact capture timestamps in motion velocity/acceleration features. Missing/late intervals must be flagged, not assigned fictional 160/640 ms timestamps.",
+    "startup_note": "Do not pause or prefill the world to fabricate pre-episode history. Preserve invalid history masking until enough real past observations exist.",
+    "sync_note": "Query only after the full previous 16 targets finish; hold last target during observation/inference/trajectory preparation. No RTC, no prefix dropping, no query/execution overlap."
+  },
+  "evidence": {
+    "dataset_source_file": "/home/wuruihan/DynamicWAM/src/dynamicwam/training/data/robotwin2/robotwin_agilex_dataset.py:204",
+    "dataset_source_sha256": "a74c3b3ffc2d90664b81608eb570d8dfb4962124d58d7a2c390a97c52034e116",
+    "flow_source_file": "/home/wuruihan/DynamicWAM/src/dynamicwam/absolute_motion.py:149",
+    "flow_source_sha256": "4aba6875024f3f98524aaa27515ec41759087a10f0f4175fe1deccdf2e43e618",
+    "sample_script": "timing_sample.sh",
+    "sample_script_sha256": "a98ce8d42d92d8a807a01f60d06dc9e570ea41b1bd431141b7b54b8fbf5affea",
+    "sample_raw_output": "timing_sample.json",
+    "sample_raw_output_sha256": "01136de406fde4c6680043bf870baa3a469c4794a62aca2669a0628b4d2aeb06",
+    "checkpoint_contract_raw_output": "timing_checkpoint_contract.txt"
+  }
+}

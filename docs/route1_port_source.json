@@ -1,0 +1,48 @@
+{
+  "source_host": "10.12.208.92",
+  "source_root": "/home/wuruihan/DynamicWAM",
+  "source_head": "dfbec6087fee8f23b1560f37f8374d75f6888df9",
+  "source_domino_head": "93d485a34a6e710bb4c895d83e2bb0520a9f169e",
+  "source_archive": "/SSD_DISK/users/wuruihan/route1_source_archive_20261013",
+  "source_archive_sha256": "68dff553dae9725754c0b7ecead2c3ed2586d4bbb371c1757f56997164e1c8d3",
+  "source_files_sha256": {
+    "src/dynamicwam/runtime/domino_rt/continuous_sync.py": "9476b9238f3cbb2c3a7d57ecae6ace370eea2ad6896c4ab9432597f118fd19a8",
+    "src/dynamicwam/runtime/domino_rt/continuous_session.py": "8634dcc949eee48f71a719c305d78843f8932ae0aeda75556ee1df1a56a36d07",
+    "src/dynamicwam/runtime/domino_rt/continuous_track.py": "e393f4251a5fa89186b1790cbcc822ef61a9e5cc457991a943ee78660c30d659",
+    "src/dynamicwam/runtime/domino_rt/continuous_track_v2.py": "3e48230d726e35c3833b48422a1f605c9697b6ce15dbc3f0830d17e0b1321edd",
+    "src/dynamicwam/runtime/domino_rt/camera_capture.py": "160a5ce8e08697357e6545a39e5c44989cb7aa569a6ca8490aa2f19bbe196177",
+    "src/dynamicwam/runtime/domino_rt/camera_stream.py": "95b57f15b373ab7d6b08d87f7357f28d12f8155ad42ef6293a6e36e85752097b",
+    "src/dynamicwam/runtime/domino_rt/wall_sync.py": "e7301e95f5683429866d8caef9f8b5a9d39b73b4c31c9854736822b92eb12974",
+    "src/dynamicwam/runtime/domino_rt/domino_session.py": "082f47cda98c131e0c6a026089707256cbbef340799e12997b1f6b0868de1302",
+    "src/dynamicwam/runtime/domino_rt/segment.py": "67a7f0e3c6b8651c30d8923f98cb249a68869da883df9b372b572de611d12971",
+    "src/dynamicwam/runtime/domino_rt/motion.py": "9730ff5843a0aec904511fff5119b93c6fee0af687cad0e547ea4b93c543b952",
+    "src/dynamicwam/runtime/domino_rt/worker.py": "16ad3b33976d25307c11ada2477548e7ed9d3d02e004fb0fa62a9e32db54b9b0",
+    "src/dynamicwam/runtime/domino_rt/test_camera_capture.py": "4c757c8905d259d2366e7ecf611fd054ed4939be4868824f7909d6507b0bd430",
+    "src/dynamicwam/runtime/domino_rt/test_wall_sync.py": "d5d5c1afcc5c2da2dcfbe87f641bb5b2786a7ee784027e17ae91b181ff2d069b",
+    "scripts/eval_domino_continuous_sync.py": "80443ebec034975aa5cff442cc123a66ec680ac5450f04da9ef815c53bc28127",
+    "scripts/eval_domino_continuous_sync_suite.py": "721f4ece1ed971d0c8ce1116898ceee149a66cc429f8973d749571fc9ce9a50e",
+    "scripts/summarize_domino_continuous_sync.py": "f2054de9f19c8e414c28fad6caa685195b60a3a8b4e388573e3012665f39f731",
+    "scripts/video_artifacts.py": "ed61f9c56a520e03f9db88392b11a66725dd930539b38825c6b7fbb60bf8474a",
+    "src/dynamicwam/runtime/domino_rt/native_camera/build_color_reader.py": "7b6fdc6268ee5d66d7818c3b0ab46fce63b68b7433aea8b3c0f9533e47bfcdb8",
+    "src/dynamicwam/runtime/domino_rt/native_camera/README.md": "90ad5d0e33d754abe827fbfa8213e797ffe4b2746a9e34dba863e49ef345faef",
+    "src/dynamicwam/runtime/domino_rt/native_camera/sapien_color_reader.cpp": "d4592eb7be3c8c337ef23ca4c5ed5b7ce72c2d181860a725e9098ec82d6ec21f",
+    "src/dynamicwam/runtime/domino_rt/_sapien_color_reader.build.json": "03213daf0120444f95b6459bd04b6b22cd86cb8b7adb8f374fc189c78111088a",
+    "src/dynamicwam/runtime/domino_rt/_sapien_color_reader.cpython-310-x86_64-linux-gnu.so": "829c401e7f1baa487149d281431e63f126a9ad9612d6d81154e8ed3c23cd06b0",
+    "docs/domino_continuous_sync_timing_20261009.json": "d9374b51933155babd6dbb64452fb66d35d734949d0b53b562cf5711ac978b2e",
+    "DOMINO_CONTINUOUS_SYNC.md": "5a486d7b8e6e911192810d18afbeb85f193d4c982b91d2d518c65f80a5c1f9f4"
+  },
+  "target_base": "2b72bc4ed9277a07f2b53d34966c7aac05bd5a89",
+  "target_domino_head": "6c5a00db1bf9fbe496b19876f84d0189a7aaf86f",
+  "domino_critical_files_identical": {
+    "external/DOMINO/envs/_base_task.py": true,
+    "external/DOMINO/script/eval_policy.py": true,
+    "external/DOMINO/script/eval_metrics.py": true,
+    "external/DOMINO/task_config/demo_clean_dynamic.yml": true
+  },
+  "adaptations": [
+    "isolated domino_continuous namespace",
+    "no interception checkpoint monkeypatch; existing target policy loader",
+    "UUID GPU arguments, SSD launch gates, status heartbeat"
+  ],
+  "acceptance": "accepted by explicit user MP4 review; see docs/route1_port_receipt.json"
+}

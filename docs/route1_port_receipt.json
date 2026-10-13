@@ -1,0 +1,1471 @@
+{
+  "created_unix_s": 1791897798.3343356,
+  "route": "Route1",
+  "host": "10.12.208.50",
+  "branch": "feat/route1-continuous-port-20261013",
+  "base_commit": "2b72bc4ed9277a07f2b53d34966c7aac05bd5a89",
+  "source92": {
+    "source_host": "10.12.208.92",
+    "source_root": "/home/wuruihan/DynamicWAM",
+    "source_head": "dfbec6087fee8f23b1560f37f8374d75f6888df9",
+    "source_domino_head": "93d485a34a6e710bb4c895d83e2bb0520a9f169e",
+    "source_archive": "/SSD_DISK/users/wuruihan/route1_source_archive_20261013",
+    "source_archive_sha256": "68dff553dae9725754c0b7ecead2c3ed2586d4bbb371c1757f56997164e1c8d3",
+    "source_files_sha256": {
+      "src/dynamicwam/runtime/domino_rt/continuous_sync.py": "9476b9238f3cbb2c3a7d57ecae6ace370eea2ad6896c4ab9432597f118fd19a8",
+      "src/dynamicwam/runtime/domino_rt/continuous_session.py": "8634dcc949eee48f71a719c305d78843f8932ae0aeda75556ee1df1a56a36d07",
+      "src/dynamicwam/runtime/domino_rt/continuous_track.py": "e393f4251a5fa89186b1790cbcc822ef61a9e5cc457991a943ee78660c30d659",
+      "src/dynamicwam/runtime/domino_rt/continuous_track_v2.py": "3e48230d726e35c3833b48422a1f605c9697b6ce15dbc3f0830d17e0b1321edd",
+      "src/dynamicwam/runtime/domino_rt/camera_capture.py": "160a5ce8e08697357e6545a39e5c44989cb7aa569a6ca8490aa2f19bbe196177",
+      "src/dynamicwam/runtime/domino_rt/camera_stream.py": "95b57f15b373ab7d6b08d87f7357f28d12f8155ad42ef6293a6e36e85752097b",
+      "src/dynamicwam/runtime/domino_rt/wall_sync.py": "e7301e95f5683429866d8caef9f8b5a9d39b73b4c31c9854736822b92eb12974",
+      "src/dynamicwam/runtime/domino_rt/domino_session.py": "082f47cda98c131e0c6a026089707256cbbef340799e12997b1f6b0868de1302",
+      "src/dynamicwam/runtime/domino_rt/segment.py": "67a7f0e3c6b8651c30d8923f98cb249a68869da883df9b372b572de611d12971",
+      "src/dynamicwam/runtime/domino_rt/motion.py": "9730ff5843a0aec904511fff5119b93c6fee0af687cad0e547ea4b93c543b952",
+      "src/dynamicwam/runtime/domino_rt/worker.py": "16ad3b33976d25307c11ada2477548e7ed9d3d02e004fb0fa62a9e32db54b9b0",
+      "src/dynamicwam/runtime/domino_rt/test_camera_capture.py": "4c757c8905d259d2366e7ecf611fd054ed4939be4868824f7909d6507b0bd430",
+      "src/dynamicwam/runtime/domino_rt/test_wall_sync.py": "d5d5c1afcc5c2da2dcfbe87f641bb5b2786a7ee784027e17ae91b181ff2d069b",
+      "scripts/eval_domino_continuous_sync.py": "80443ebec034975aa5cff442cc123a66ec680ac5450f04da9ef815c53bc28127",
+      "scripts/eval_domino_continuous_sync_suite.py": "721f4ece1ed971d0c8ce1116898ceee149a66cc429f8973d749571fc9ce9a50e",
+      "scripts/summarize_domino_continuous_sync.py": "f2054de9f19c8e414c28fad6caa685195b60a3a8b4e388573e3012665f39f731",
+      "scripts/video_artifacts.py": "ed61f9c56a520e03f9db88392b11a66725dd930539b38825c6b7fbb60bf8474a",
+      "src/dynamicwam/runtime/domino_rt/native_camera/build_color_reader.py": "7b6fdc6268ee5d66d7818c3b0ab46fce63b68b7433aea8b3c0f9533e47bfcdb8",
+      "src/dynamicwam/runtime/domino_rt/native_camera/README.md": "90ad5d0e33d754abe827fbfa8213e797ffe4b2746a9e34dba863e49ef345faef",
+      "src/dynamicwam/runtime/domino_rt/native_camera/sapien_color_reader.cpp": "d4592eb7be3c8c337ef23ca4c5ed5b7ce72c2d181860a725e9098ec82d6ec21f",
+      "src/dynamicwam/runtime/domino_rt/_sapien_color_reader.build.json": "03213daf0120444f95b6459bd04b6b22cd86cb8b7adb8f374fc189c78111088a",
+      "src/dynamicwam/runtime/domino_rt/_sapien_color_reader.cpython-310-x86_64-linux-gnu.so": "829c401e7f1baa487149d281431e63f126a9ad9612d6d81154e8ed3c23cd06b0",
+      "docs/domino_continuous_sync_timing_20261009.json": "d9374b51933155babd6dbb64452fb66d35d734949d0b53b562cf5711ac978b2e",
+      "DOMINO_CONTINUOUS_SYNC.md": "5a486d7b8e6e911192810d18afbeb85f193d4c982b91d2d518c65f80a5c1f9f4"
+    },
+    "target_base": "2b72bc4ed9277a07f2b53d34966c7aac05bd5a89",
+    "target_domino_head": "6c5a00db1bf9fbe496b19876f84d0189a7aaf86f",
+    "domino_critical_files_identical": {
+      "external/DOMINO/envs/_base_task.py": true,
+      "external/DOMINO/script/eval_policy.py": true,
+      "external/DOMINO/script/eval_metrics.py": true,
+      "external/DOMINO/task_config/demo_clean_dynamic.yml": true
+    },
+    "adaptations": [
+      "isolated domino_continuous namespace",
+      "no interception checkpoint monkeypatch; existing target policy loader",
+      "UUID GPU arguments, SSD launch gates, status heartbeat"
+    ],
+    "acceptance": "pending user MP4 review"
+  },
+  "harness_sha256": "db72eb1b4faaa2ddb65422d15b4ac18f1b9479dfcf94d0aa2951339a83cfae0d",
+  "policy_change": false,
+  "domino_change": false,
+  "status": "accepted",
+  "cpu_tests": {
+    "wall_clock_and_camera": 30,
+    "gpu_identity": 8,
+    "shared_initialization_lock": 2
+  },
+  "source_adaptations": [
+    "isolated runtime/domino_continuous namespace",
+    "existing target parameterless policy.setup with checkpoint equality check",
+    "existing local Vulkan loader 1.4.357 and NVIDIA ICD",
+    "process-local SAPIEN device identity check with shared initialization lock",
+    "GPU UUID to PCI resolution",
+    "SSD preflight and native MP4 audit"
+  ],
+  "large_storage_root": "/SSD_DISK/users/wuruihan",
+  "native_video_semantics": "head observation frame sequence encoded at 10fps; sidecar preserves actual physics timestamps",
+  "runs": {
+    "adjust_bottle": {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_probe03",
+      "acceptance": {
+        "passed": true,
+        "summary": {
+          "protocol": "continuous_world_actual_latency_sync16_continuous_track_v2",
+          "complete": true,
+          "timing_mode": "native_mplib_limits",
+          "limit_retiming": true,
+          "controller": "continuous_shape_preserving_bounded_joint_track",
+          "formal_35x20": false,
+          "formal_35x100": false,
+          "planned_tasks": 1,
+          "planned_episodes_per_task": 1,
+          "planned_total": 1,
+          "valid_completed": 1,
+          "successes_valid_completed": 0,
+          "invalid_count": 0,
+          "missing_count": 0,
+          "full_suite_macro_sr_percent": 0,
+          "full_suite_macro_ms": 19.54400487153617,
+          "stop_reasons_valid_completed": {
+            "action_budget_exhausted": 1
+          },
+          "task_errors": [],
+          "task_results": [
+            {
+              "task": "adjust_bottle",
+              "planned": 1,
+              "valid_completed": 1,
+              "completion_marker_valid": true,
+              "archived_attempts": 0,
+              "missing_episode_indices": [],
+              "invalid_episode_indices": [],
+              "invalid_protocol_details": {},
+              "successes": 0,
+              "provisional_sr_percent": 0,
+              "provisional_ms": 19.54400487153617
+            }
+          ],
+          "semantics_ids": [
+            "continuous_world_actual_latency_sync16_continuous_track_v2"
+          ],
+          "replay_from": null,
+          "source_generation_results": {
+            "route1_continuous_port_20261013": {
+              "valid_completed": 1,
+              "successes": 0,
+              "source_digests": [
+                "aa06e053c778469a68741bb913724e0abb505c50eab2b1e092caeb359a036182"
+              ],
+              "provisional_micro_sr_percent": 0,
+              "provisional_micro_ms": 19.54400487153617
+            }
+          },
+          "timing_contract_sha256": "d9374b51933155babd6dbb64452fb66d35d734949d0b53b562cf5711ac978b2e",
+          "physical_timing": {
+            "action_interval_s": 0.16,
+            "history_frame_period_s": 0.16,
+            "history_endpoint_tolerance_s": 0.08
+          },
+          "diagnostics_valid_completed": {
+            "history_interval_dt_s": {
+              "n": 96,
+              "mean": 0.6383333636525398,
+              "min": 0.5600000265985727,
+              "p50": 0.6400000303983688,
+              "p95": 0.6880000326782465,
+              "max": 0.7080000336281955
+            },
+            "history_endpoint_abs_offset_s": {
+              "n": 145,
+              "mean": 0.04055171348539813,
+              "min": 0.0,
+              "p50": 0.04799985028803633,
+              "p95": 0.07999987612664938,
+              "max": 0.07999997340142784
+            },
+            "trajectory_stretch": {
+              "n": 25,
+              "mean": 2.3204052826401824,
+              "min": 1.9218213904822978,
+              "p50": 2.3103492636284866,
+              "p95": 2.611690411254377,
+              "max": 2.812152220919622
+            },
+            "trajectory_duration_s": {
+              "n": 25,
+              "mean": 5.940237523558867,
+              "min": 4.9198627596346824,
+              "p50": 5.914494114888925,
+              "p95": 6.685927452811206,
+              "max": 7.199109685554232
+            },
+            "nominal_trajectory_duration_s": {
+              "n": 25,
+              "mean": 2.56,
+              "min": 2.56,
+              "p50": 2.56,
+              "p95": 2.56,
+              "max": 2.56
+            },
+            "model_compute_wall_s": {
+              "n": 25,
+              "mean": 0.419958017434692,
+              "min": 0.37978507700609043,
+              "p50": 0.4195603630214464,
+              "p95": 0.4458887411979958,
+              "max": 0.5456402190029621
+            },
+            "query_capture_wall_s": {
+              "n": 25,
+              "mean": 0.1770236402004957,
+              "min": 0.12307713998598047,
+              "p50": 0.17409351200331002,
+              "p95": 0.2079764949798118,
+              "max": 0.2163633540039882
+            },
+            "all_capture_duration_s": {
+              "n": 1037,
+              "mean": 0.051964751298957175,
+              "min": 0.026455195038579404,
+              "p50": 0.048808947030920535,
+              "p95": 0.06314939182484508,
+              "max": 0.2163633540039882
+            },
+            "camera_trajectory_overlap_s": {
+              "n": 1,
+              "mean": 43.56000206898898,
+              "min": 43.56000206898898,
+              "p50": 43.56000206898898,
+              "p95": 43.56000206898898,
+              "max": 43.56000206898898
+            },
+            "realtime_factor": {
+              "n": 1,
+              "mean": 0.9998518632800102,
+              "min": 0.9998518632800102,
+              "p50": 0.9998518632800102,
+              "p95": 0.9998518632800102,
+              "max": 0.9998518632800102
+            },
+            "terminal_unresolved_wall_lag_s": {
+              "n": 1,
+              "mean": 0.0,
+              "min": 0.0,
+              "p50": 0.0,
+              "p95": 0.0,
+              "max": 0.0
+            },
+            "max_backlog_s": {
+              "n": 1,
+              "mean": 0.11753300693817437,
+              "min": 0.11753300693817437,
+              "p50": 0.11753300693817437,
+              "p95": 0.11753300693817437,
+              "max": 0.11753300693817437
+            },
+            "max_inference_clock_error_s": {
+              "n": 1,
+              "mean": 0.0024086309713311493,
+              "min": 0.0024086309713311493,
+              "p50": 0.0024086309713311493,
+              "p95": 0.0024086309713311493,
+              "max": 0.0024086309713311493
+            },
+            "phase_physics_seconds_total": {
+              "capture": 4.72800022456795,
+              "inference": 11.256000534631312,
+              "planning": 0.10400000493973494,
+              "execution": 148.55600705603138,
+              "logging": 0.0
+            },
+            "history_mask_counts": {
+              "temporal_valid_mask_total": 100,
+              "temporal_valid_mask_valid": 96,
+              "quality_valid_mask_total": 100,
+              "quality_valid_mask_valid": 96,
+              "interval_valid_mask_total": 100,
+              "interval_valid_mask_valid": 96,
+              "acceleration_valid_mask_total": 100,
+              "acceleration_valid_mask_valid": 96
+            },
+            "phase_physics_fraction": {
+              "capture": 0.028716503486309858,
+              "inference": 0.06836568596486965,
+              "planning": 0.0006316658973299969,
+              "execution": 0.9022861446514905,
+              "logging": 0.0
+            }
+          },
+          "diagnostics_note": "Camera-motion overlap is concurrent time, not an additional exclusive phase. Terminal inference clock mismatches remain diagnostic and are not treated as complete inference intervals.",
+          "formal_full_suite": false,
+          "video_required": true,
+          "formal_result_available": false
+        },
+        "policy_unchanged": true,
+        "native_metric_classes_checked": [
+          "adjust_bottle"
+        ],
+        "episodes": [
+          {
+            "task": "adjust_bottle",
+            "episode": 0,
+            "seed": 100000,
+            "success": false,
+            "stop_reason": "action_budget_exhausted",
+            "manipulation_score": 19.54400487153617,
+            "physics_s": 164.64400782017037,
+            "wall_s": 164.66840125701856,
+            "realtime_factor": 0.9998518632800102,
+            "max_backlog_s": 0.11753300693817437,
+            "max_inference_clock_error_s": 0.0024086309713311493,
+            "complete_inference_intervals": 25,
+            "physics_during_inference_s": 11.256000534631312,
+            "object_motion_during_inference": [
+              [
+                -0.03234949707984924,
+                0.010859251022338867,
+                0.0
+              ],
+              [
+                -2.321600914001465e-05,
+                3.993511199951172e-06,
+                -1.1920928955078125e-06
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_probe03/eval_result/adjust_bottle/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 20:58:58/episode0.mp4",
+            "video_alias": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_probe03/adjust_bottle/episode_0000/episode0.mp4",
+            "video_probe": {
+              "codec": "h264",
+              "pixel_format": "yuv420p",
+              "width": 320,
+              "height": 240,
+              "fps": 10.0,
+              "frame_count": 1037
+            }
+          }
+        ],
+        "errors": [],
+        "user_video_acceptance": "pending"
+      },
+      "user_acceptance_file": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_probe03/user_acceptance.json"
+    },
+    "place_can_basket": {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can",
+      "acceptance": {
+        "passed": true,
+        "summary": {
+          "protocol": "continuous_world_actual_latency_sync16_continuous_track_v2",
+          "complete": true,
+          "timing_mode": "native_mplib_limits",
+          "limit_retiming": true,
+          "controller": "continuous_shape_preserving_bounded_joint_track",
+          "formal_35x20": false,
+          "formal_35x100": false,
+          "planned_tasks": 1,
+          "planned_episodes_per_task": 2,
+          "planned_total": 2,
+          "valid_completed": 2,
+          "successes_valid_completed": 0,
+          "invalid_count": 0,
+          "missing_count": 0,
+          "full_suite_macro_sr_percent": 0,
+          "full_suite_macro_ms": 41.572163621673525,
+          "stop_reasons_valid_completed": {
+            "action_budget_exhausted": 2
+          },
+          "task_errors": [],
+          "task_results": [
+            {
+              "task": "place_can_basket",
+              "planned": 2,
+              "valid_completed": 2,
+              "completion_marker_valid": true,
+              "archived_attempts": 0,
+              "missing_episode_indices": [],
+              "invalid_episode_indices": [],
+              "invalid_protocol_details": {},
+              "successes": 0,
+              "provisional_sr_percent": 0,
+              "provisional_ms": 41.572163621673525
+            }
+          ],
+          "semantics_ids": [
+            "continuous_world_actual_latency_sync16_continuous_track_v2"
+          ],
+          "replay_from": null,
+          "source_generation_results": {
+            "route1_continuous_port_20261013": {
+              "valid_completed": 2,
+              "successes": 0,
+              "source_digests": [
+                "49bcc161f0a2382224b9ad6f09fca18fb5e46f59f9358d8b446846ab53ab9e62"
+              ],
+              "provisional_micro_sr_percent": 0,
+              "provisional_micro_ms": 41.572163621673525
+            }
+          },
+          "timing_contract_sha256": "d9374b51933155babd6dbb64452fb66d35d734949d0b53b562cf5711ac978b2e",
+          "physical_timing": {
+            "action_interval_s": 0.16,
+            "history_frame_period_s": 0.16,
+            "history_endpoint_tolerance_s": 0.08
+          },
+          "diagnostics_valid_completed": {
+            "history_interval_dt_s": {
+              "n": 328,
+              "mean": 0.6428536890704957,
+              "min": 0.5600000265985727,
+              "p50": 0.6400000303983688,
+              "p95": 0.7040000334382057,
+              "max": 0.7160000340081751
+            },
+            "history_endpoint_abs_offset_s": {
+              "n": 507,
+              "mean": 0.04386588441226447,
+              "min": 0.0,
+              "p50": 0.05600006345659381,
+              "p95": 0.07599994281306977,
+              "max": 0.07999997340142784
+            },
+            "trajectory_stretch": {
+              "n": 88,
+              "mean": 2.087321883246333,
+              "min": 1.3872278672583889,
+              "p50": 1.909430029568884,
+              "p95": 3.0165151097164853,
+              "max": 3.4086052776932063
+            },
+            "trajectory_duration_s": {
+              "n": 88,
+              "mean": 5.3160323970686,
+              "min": 3.5513033401814758,
+              "p50": 4.876968432820623,
+              "p95": 7.7222786808742025,
+              "max": 8.726029510894609
+            },
+            "nominal_trajectory_duration_s": {
+              "n": 88,
+              "mean": 2.5454545454545454,
+              "min": 1.92,
+              "p50": 2.56,
+              "p95": 2.56,
+              "max": 2.56
+            },
+            "model_compute_wall_s": {
+              "n": 88,
+              "mean": 0.39888163288560463,
+              "min": 0.32333653402747586,
+              "p50": 0.39225323250866495,
+              "p95": 0.45161324250220786,
+              "max": 0.5206826819921844
+            },
+            "query_capture_wall_s": {
+              "n": 88,
+              "mean": 0.24087302895416293,
+              "min": 0.1641125560272485,
+              "p50": 0.24521712999558076,
+              "p95": 0.27272772252908906,
+              "max": 0.28028931096196175
+            },
+            "all_capture_duration_s": {
+              "n": 3207,
+              "mean": 0.06749772467575839,
+              "min": 0.04278478096239269,
+              "p50": 0.06118873495142907,
+              "p95": 0.0770028960017953,
+              "max": 0.28028931096196175
+            },
+            "camera_trajectory_overlap_s": {
+              "n": 2,
+              "mean": 87.03800413408317,
+              "min": 84.78000402683392,
+              "p50": 87.03800413408317,
+              "p95": 89.07020423060749,
+              "max": 89.29600424133241
+            },
+            "realtime_factor": {
+              "n": 2,
+              "mean": 0.9999895062097597,
+              "min": 0.999988020369249,
+              "p50": 0.9999895062097597,
+              "p95": 0.9999908434662191,
+              "max": 0.9999909920502702
+            },
+            "terminal_unresolved_wall_lag_s": {
+              "n": 2,
+              "mean": 0.0,
+              "min": 0.0,
+              "p50": 0.0,
+              "p95": 0.0,
+              "max": 0.0
+            },
+            "max_backlog_s": {
+              "n": 2,
+              "mean": 0.1347004996787291,
+              "min": 0.12996502593159676,
+              "p50": 0.1347004996787291,
+              "p95": 0.13896242605114822,
+              "max": 0.13943597342586145
+            },
+            "max_inference_clock_error_s": {
+              "n": 2,
+              "mean": 0.0021878077532164752,
+              "min": 0.0021598284947685897,
+              "p50": 0.0021878077532164752,
+              "p95": 0.002212989085819572,
+              "max": 0.0022157870116643608
+            },
+            "phase_physics_seconds_total": {
+              "capture": 23.656001123599708,
+              "inference": 37.99600180471316,
+              "planning": 0.3840000182390213,
+              "execution": 467.98002222785726,
+              "logging": 0.0
+            },
+            "history_mask_counts": {
+              "temporal_valid_mask_total": 352,
+              "temporal_valid_mask_valid": 328,
+              "quality_valid_mask_total": 352,
+              "quality_valid_mask_valid": 328,
+              "interval_valid_mask_total": 352,
+              "interval_valid_mask_valid": 328,
+              "acceleration_valid_mask_total": 352,
+              "acceleration_valid_mask_valid": 322
+            },
+            "phase_physics_fraction": {
+              "capture": 0.044632614864456924,
+              "inference": 0.0716884018595665,
+              "planning": 0.0007245064299945662,
+              "execution": 0.882954476845982,
+              "logging": 0.0
+            }
+          },
+          "diagnostics_note": "Camera-motion overlap is concurrent time, not an additional exclusive phase. Terminal inference clock mismatches remain diagnostic and are not treated as complete inference intervals.",
+          "formal_full_suite": false,
+          "video_required": true,
+          "formal_result_available": false
+        },
+        "policy_unchanged": true,
+        "native_metric_classes_checked": [
+          "place_can_basket"
+        ],
+        "episodes": [
+          {
+            "task": "place_can_basket",
+            "episode": 0,
+            "seed": 100001,
+            "success": false,
+            "stop_reason": "action_budget_exhausted",
+            "manipulation_score": 43.44765035440209,
+            "physics_s": 277.8200131957419,
+            "wall_s": 277.8225158069981,
+            "realtime_factor": 0.9999909920502702,
+            "max_backlog_s": 0.12996502593159676,
+            "max_inference_clock_error_s": 0.0021598284947685897,
+            "complete_inference_intervals": 44,
+            "physics_during_inference_s": 19.208000912331045,
+            "object_motion_during_inference": [
+              [
+                -0.0020916014909744263,
+                -0.005108386278152466,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/eval_result/place_can_basket/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:10:04/episode0.mp4",
+            "video_alias": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/place_can_basket/episode_0000/episode0.mp4",
+            "video_probe": {
+              "codec": "h264",
+              "pixel_format": "yuv420p",
+              "width": 320,
+              "height": 240,
+              "fps": 10.0,
+              "frame_count": 1709
+            }
+          },
+          {
+            "task": "place_can_basket",
+            "episode": 1,
+            "seed": 100002,
+            "success": false,
+            "stop_reason": "action_budget_exhausted",
+            "manipulation_score": 39.69667688894496,
+            "physics_s": 252.19601197866723,
+            "wall_s": 252.19903322996106,
+            "realtime_factor": 0.999988020369249,
+            "max_backlog_s": 0.13943597342586145,
+            "max_inference_clock_error_s": 0.0022157870116643608,
+            "complete_inference_intervals": 44,
+            "physics_during_inference_s": 18.788000892382115,
+            "object_motion_during_inference": [
+              [
+                0.004292786121368408,
+                -0.00347021222114563,
+                0.0
+              ],
+              [
+                -1.4901161193847656e-08,
+                -1.4901161193847656e-08,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/eval_result/place_can_basket/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:10:04/episode1.mp4",
+            "video_alias": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/place_can_basket/episode_0001/episode1.mp4",
+            "video_probe": {
+              "codec": "h264",
+              "pixel_format": "yuv420p",
+              "width": 320,
+              "height": 240,
+              "fps": 10.0,
+              "frame_count": 1498
+            }
+          }
+        ],
+        "errors": [],
+        "user_video_acceptance": "pending"
+      },
+      "user_acceptance_file": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/user_acceptance.json"
+    },
+    "click_bell": {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell",
+      "acceptance": {
+        "passed": true,
+        "summary": {
+          "protocol": "continuous_world_actual_latency_sync16_continuous_track_v2",
+          "complete": true,
+          "timing_mode": "native_mplib_limits",
+          "limit_retiming": true,
+          "controller": "continuous_shape_preserving_bounded_joint_track",
+          "formal_35x20": false,
+          "formal_35x100": false,
+          "planned_tasks": 1,
+          "planned_episodes_per_task": 2,
+          "planned_total": 2,
+          "valid_completed": 2,
+          "successes_valid_completed": 0,
+          "invalid_count": 0,
+          "missing_count": 0,
+          "full_suite_macro_sr_percent": 0,
+          "full_suite_macro_ms": 17.7515476243114,
+          "stop_reasons_valid_completed": {
+            "out_of_bounds": 2
+          },
+          "task_errors": [],
+          "task_results": [
+            {
+              "task": "click_bell",
+              "planned": 2,
+              "valid_completed": 2,
+              "completion_marker_valid": true,
+              "archived_attempts": 0,
+              "missing_episode_indices": [],
+              "invalid_episode_indices": [],
+              "invalid_protocol_details": {},
+              "successes": 0,
+              "provisional_sr_percent": 0,
+              "provisional_ms": 17.7515476243114
+            }
+          ],
+          "semantics_ids": [
+            "continuous_world_actual_latency_sync16_continuous_track_v2"
+          ],
+          "replay_from": null,
+          "source_generation_results": {
+            "route1_continuous_port_20261013": {
+              "valid_completed": 2,
+              "successes": 0,
+              "source_digests": [
+                "49bcc161f0a2382224b9ad6f09fca18fb5e46f59f9358d8b446846ab53ab9e62"
+              ],
+              "provisional_micro_sr_percent": 0,
+              "provisional_micro_ms": 17.7515476243114
+            }
+          },
+          "timing_contract_sha256": "d9374b51933155babd6dbb64452fb66d35d734949d0b53b562cf5711ac978b2e",
+          "physical_timing": {
+            "action_interval_s": 0.16,
+            "history_frame_period_s": 0.16,
+            "history_endpoint_tolerance_s": 0.08
+          },
+          "diagnostics_valid_completed": {
+            "history_interval_dt_s": {
+              "n": 8,
+              "mean": 0.6430000305408612,
+              "min": 0.61600002925843,
+              "p50": 0.6400000303983688,
+              "p95": 0.6712000318802893,
+              "max": 0.6880000326782465
+            },
+            "history_endpoint_abs_offset_s": {
+              "n": 14,
+              "mean": 0.02571428693564878,
+              "min": 0.0,
+              "p50": 0.02399992514401683,
+              "p95": 0.048000134512782,
+              "max": 0.04800015427172166
+            },
+            "trajectory_stretch": {
+              "n": 4,
+              "mean": 1.9342423498913772,
+              "min": 1.5262278287045128,
+              "p50": 1.8692649351425317,
+              "p95": 2.4130520709914576,
+              "max": 2.472211700575933
+            },
+            "trajectory_duration_s": {
+              "n": 4,
+              "mean": 4.951660415721926,
+              "min": 3.9071432414835527,
+              "p50": 4.785318233964881,
+              "p95": 6.177413301738132,
+              "max": 6.328861953474388
+            },
+            "nominal_trajectory_duration_s": {
+              "n": 4,
+              "mean": 2.56,
+              "min": 2.56,
+              "p50": 2.56,
+              "p95": 2.56,
+              "max": 2.56
+            },
+            "model_compute_wall_s": {
+              "n": 4,
+              "mean": 0.4699794662446948,
+              "min": 0.39698159898398444,
+              "p50": 0.470848198980093,
+              "p95": 0.5362831856764387,
+              "max": 0.5412398680346087
+            },
+            "query_capture_wall_s": {
+              "n": 4,
+              "mean": 0.15216362124192528,
+              "min": 0.11994908499764279,
+              "p50": 0.15265362596255727,
+              "p95": 0.18262002468109131,
+              "max": 0.1833981480449438
+            },
+            "all_capture_duration_s": {
+              "n": 114,
+              "mean": 0.04723034056849173,
+              "min": 0.03252331301337108,
+              "p50": 0.040982730977702886,
+              "p95": 0.06190100247913506,
+              "max": 0.1833981480449438
+            },
+            "camera_trajectory_overlap_s": {
+              "n": 2,
+              "mean": 2.008000095374882,
+              "min": 1.8520000879652798,
+              "p50": 2.008000095374882,
+              "p95": 2.1484001020435244,
+              "max": 2.1640001027844846
+            },
+            "realtime_factor": {
+              "n": 2,
+              "mean": 0.9989184496234176,
+              "min": 0.9980576227959136,
+              "p50": 0.9989184496234176,
+              "p95": 0.9996931937681711,
+              "max": 0.9997792764509215
+            },
+            "terminal_unresolved_wall_lag_s": {
+              "n": 2,
+              "mean": 0.0,
+              "min": 0.0,
+              "p50": 0.0,
+              "p95": 0.0,
+              "max": 0.0
+            },
+            "max_backlog_s": {
+              "n": 2,
+              "mean": 0.10072315117577091,
+              "min": 0.10022121155634522,
+              "p50": 0.10072315117577091,
+              "p95": 0.10117489683325402,
+              "max": 0.10122509079519659
+            },
+            "max_inference_clock_error_s": {
+              "n": 2,
+              "mean": 0.0015562931657768786,
+              "min": 0.001006843929644674,
+              "p50": 0.0015562931657768786,
+              "p95": 0.0020507974782958626,
+              "max": 0.002105742401909083
+            },
+            "phase_physics_seconds_total": {
+              "capture": 0.6320000300183892,
+              "inference": 1.9360000919550657,
+              "planning": 0.01600000075995922,
+              "execution": 15.992000759579241,
+              "logging": 0.0
+            },
+            "history_mask_counts": {
+              "temporal_valid_mask_total": 16,
+              "temporal_valid_mask_valid": 8,
+              "quality_valid_mask_total": 16,
+              "quality_valid_mask_valid": 8,
+              "interval_valid_mask_total": 16,
+              "interval_valid_mask_valid": 8,
+              "acceleration_valid_mask_total": 16,
+              "acceleration_valid_mask_valid": 8
+            },
+            "phase_physics_fraction": {
+              "capture": 0.034022394487510765,
+              "inference": 0.10422049956933678,
+              "planning": 0.0008613264427217916,
+              "execution": 0.8608957795004306,
+              "logging": 0.0
+            }
+          },
+          "diagnostics_note": "Camera-motion overlap is concurrent time, not an additional exclusive phase. Terminal inference clock mismatches remain diagnostic and are not treated as complete inference intervals.",
+          "formal_full_suite": false,
+          "video_required": true,
+          "formal_result_available": false
+        },
+        "policy_unchanged": true,
+        "native_metric_classes_checked": [
+          "click_bell"
+        ],
+        "episodes": [
+          {
+            "task": "click_bell",
+            "episode": 0,
+            "seed": 100000,
+            "success": false,
+            "stop_reason": "out_of_bounds",
+            "manipulation_score": 21.044483537706586,
+            "physics_s": 9.916000470984727,
+            "wall_s": 9.91818964900449,
+            "realtime_factor": 0.9997792764509215,
+            "max_backlog_s": 0.10122509079519659,
+            "max_inference_clock_error_s": 0.002105742401909083,
+            "complete_inference_intervals": 2,
+            "physics_during_inference_s": 0.9840000467374921,
+            "object_motion_during_inference": [
+              [
+                0.015908822417259216,
+                0.021066635847091675,
+                0.0
+              ],
+              [
+                0.012246355414390564,
+                0.016216769814491272,
+                0.0
+              ]
+            ],
+            "video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/eval_result/click_bell/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:09:46/episode0.mp4",
+            "video_alias": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/click_bell/episode_0000/episode0.mp4",
+            "video_probe": {
+              "codec": "h264",
+              "pixel_format": "yuv420p",
+              "width": 320,
+              "height": 240,
+              "fps": 10.0,
+              "frame_count": 62
+            }
+          },
+          {
+            "task": "click_bell",
+            "episode": 1,
+            "seed": 100001,
+            "success": false,
+            "stop_reason": "out_of_bounds",
+            "manipulation_score": 14.458611710916216,
+            "physics_s": 8.660000411327928,
+            "wall_s": 8.676854135002941,
+            "realtime_factor": 0.9980576227959136,
+            "max_backlog_s": 0.10022121155634522,
+            "max_inference_clock_error_s": 0.001006843929644674,
+            "complete_inference_intervals": 2,
+            "physics_during_inference_s": 0.9520000452175736,
+            "object_motion_during_inference": [
+              [
+                -0.027339860796928406,
+                0.008090458810329437,
+                0.0
+              ],
+              [
+                -0.023495204746723175,
+                0.006952762603759766,
+                0.0
+              ]
+            ],
+            "video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/eval_result/click_bell/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:09:46/episode1.mp4",
+            "video_alias": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/click_bell/episode_0001/episode1.mp4",
+            "video_probe": {
+              "codec": "h264",
+              "pixel_format": "yuv420p",
+              "width": 320,
+              "height": 240,
+              "fps": 10.0,
+              "frame_count": 52
+            }
+          }
+        ],
+        "errors": [],
+        "user_video_acceptance": "pending"
+      },
+      "user_acceptance_file": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/user_acceptance.json"
+    }
+  },
+  "review_video_directory": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_port_20261013/review_videos",
+  "policy_diff": "",
+  "domino_diff": "",
+  "user_acceptance": {
+    "status": "accepted",
+    "recorded_utc": "2026-10-13T13:31:51.067758+00:00",
+    "source": "explicit human message in this Codex conversation",
+    "user_statement": "mp4看起来是正常的，先保存这一版吧，确认正是评测的时候保存的目录结构和原DOMINO一致哦",
+    "scope": "Route1 continuous DOMINO integration and native artifact/video acceptance; unchanged policy",
+    "tag": "route1-continuous-domino-v1-20261013"
+  },
+  "native_layout_verification": {
+    "passed": true,
+    "native_pattern": "<run SSD root>/eval_result/<task>/<policy>/<task_config>/<ckpt_setting>/<timestamp>/",
+    "policy_label": "dynamicwam_continuous_sync",
+    "checkpoint_label": "DynamicWAM_full",
+    "same_writer_for_smoke_and_formal": true,
+    "full_35_task_suite_requires_native_results": true,
+    "native_code_reference": "external/DOMINO/script/eval_policy.py:145-154,219-244,442",
+    "port_code_reference": "scripts/eval_domino_continuous_sync.py:476-477,663-669; scripts/eval_domino_continuous_sync_suite.py:105,142-143,259-277",
+    "additional_artifacts": [
+      "episodeN_timestamps.json",
+      "_evaluation_status.json",
+      "external convenience links"
+    ],
+    "original_run_audit_pending_value_is_historical": true,
+    "episodes": [
+      {
+        "task": "adjust_bottle",
+        "episode": 0,
+        "native_video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_probe03/eval_result/adjust_bottle/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 20:58:58/episode0.mp4"
+      },
+      {
+        "task": "place_can_basket",
+        "episode": 0,
+        "native_video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/eval_result/place_can_basket/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:10:04/episode0.mp4"
+      },
+      {
+        "task": "place_can_basket",
+        "episode": 1,
+        "native_video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_can/eval_result/place_can_basket/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:10:04/episode1.mp4"
+      },
+      {
+        "task": "click_bell",
+        "episode": 0,
+        "native_video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/eval_result/click_bell/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:09:46/episode0.mp4"
+      },
+      {
+        "task": "click_bell",
+        "episode": 1,
+        "native_video": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/route1_continuous_port_20261013_bell/eval_result/click_bell/dynamicwam_continuous_sync/demo_clean_dynamic/DynamicWAM_full/2026-10-13 21:09:46/episode1.mp4"
+      }
+    ]
+  }
+}
