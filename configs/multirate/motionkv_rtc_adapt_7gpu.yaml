@@ -25,7 +25,7 @@ pairing:
   stress_probability: 0.0
   age_weighting: uniform
 training:
-  name: motionkv_rtc_adapt_20261013
+  name: motionkv_rtc_adapt_20261014
   device: cuda
   log_level: INFO
   max_steps: 12000
