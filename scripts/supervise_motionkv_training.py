@@ -218,13 +218,19 @@ def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib, *, own_pgid=N
     rows = list(csv.reader(io.StringIO(command(["nvidia-smi", "--query-gpu=" + columns, "--format=csv,noheader,nounits"]))))
     names = columns.split(",")
     devices = [{k: v.strip() for k, v in zip(names, row)} for row in rows]
+    report = dict(devices=devices, processes=[], selected_uuids=uuids,
+        temperature_limit_c=max_temp_c, used_memory_limit_mib=max_used_mib)
+    def fail(message):
+        error = RuntimeError(message)
+        error.gpu_evidence = report
+        return error
     if len(devices) != expected_count:
-        raise RuntimeError(f"visible GPU count {len(devices)} differs from expected {expected_count}")
+        raise fail(f"visible GPU count {len(devices)} differs from expected {expected_count}")
     by_uuid = {row["uuid"]: row for row in devices}
     if any(uuid not in by_uuid for uuid in uuids):
-        raise RuntimeError("requested UUID missing from nvidia-smi")
+        raise fail("requested UUID missing from nvidia-smi")
     process_rows = csv.reader(io.StringIO(command(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory", "--format=csv,noheader,nounits"])))
-    processes = []
+    processes = report["processes"]
     for row in process_rows:
         if len(row) != 4:
             continue
@@ -242,15 +248,14 @@ def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib, *, own_pgid=N
     for uuid in uuids:
         gpu = by_uuid[uuid]
         if float(gpu["temperature.gpu"]) >= max_temp_c or (max_used_mib is not None and float(gpu["memory.used"]) > max_used_mib):
-            raise RuntimeError(f"GPU {uuid} exceeds explicit temperature/memory launch limit")
+            raise fail(f"GPU {uuid} exceeds explicit temperature/memory launch limit")
         for item in processes:
             if item["gpu_uuid"] == uuid:
                 relation = training_descendant(int(item["pid"]), own_pgid) if own_pgid is not None else False
                 item["training_ancestry"] = "owned" if relation else "exited" if relation is None else "external"
                 if relation is False:
-                    raise RuntimeError(f"GPU {uuid} has a compute process outside this run; no unrelated process is stopped")
-    return dict(devices=devices, processes=processes, selected_uuids=uuids,
-        temperature_limit_c=max_temp_c, used_memory_limit_mib=max_used_mib)
+                    raise fail(f"GPU {uuid} has a compute process outside this run; no unrelated process is stopped")
+    return report
 
 
 def source_files_and_hash(repo):
@@ -282,6 +287,11 @@ def validate_smoke(path, config_sha256, source_sha256, ssd):
         raise ValueError("receipt source is not a matching smoke run")
     if status.get("state") != "process_exited" or status.get("exit_code") != 0 or status.get("stop_reason"):
         raise ValueError("smoke source did not exit cleanly without supervisor termination")
+    postexit_path = smoke_run / "postexit_health.json"
+    if (status.get("postexit_health_passed") is not True or
+            file_digest(postexit_path) != status.get("postexit_health_sha256") or
+            json_file(postexit_path).get("passed") is not True):
+        raise ValueError("smoke source lacks successful post-exit health verification")
     checkpoint = inside_ssd(data["checkpoint_path"], ssd, must_exist=True)
     output = Path(manifest["paths"]["training_output"]).resolve()
     if output not in checkpoint.parents or file_digest(checkpoint) != data.get("checkpoint_sha256"):
@@ -302,6 +312,50 @@ def startup_health(args, baseline, pgid):
         raise error
     gpu = gpu_preflight(args.uuids, args.expected_gpus, args.max_temp_c, None, own_pgid=pgid)
     return dict(timestamp=utc(), driver_identity=driver_identity(driver), gpu=gpu)
+
+
+def smoke_postexit_health(args, baseline):
+    """One bounded read after smoke teardown; formal exits never query health.
+
+    Collect GPU state first and driver state last so assertions emitted while
+    CUDA resources are being released cannot be hidden by a process exit code 0.
+    No settling loop, repair, signal, or automatic retry is performed.
+    """
+    if args.mode != "smoke":
+        return None
+    result = dict(timestamp=utc(), passed=False, gpu=None, driver=None, errors=[])
+    try:
+        # No ownership exception after torchrun exits: selected GPUs must have
+        # no remaining compute users, including orphaned children of this run.
+        result["gpu"] = gpu_preflight(args.uuids, args.expected_gpus,
+            args.max_temp_c, args.max_used_mib)
+    except Exception as exc:
+        result["gpu"] = getattr(exc, "gpu_evidence", None)
+        result["errors"].append(f"GPU cleanup check: {type(exc).__name__}: {exc}")
+    try:
+        result["driver"] = driver_evidence()
+        if driver_identity(result["driver"]) != driver_identity(baseline):
+            result["errors"].append("driver evidence changed during smoke, including process teardown")
+    except Exception as exc:
+        result["errors"].append(f"Driver check: {type(exc).__name__}: {exc}")
+    result["passed"] = not result["errors"]
+    return result
+
+
+def record_process_exit(args, baseline, run, status, code):
+    """Keep actual child exit code separate from smoke health acceptance."""
+    status.update(state="process_exited", timestamp=utc(), exit_code=code,
+        training_success_not_inferred_from_exit_alone=True)
+    health = smoke_postexit_health(args, baseline)
+    if health is not None:
+        path = run / "postexit_health.json"
+        atomic_json(path, health)
+        status.update(postexit_health_passed=health["passed"],
+            postexit_health_file=str(path), postexit_health_sha256=file_digest(path))
+        if not health["passed"]:
+            status["pre_postexit_stop_reason"] = status.get("stop_reason")
+            status["stop_reason"] = "postexit_health_failed"
+    atomic_json(run / "status.json", status)
 
 
 def parse_args():
@@ -499,9 +553,8 @@ def main():
                         last_heartbeat = elapsed
                     time.sleep(1)
                 code = process.wait()
-        status.update(state="process_exited", timestamp=utc(), exit_code=code,
-            training_success_not_inferred_from_exit_alone=True)
-        atomic_json(run / "status.json", status)
+                # Keep this run's GPU leases while the smoke teardown is read.
+                record_process_exit(args, driver, run, status, code)
         print(json.dumps(status))
         if status.get("stop_reason") == "max_runtime_seconds_exceeded":
             return 124
