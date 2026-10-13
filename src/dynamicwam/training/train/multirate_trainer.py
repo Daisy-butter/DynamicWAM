@@ -520,6 +520,7 @@ class MultirateTrainer:
         self.model.native_phase = config.get("native_phase", "")
         self.model.native_expert_weight = float(config.get("native_expert_weight", 1.0))
         self.model.native_fm_anchor_weight = float(config.get("native_fm_anchor_weight", 0.0))
+        self.model.rtc_prefix_max = int(config.get("rtc_prefix_max", 0))
         self._load_initialization()
         self._build_native_teacher()
         self.model.max_bridge_age_seconds = config.get("max_bridge_age_seconds")
@@ -644,10 +645,11 @@ class MultirateTrainer:
                 native_teacher_weight=float(self.config.get('loss', {}).get('native_teacher_weight', 0.0))).to(self.device)
         fast_cfg = model_cfg["fast_conditioner"]
         if model_cfg.get("native_multirate", False):
-            from dynamicwam.models.world_aware_conditioner import WorldAwareConditioner
+            from dynamicwam.inference.multirate_model_loader import build_fast_conditioner
             kwargs = dict(fast_cfg)
-            kwargs.pop("world_aware", None)
-            conditioner = WorldAwareConditioner(**kwargs)
+            if kwargs.get("motion_kv", False):
+                kwargs.update(motion_mean=self.motion_statistics["mean"], motion_scale=self.motion_statistics["scale"])
+            conditioner = build_fast_conditioner(kwargs)
             return MultirateWAM(backbone, conditioner, schedule,
                 native_multirate=True, fast_steps=int(self.config["native_fast_steps"]),
                 native_teacher_weight=float(self.config["loss"]["native_teacher_weight"])).to(self.device)
@@ -726,6 +728,14 @@ class MultirateTrainer:
         self.model.external_native_teacher = True
         logger.info("Fixed native teacher: %s", self.native_teacher_identity)
 
+    def _attach_rtc_prefix(self, prepared, generator=None):
+        maximum = int(self.config.get("rtc_prefix_max", 0))
+        if maximum:
+            from dynamicwam.models.rtc_prefix import PrefixCondition
+            clean = prepared["clean_actions"]
+            lengths = torch.randint(0, maximum + 1, (clean.shape[0],), device=clean.device, generator=generator)
+            prepared["rtc_prefix"] = PrefixCondition(clean.detach(), lengths)
+
     @torch.no_grad()
     def _attach_native_teacher(self, prepared: dict) -> None:
         teacher = getattr(self, "native_teacher", None)
@@ -801,6 +811,7 @@ class MultirateTrainer:
                 sim_scale=float(fast_cfg["sim_scale"]),
                 action_scale=float(fast_cfg["action_scale"]),
             )
+            self._attach_rtc_prefix(prepared)
             self._attach_native_teacher(prepared)
             outputs = self.model(prepared, mode="multirate_train", phase=self.phase)
             total, metrics = self.objective(
@@ -821,6 +832,8 @@ class MultirateTrainer:
                     self._trainable_parameters(),
                     max_norm=float(self.config["grad_clip_norm"]),
                 )
+                if grad_norm is not None and not torch.isfinite(torch.as_tensor(grad_norm)):
+                    raise FloatingPointError("nonfinite gradient norm; aborting before optimizer update")
             self.optimizer.step()
             if self.accelerator.sync_gradients and not getattr(self.accelerator, "optimizer_step_was_skipped", False):
                 self.scheduler.step()
@@ -844,7 +857,7 @@ class MultirateTrainer:
         dataset_keys = ("samples_per_episode", "stress_probability", "partition_seed",
                         "global_downsample_rate", "chunk_size", "execute_horizon", "every_fast_queries",
                         "age_weighting")
-        return {"training": {**{k: self.config[k] for k in keys}, "fast_supervision": self.config.get("fast_supervision", "executed_prefix") + "_v1",
+        return {"training": {**{k: self.config[k] for k in keys}, "rtc_prefix_max": int(self.config.get("rtc_prefix_max", 0)), "fast_supervision": self.config.get("fast_supervision", "executed_prefix") + "_v1",
                                      "max_bridge_age_seconds": self.config.get("max_bridge_age_seconds"),
                                      **({"feedback_phase": self.config["feedback_phase"],
                                         "feedback_world_refresh_actions": self.config.get("feedback_world_refresh_actions",16)} if self.config.get("feedback_phase") else {}),
@@ -889,6 +902,15 @@ class MultirateTrainer:
             "action_normalization": self.action_normalization,
             "runtime_contract": {
                 "version": 1,
+                **({"rtc": {"version": 1, "mode": "training_time_action_prefix", "max_prefix_actions": int(self.config["rtc_prefix_max"]),
+                    "clean_timestep": 0.0, "loss": "per_sample_suffix_mean", "includes_zero_prefix": True,
+                    "queue_clock": "absolute_action_effect_times", "overflow": "reject_and_refresh", "execute_suffix_actions": 4}}
+                    if self.config.get("rtc_prefix_max", 0) else {}),
+                **({"motion_kv": {"version": 1, "rank": self.config["model"]["fast_conditioner"]["kv_rank"],
+                    "max_relative_update": self.config["model"]["fast_conditioner"]["max_relative_update"],
+                    "scope": "all_layer_native_joint_attention_kv", "motion": "causal_native_optical_flow_statistics_with_masks",
+                    "localization": "current_visual_spatial_tokens; no ground-truth object mask"}}
+                    if self.config["model"]["fast_conditioner"].get("motion_kv") else {}),
                 **({"native_multirate": {"version": 1, "phase": self.config["native_phase"],
                     "fast_steps": int(self.config["native_fast_steps"]), "world_aware": True,
                     "source_bridge": "immutable_official",
@@ -1112,6 +1134,7 @@ class MultirateTrainer:
                         null_bridge=False,
                         generator=generator,
                     )
+                    self._attach_rtc_prefix(prepared, generator)
                     self._attach_native_teacher(prepared)
                     outputs = self.model(prepared, mode="multirate_train", phase=self.phase)
                     # Same targets, bridge removed, so the gap is the historical bridge.
@@ -1186,6 +1209,7 @@ class MultirateTrainer:
                         sigmas=self._sigmas, device=self.device, dtype=self._timesteps.dtype,
                         phase=self.phase, native_teacher=True, native_multirate=True, null_bridge_probability=0.,
                         null_bridge=False, sim_scale=1., action_scale=16., generator=generator)
+                    self._attach_rtc_prefix(prepared, generator)
                     self._attach_native_teacher(prepared)
                     outputs = self.model(prepared, mode="multirate_train", phase=self.phase)
                     null_prepared = dict(prepared, null_bridge=True)
@@ -1204,9 +1228,20 @@ class MultirateTrainer:
                         teacher_error = (outputs["teacher_pred"].float() - outputs["teacher_target"].float()).square().flatten(1).mean(1)
                     errors = (prediction.float() - target.float()).square()
                     null_errors = (dropped.float() - target.float()).square()
-                    full = errors.flatten(1).mean(1)
-                    prefix = errors[:, :horizon].flatten(1).mean(1)
-                    null_prefix = null_errors[:, :horizon].flatten(1).mean(1)
+                    if prepared.get("rtc_prefix") is not None:
+                        lengths = prepared["rtc_prefix"].lengths
+                        positions = torch.arange(errors.shape[1], device=errors.device)[None]
+                        suffix = positions >= lengths[:, None]
+                        executable = suffix & (positions < lengths[:, None] + horizon)
+                        full = (errors.mean(-1) * suffix).sum(-1) / suffix.sum(-1)
+                        prefix = (errors.mean(-1) * executable).sum(-1) / executable.sum(-1)
+                        null_prefix = (null_errors.mean(-1) * executable).sum(-1) / executable.sum(-1)
+                        teacher_errors = (outputs["teacher_pred"].float() - outputs["teacher_target"].float()).square().mean(-1)
+                        teacher_error = (teacher_errors * suffix).sum(-1) / suffix.sum(-1)
+                    else:
+                        full = errors.flatten(1).mean(1)
+                        prefix = errors[:, :horizon].flatten(1).mean(1)
+                        null_prefix = null_errors[:, :horizon].flatten(1).mean(1)
                     age = batch["delta_actions"].to(full)
                     total = outputs["native_loss"].detach().expand_as(full)
                     values = torch.stack((total, full, prefix, teacher_error, null_prefix, age), dim=1)

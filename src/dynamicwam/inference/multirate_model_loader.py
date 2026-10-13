@@ -22,10 +22,67 @@ from dynamicwam.models.fast_conditioner import FastConditioner
 
 
 def build_fast_conditioner(spec):
+    if spec.get('motion_kv', False):
+        from dynamicwam.models.motion_kv_conditioner import MotionKVConditioner
+        return MotionKVConditioner(**spec)
     if spec.get('world_aware', False):
         from dynamicwam.models.world_aware_conditioner import WorldAwareConditioner
         return WorldAwareConditioner(**spec)
     return FastConditioner(**spec)
+
+
+def rtc_prefix_contract(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Read RTC metadata without loading weights or granting deployment access.
+
+    Full and fast-only exports both carry the contract in ``modules``. A full
+    export additionally carries the identical contract in ``config``; reject a
+    missing/mismatched RTC entry instead of treating it as a legacy checkpoint.
+    """
+    modules = payload.get("modules", {})
+    if not isinstance(modules, dict):
+        raise RuntimeError("checkpoint modules must be a mapping")
+    module_contract = modules.get("runtime_contract")
+    config = payload.get("config", {})
+    if not isinstance(config, dict):
+        raise RuntimeError("checkpoint config must be a mapping")
+    config_contract = config.get("runtime_contract")
+    for contract in (module_contract, config_contract):
+        if contract is not None and not isinstance(contract, dict):
+            raise RuntimeError("runtime contract must be a mapping")
+    module_rtc = (module_contract or {}).get("rtc")
+    config_rtc = (config_contract or {}).get("rtc")
+    if config_contract is not None and config_rtc != module_rtc:
+        raise RuntimeError("module and full-checkpoint RTC contracts disagree")
+    recipe = config.get("training_recipe", {}).get("training", {})
+    if int(recipe.get("rtc_prefix_max", 0)) > 0 and module_rtc is None:
+        raise RuntimeError("RTC training recipe is missing its deployment contract")
+    if module_rtc is None:
+        return None
+    if not isinstance(module_rtc, dict):
+        raise RuntimeError("RTC contract must be a mapping")
+    required = {
+        "version": 1,
+        "mode": "training_time_action_prefix",
+        "clean_timestep": 0.0,
+        "loss": "per_sample_suffix_mean",
+        "includes_zero_prefix": True,
+        "queue_clock": "absolute_action_effect_times",
+        "overflow": "reject_and_refresh",
+    }
+    if any(module_rtc.get(key) != value for key, value in required.items()):
+        raise RuntimeError("unsupported RTC prefix training/deployment semantics")
+    if not modules.get("native_multirate") or modules.get("architecture") != "native":
+        raise RuntimeError("RTC prefix requires the native action architecture")
+    maximum = module_rtc.get("max_prefix_actions")
+    horizon = modules.get("action_expert", {}).get("chunk_size")
+    execute = module_rtc.get("execute_suffix_actions")
+    if any(type(value) is not int for value in (maximum, horizon, execute)):
+        raise RuntimeError("RTC action horizons must be integer metadata")
+    if not 1 <= execute < horizon or not 1 <= maximum <= horizon - execute:
+        raise RuntimeError("RTC prefix must leave the trained executable suffix")
+    if int(recipe.get("rtc_prefix_max", maximum)) != maximum:
+        raise RuntimeError("RTC training recipe and exported prefix limit disagree")
+    return dict(module_rtc)
 
 
 def install_immutable_source_backbone(backbone, contract, normalization):

@@ -145,6 +145,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         "feedback_phase": "", "feedback_initialize": False, "feedback_world_refresh_actions": 16,
         "native_phase": "", "native_fast_steps": 10,
         "native_expert_weight": 1.0, "native_fm_anchor_weight": 0.0,
+        "rtc_prefix_max": 0,
     }.items()}
     if extra_training["fast_supervision"] not in {"executed_prefix", "full_chunk"}:
         raise ValueError("invalid fast_supervision")
@@ -186,7 +187,13 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
     native = top["baseline"] == "world_action_multirate_native_v1"
     if native != bool(training["native_phase"]):
         raise ValueError("native baseline requires an explicit native_phase")
+    if not native and int(training["rtc_prefix_max"]) != 0:
+        raise ValueError("RTC prefix conditioning currently requires the native Action DiT path")
     if native:
+        if not 0 <= int(training["rtc_prefix_max"]) <= int(top["model"]["action_expert"]["chunk_size"]) - int(pairing["execute_horizon"]):
+            raise ValueError("RTC prefix must leave a complete executable suffix")
+        if int(training["rtc_prefix_max"]) and training["native_phase"] != "adapt":
+            raise ValueError("RTC endpoint distillation requires a prefix-conditioned teacher; use adaptation first")
         if training["native_phase"] not in {"adapt", "distill"}:
             raise ValueError("native_phase must be adapt or distill")
         if phase != "fast_warmup" or training["feedback_phase"]:
@@ -269,6 +276,9 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
                       "world_heads": 16, "world_head_dim": 128, "world_queries": 16,
                       "world_dim": 192, "encoder": "compact_gn"}
     world_options = {k: fast_raw.pop(k, v) for k, v in world_defaults.items()}
+    motion_options = {k: fast_raw.pop(k, v) for k, v in {
+        "motion_kv": False, "kv_rank": 8, "max_relative_update": .25,
+    }.items()}
     fast = require_exact_keys(
         fast_raw,
         {
@@ -291,7 +301,11 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         if (int(world_options["world_heads"]), int(world_options["world_head_dim"])) != (int(compact["num_heads"]), int(compact["head_dim"])):
             raise ValueError("native router world head layout differs from video expert")
         fast.update(world_options)
-    elif world_options["world_aware"]:
+        if motion_options["motion_kv"]:
+            if int(motion_options["kv_rank"]) < 1 or not 0 < float(motion_options["max_relative_update"]) <= 1:
+                raise ValueError("invalid motion K/V correction bounds")
+            fast.update(motion_options)
+    elif world_options["world_aware"] or motion_options["motion_kv"]:
         raise ValueError("world-aware conditioner requires the native baseline")
     distributed = require_exact_keys(
         top["distributed"],

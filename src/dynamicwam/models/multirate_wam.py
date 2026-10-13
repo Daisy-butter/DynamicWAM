@@ -98,14 +98,19 @@ class MultirateWAM(nn.Module):
         bridge: BridgeTensorBundle,
         memory: FastConditionMemory,
         video_cache: dict | None = None,
+        prefix=None,
     ) -> torch.Tensor:
         if self.fast_policy is not None:
             return self.fast_policy.predict_velocity(noisy_actions, action_t, memory)
+        if prefix is not None:
+            from dynamicwam.models.rtc_prefix import apply_prefix
+            noisy_actions = apply_prefix(noisy_actions, prefix)
         batch = {
             "video_cache": video_cache if video_cache is not None else bridge.as_video_cache(),
             "noisy_actions": noisy_actions,
             "action_t": action_t,
             "initial_state": current.state,
+            "rtc_prefix": prefix,
             "absolute_motion_features": current.motion,
             "absolute_motion_interval_valid_mask": current.motion_interval_valid_mask,
             "absolute_motion_acceleration_valid_mask": (
@@ -116,10 +121,14 @@ class MultirateWAM(nn.Module):
         def residual(layer_idx: int, tokens: torch.Tensor) -> torch.Tensor:
             return self.fast_conditioner.apply_layer(layer_idx, tokens, memory)
 
+        adapter_kwargs = {}
+        if getattr(self.fast_conditioner, "motion_kv", False):
+            adapter_kwargs["video_kv_adapter"] = lambda i, tokens, k, v: self.fast_conditioner.adapt_video_kv(i, tokens, memory, k, v)
         outputs = self.backbone.forward_action_with_video_cache(
             batch,
             fast_residual=residual,
             null_bridge=bridge.null_bridge,
+            **adapter_kwargs,
         )
         return outputs["action_pred"]
 
@@ -131,6 +140,7 @@ class MultirateWAM(nn.Module):
         noisy_actions: torch.Tensor,
         *,
         denormalize: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        prefix=None,
     ) -> torch.Tensor:
         """Integrate a fresh action noise through the published action schedule.
 
@@ -164,8 +174,12 @@ class MultirateWAM(nn.Module):
                 bridge,
                 memory,
                 video_cache=video_cache,
+                prefix=prefix,
             )
             actions = euler_update(actions, velocity, sigma, sigma_next)
+            if prefix is not None:
+                from dynamicwam.models.rtc_prefix import apply_prefix
+                actions = apply_prefix(actions, prefix)
         if denormalize is not None:
             return denormalize(actions)
         return actions
@@ -302,23 +316,34 @@ class MultirateWAM(nn.Module):
         memory = self.prepare_fast_memory(current, bridge, batch["fast_text"], batch.get("fast_text_mask"))
         metrics = {}
         outputs = {}
+        prefix = batch.get("rtc_prefix")
+        if prefix is not None:
+            from dynamicwam.models.rtc_prefix import PrefixCondition, masked_suffix_mse
+            loss_fn = lambda pred, target: masked_suffix_mse(pred, target, prefix)
+            metrics["rtc/prefix_mean"] = prefix.lengths.float().mean().detach()
+            metrics["rtc/suffix_mean"] = (batch["clean_actions"].shape[1] - prefix.lengths.float()).mean().detach()
+        else:
+            loss_fn = lambda pred, target: F.mse_loss(pred.float(), target.float())
         if self.native_phase == "adapt":
             prediction = self.predict_fast_velocity(batch["fast_noisy_actions"], batch["fast_action_t"],
-                current, bridge, memory)
-            expert_loss = F.mse_loss(prediction.float(), batch["fast_target"].float())
+                current, bridge, memory, prefix=prefix)
+            expert_loss = loss_fn(prediction, batch["fast_target"])
             loss = self.native_expert_weight * expert_loss
             outputs["fast_pred"] = prediction
             metrics["loss/fast"] = expert_loss.detach()
             if not skip_teacher:
                 flow_noise, sigma = batch["teacher_flow_noise"], batch["fast_sigma"]
                 noisy = (1 - sigma) * teacher + sigma * flow_noise
-                teacher_prediction = self.predict_fast_velocity(noisy, batch["fast_action_t"], current, bridge, memory)
+                teacher_prefix = PrefixCondition(teacher, prefix.lengths) if prefix is not None else None
+                teacher_prediction = self.predict_fast_velocity(noisy, batch["fast_action_t"], current, bridge, memory, prefix=teacher_prefix)
                 teacher_target = flow_noise - teacher
-                teacher_loss = F.mse_loss(teacher_prediction.float(), teacher_target.float())
+                teacher_loss = loss_fn(teacher_prediction, teacher_target)
                 loss = loss + self.native_teacher_weight * teacher_loss
                 outputs.update(teacher_pred=teacher_prediction, teacher_target=teacher_target)
                 metrics["loss/native_teacher"] = teacher_loss.detach()
         else:
+            if prefix is not None:
+                raise ValueError("RTC endpoint distillation needs its own prefix-conditioned teacher recipe")
             actions = self.sample_fast_actions(current, bridge, memory, batch["native_fast_noise"])
             expert_loss = F.mse_loss(actions.float(), batch["clean_actions"].float())
             loss = self.native_expert_weight * expert_loss

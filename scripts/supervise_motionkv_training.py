@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""One-shot, SSD-only training launcher/supervisor; never repairs or polls GPUs.
+
+Use --preflight-only to inspect gates, or --detach to leave a durable supervisor.
+Formal runs require an independently verified smoke receipt. An existing NVRM
+anomaly blocks launch unless a human provides the exact current anomaly clearance;
+this program never creates a clearance, retries training, or waits for health.
+"""
+from __future__ import annotations
+
+import argparse
+from contextlib import ExitStack
+import csv
+from datetime import datetime, timezone
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tarfile
+import time
+
+# Do not leave import caches in the home-directory source checkout.
+sys.dont_write_bytecode = True
+
+
+def utc():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def atomic_json(path, data):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def command(argv, *, cwd=None, timeout=30):
+    result = subprocess.run(argv, cwd=cwd, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=timeout, check=False)
+    if result.returncode:
+        raise RuntimeError(f"read-only command failed: {argv[0]}: {result.stderr.strip()}")
+    return result.stdout
+
+
+def inside_ssd(value, ssd, *, must_exist=False):
+    path = Path(value).expanduser().resolve()
+    if path != ssd and ssd not in path.parents:
+        raise ValueError(f"path escapes verified SSD root: {path}")
+    if must_exist and not path.exists():
+        raise ValueError(f"required SSD path does not exist: {path}")
+    return path
+
+
+def verify_ssd(root, minimum_free_gib):
+    root = root.expanduser().resolve(strict=True)
+    if "wuruihan" not in root.parts or not root.is_dir():
+        raise ValueError("SSD root must be an existing wuruihan directory")
+    if root.stat().st_dev == Path("/").stat().st_dev:
+        raise ValueError("SSD root resolves to the system filesystem")
+    mount = json.loads(command(["findmnt", "--json", "--target", str(root)]))["filesystems"][0]
+    source = mount["source"].split("[")[0]
+    rota = command(["lsblk", "-dn", "-o", "ROTA", source]).strip().splitlines()
+    filesystem_uuid = command(["lsblk", "-dn", "-o", "UUID", source]).strip()
+    # .50 exposes the existing project SSD through a hardware RAID logical
+    # volume whose ROTA flag is 1. ROTA cannot identify its member media. Permit
+    # only this previously designated mount identity, never an arbitrary ROTA=1
+    # disk or a fallback path, and preserve the physical-media uncertainty.
+    known_project_raid = (mount.get("target") == "/SSD_DISK" and
+        filesystem_uuid == "efa6ee12-2220-4348-800a-1747091b1672" and
+        root == Path("/SSD_DISK/users/wuruihan/DynamicWAM"))
+    if not rota or (any(value.strip() != "0" for value in rota) and not known_project_raid):
+        raise ValueError("storage is neither non-rotational nor the established project RAID mount")
+    usage, fs = shutil.disk_usage(root), os.statvfs(root)
+    if usage.free < minimum_free_gib * 1024**3 or fs.f_favail < 10000:
+        raise ValueError("insufficient SSD free bytes or inodes")
+    if not os.access(root, os.W_OK):
+        raise PermissionError("SSD wuruihan root is not writable")
+    return root, dict(root=str(root), mount=mount, filesystem_uuid=filesystem_uuid,
+        free_bytes=usage.free, free_inodes=fs.f_favail, rota=rota,
+        physical_media="not independently observable behind hardware RAID" if known_project_raid else "ROTA=0",
+        basis="existing accepted Route1 artifact storage" if known_project_raid else "block-device flag")
+
+
+def driver_evidence():
+    kernel = command(["dmesg", "--color=never"])
+    pattern = re.compile(r"NVRM.*(?:assert|error|Xid|RmInitAdapter|IOVAS|iovaspace)|Xid\s*\(|fallen off the bus|GPU.*(?:fault|error)", re.I)
+    anomalies = [line.strip() for line in kernel.splitlines() if pattern.search(line)]
+    latest = anomalies[-1] if anomalies else None
+    return dict(host=socket.gethostname(), boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        latest_driver_anomaly=latest, latest_driver_anomaly_sha256=digest(latest.encode()) if latest else None,
+        anomaly_count=len(anomalies), driver_anomalies_sha256=digest("\n".join(anomalies).encode()),
+        dmesg_tail=kernel.splitlines()[-200:])
+
+
+def validate_clearance(evidence, clearance_path):
+    """Read ONLY; no mechanism in this launcher produces/updates clearance."""
+    if evidence["latest_driver_anomaly"] is None:
+        return None
+    if clearance_path is None:
+        raise RuntimeError("driver anomaly blocks launch; latest SHA256=" + evidence["latest_driver_anomaly_sha256"])
+    clearance = json.loads(clearance_path.read_text(encoding="utf-8"))
+    for key in ("host", "boot_id", "latest_driver_anomaly_sha256"):
+        if clearance.get(key) != evidence[key]:
+            raise RuntimeError(f"health clearance does not match current {key}; new/changed anomaly blocks launch")
+    if clearance.get("healthy_to_start") is not True or not isinstance(clearance.get("reason"), str) or not clearance["reason"].strip():
+        raise RuntimeError("clearance must contain human reason and healthy_to_start=true")
+    if not isinstance(clearance.get("approved_by"), str) or not clearance["approved_by"].strip():
+        raise RuntimeError("clearance must identify the person who approved current GPU health")
+    return dict(path=str(clearance_path.resolve()), sha256=digest(clearance_path.read_bytes()), value=clearance)
+
+
+def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib):
+    columns = "uuid,pci.bus_id,name,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
+    rows = list(csv.reader(io.StringIO(command(["nvidia-smi", "--query-gpu=" + columns, "--format=csv,noheader,nounits"]))))
+    names = columns.split(",")
+    devices = [{k: v.strip() for k, v in zip(names, row)} for row in rows]
+    if len(devices) != expected_count:
+        raise RuntimeError(f"visible GPU count {len(devices)} differs from expected {expected_count}")
+    by_uuid = {row["uuid"]: row for row in devices}
+    if any(uuid not in by_uuid for uuid in uuids):
+        raise RuntimeError("requested UUID missing from nvidia-smi")
+    process_rows = csv.reader(io.StringIO(command(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory", "--format=csv,noheader,nounits"])))
+    processes = []
+    for row in process_rows:
+        if len(row) != 4:
+            continue
+        item = dict(zip(("gpu_uuid", "pid", "process_name", "used_gpu_memory"), [v.strip() for v in row]))
+        item["owner"] = command(["ps", "-o", "user=", "-p", item["pid"]]).strip()
+        processes.append(item)
+    for uuid in uuids:
+        gpu = by_uuid[uuid]
+        if float(gpu["temperature.gpu"]) >= max_temp_c or float(gpu["memory.used"]) > max_used_mib:
+            raise RuntimeError(f"GPU {uuid} exceeds explicit temperature/memory launch limit")
+        if any(p["gpu_uuid"] == uuid for p in processes):
+            raise RuntimeError(f"GPU {uuid} has an existing compute process; no process is stopped")
+    return dict(devices=devices, processes=processes, selected_uuids=uuids,
+        temperature_limit_c=max_temp_c, used_memory_limit_mib=max_used_mib)
+
+
+def source_files_and_hash(repo):
+    names = command(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=repo).split("\0")
+    files = sorted({name for name in names if name and (name.startswith("src/") or name.startswith("scripts/")) and name.endswith(".py")})
+    sha = hashlib.sha256()
+    for name in files:
+        sha.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
+    return files, sha.hexdigest()
+
+
+def validate_smoke(path, config_sha256, source_sha256):
+    if path is None:
+        raise ValueError("formal training requires --smoke-receipt")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("passed", "gpu_smoke", "checkpoint_reload"):
+        if data.get(key) is not True:
+            raise ValueError(f"smoke receipt missing verified {key}=true")
+    for key, expected in (("formal_config_sha256", config_sha256), ("source_sha256", source_sha256)):
+        if data.get(key) != expected:
+            raise ValueError(f"smoke receipt does not cover current {key}")
+    return dict(path=str(path.resolve()), sha256=digest(path.read_bytes()))
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--config", type=Path, required=True)
+    p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    p.add_argument("--ssd-root", type=Path, required=True)
+    p.add_argument("--run-dir", type=Path, required=True)
+    p.add_argument("--gpu-uuids", required=True, help="comma-separated exact GPU UUIDs")
+    p.add_argument("--mode", choices=("smoke", "formal"), required=True)
+    p.add_argument("--max-temp-c", type=float, required=True, help="explicit hardware/platform launch temperature limit")
+    p.add_argument("--max-used-mib", type=float, default=100)
+    p.add_argument("--expected-gpus", type=int, default=8)
+    p.add_argument("--min-free-gib", type=float, default=20)
+    p.add_argument("--health-clearance", type=Path)
+    p.add_argument("--smoke-receipt", type=Path)
+    p.add_argument("--preflight-only", action="store_true")
+    p.add_argument("--detach", action="store_true")
+    a = p.parse_args()
+    a.uuids = [v.strip() for v in a.gpu_uuids.split(",") if v.strip()]
+    if not a.uuids or len(set(a.uuids)) != len(a.uuids) or any(not v.startswith("GPU-") for v in a.uuids):
+        p.error("unique GPU UUIDs required")
+    if not 0 < a.max_temp_c < 100 or a.max_used_mib < 0 or a.expected_gpus < len(a.uuids):
+        p.error("invalid explicit GPU launch limits")
+    if a.detach and a.preflight_only:
+        p.error("--detach and --preflight-only are mutually exclusive")
+    return a
+
+
+def main():
+    args = parse_args()
+    if os.name != "posix":
+        raise RuntimeError("supervisor requires the Linux training host")
+    ssd, storage = verify_ssd(args.ssd_root, args.min_free_gib)
+    run = inside_ssd(args.run_dir, ssd)
+    run.mkdir(parents=True, exist_ok=True)
+    if (run / "manifest.json").exists() or (run / "status.json").exists():
+        raise RuntimeError("run directory already used; select a new run_id")
+    if args.detach:
+        argv = [sys.executable, str(Path(__file__).resolve()), *[v for v in sys.argv[1:] if v != "--detach"]]
+        with (run / "supervisor.log").open("a", encoding="utf-8") as log:
+            child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        print(json.dumps(dict(supervisor_pid=child.pid, run_dir=str(run), state="dispatched_not_preflight_verified")))
+        return 0
+    status = dict(state="preflight", timestamp=utc(), supervisor_pid=os.getpid(), mode=args.mode)
+    atomic_json(run / "status.json", status)
+    process = None
+    stop = {"signal": None}
+    def request_stop(signum, _frame):
+        stop["signal"] = signum
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    try:
+        repo, config = args.repo.resolve(strict=True), args.config.resolve(strict=True)
+        harness = repo / "harness.md"
+        if not harness.is_file():
+            raise RuntimeError("repository harness.md is required")
+        sys.path.insert(0, str(repo / "src"))
+        from dynamicwam.config.multirate import load_multirate_profile
+        import yaml
+        profile = load_multirate_profile(config)
+        raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+        if not Path(raw["paths"]["project_root"]).is_absolute():
+            raise ValueError("use absolute paths.project_root so the frozen config has unchanged semantics")
+        if Path(raw["paths"]["project_root"]).resolve() != repo:
+            raise ValueError("config project root and supervisor repo differ")
+        training = profile.training
+        paths = {"packed_dataset": training["dataset"]["root"], "source_dataset": training["dataset"]["source_root"],
+            "wan_root": training["model"]["compact_wan"]["checkpoint_path"],
+            "init_checkpoint": training["model"]["initial_checkpoint"],
+            "teacher_checkpoint": training["model"]["native_teacher_checkpoint"]}
+        if training.get("resume_from"):
+            paths["resume_from"] = training["resume_from"]
+        resolved = {key: str(inside_ssd(value, ssd, must_exist=True)) for key, value in paths.items() if value}
+        output = inside_ssd(Path(training["checkpoint_dir"]) / str(training["name"]), ssd)
+        if output.exists() and not training.get("resume_from"):
+            raise RuntimeError("training output already exists; choose a fresh training.name")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        resolved["training_output"] = str(output)
+        cache, temporary = ssd / "caches/motionkv", ssd / "tmp"
+        env = os.environ.copy()
+        env_paths = {"HF_HOME": cache / "huggingface", "HF_HUB_CACHE": cache / "huggingface/hub",
+            "HUGGINGFACE_HUB_CACHE": cache / "huggingface/hub", "TRANSFORMERS_CACHE": cache / "huggingface/transformers",
+            "TORCH_HOME": cache / "torch", "TORCHINDUCTOR_CACHE_DIR": cache / "inductor",
+            "TORCH_EXTENSIONS_DIR": cache / "torch_extensions", "HF_DATASETS_CACHE": cache / "huggingface/datasets",
+            "TRITON_CACHE_DIR": cache / "triton", "CUDA_CACHE_PATH": cache / "cuda",
+            "XDG_CACHE_HOME": cache / "xdg", "WANDB_DIR": run / "wandb", "WANDB_CACHE_DIR": cache / "wandb",
+            "TMPDIR": temporary, "TMP": temporary, "TEMP": temporary}
+        for key, path in env_paths.items():
+            actual = inside_ssd(path, ssd)
+            actual.mkdir(parents=True, exist_ok=True)
+            env[key] = str(actual)
+        env.update(CUDA_VISIBLE_DEVICES=",".join(args.uuids), PYTHONUNBUFFERED="1", PYTHONPATH=str(repo / "src"),
+            WANDB_MODE="disabled", OMP_NUM_THREADS="4", TOKENIZERS_PARALLELISM="false",
+            PYTHONDONTWRITEBYTECODE="1")
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+        config_hash = digest(config.read_bytes())
+        source_files, source_hash = source_files_and_hash(repo)
+        smoke = validate_smoke(args.smoke_receipt, config_hash, source_hash) if args.mode == "formal" else None
+        driver = driver_evidence()
+        atomic_json(run / "driver_preflight.json", driver)
+        clearance = validate_clearance(driver, args.health_clearance)
+        gpu = gpu_preflight(args.uuids, args.expected_gpus, args.max_temp_c, args.max_used_mib)
+        frozen = run / "training_config.yaml"
+        shutil.copyfile(config, frozen)
+        argv = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nnodes=1",
+            f"--nproc_per_node={len(args.uuids)}", str(repo / "scripts/train_multirate.py"), "--config", str(frozen)]
+        manifest = dict(created_at=utc(), host=socket.gethostname(), repo=str(repo),
+            git_head=command(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
+            git_branch=command(["git", "branch", "--show-current"], cwd=repo).strip(),
+            harness_sha256=digest(harness.read_bytes()), route="Route1",
+            git_status=command(["git", "status", "--porcelain"], cwd=repo), source_sha256=source_hash,
+            config_path=str(config), config_sha256=config_hash, frozen_config=str(frozen), command=argv,
+            supervisor_pid=os.getpid(), paths=resolved, storage=storage, gpu_preflight=gpu,
+            driver_preflight_file=str(run / "driver_preflight.json"), health_clearance=clearance,
+            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "PYTHONPATH", "WANDB_MODE")},
+            retry_policy="none", postlaunch_gpu_polling=False)
+        with tarfile.open(run / "source_snapshot.tar.gz", "w:gz") as archive:
+            for name in source_files:
+                archive.add(repo / name, arcname=name, recursive=False)
+        (run / "source.patch").write_text(command(["git", "diff", "--binary", "HEAD"], cwd=repo), encoding="utf-8")
+        atomic_json(run / "manifest.json", manifest)
+        if args.preflight_only:
+            status.update(state="preflight_passed_not_started", timestamp=utc())
+            atomic_json(run / "status.json", status)
+            print(json.dumps(status))
+            return 0
+        # One final driver comparison prevents accepting a clearance for a newer
+        # anomaly appearing during configuration/source checks. No GPU polling.
+        now = driver_evidence()
+        if (now["boot_id"], now["latest_driver_anomaly_sha256"]) != (driver["boot_id"], driver["latest_driver_anomaly_sha256"]):
+            atomic_json(run / "driver_changed.json", now)
+            raise RuntimeError("new driver anomaly since startup preflight; training not started")
+        if stop["signal"]:
+            raise RuntimeError("launch cancelled before training process creation")
+        import fcntl
+        with ExitStack() as stack:
+            for uuid in sorted(args.uuids):
+                lease = stack.enter_context((temporary / f"motionkv-training-{uuid}.lock").open("a+"))
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with (run / "train.log").open("a", encoding="utf-8") as log:
+                process = subprocess.Popen(argv, cwd=repo, env=env, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                pgid = os.getpgid(process.pid)
+                manifest.update(training_pid=process.pid, training_pgid=pgid, started_at=utc())
+                atomic_json(run / "manifest.json", manifest)
+                status.update(state="running", training_pid=process.pid, training_pgid=pgid)
+                last_heartbeat, stop_sent = 0., None
+                while process.poll() is None:
+                    elapsed = time.monotonic()
+                    if stop["signal"] and stop_sent is None:
+                        if os.getpgid(process.pid) != pgid or pgid != process.pid:
+                            raise RuntimeError("refusing to signal a process group with changed ownership")
+                        os.killpg(pgid, signal.SIGTERM)
+                        stop_sent = elapsed
+                        status["state"] = "stopping_own_training_group"
+                    if stop_sent is not None and elapsed - stop_sent > 60 and process.poll() is None:
+                        if os.getpgid(process.pid) == pgid == process.pid:
+                            os.killpg(pgid, signal.SIGKILL)
+                    if elapsed - last_heartbeat >= 30:
+                        status.update(timestamp=utc(), log_bytes=(run / "train.log").stat().st_size,
+                            stop_signal=stop["signal"])
+                        atomic_json(run / "status.json", status)
+                        last_heartbeat = elapsed
+                    time.sleep(1)
+                code = process.wait()
+        status.update(state="process_exited", timestamp=utc(), exit_code=code,
+            training_success_not_inferred_from_exit_alone=True)
+        atomic_json(run / "status.json", status)
+        print(json.dumps(status))
+        return code if code >= 0 else 128 - code
+    except Exception as exc:
+        if process is not None and process.poll() is None:
+            # Only the exact process group created and registered above.
+            try:
+                if os.getpgid(process.pid) == process.pid:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        if os.getpgid(process.pid) == process.pid:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=5)
+            except ProcessLookupError:
+                pass
+        status.update(state="blocked_before_training" if process is None else "supervisor_error",
+            timestamp=utc(), error=f"{type(exc).__name__}: {exc}")
+        atomic_json(run / "status.json", status)
+        print(json.dumps(status), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

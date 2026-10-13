@@ -1,6 +1,6 @@
 """Frozen native fast-query CUDA graph with explicit static input ownership.
 
-This captures observation routing and the complete one/two-step action solver.
+This captures observation routing and the complete trained action solver.
 It changes launch scheduling only. Every query copies observation, age, text,
 noise and world K/V; replays never silently retain an old action or old bridge.
 Capture errors are fatal when enabled. CPU/explicitly disabled use is eager.
@@ -16,6 +16,7 @@ from dynamicwam.models.flow_schedule import scheduler_delta_product
 
 from dynamicwam.models.action_core_ops import materialize_attention_cache
 from dynamicwam.models.multirate_types import BridgeAge
+from dynamicwam.models.rtc_prefix import PrefixCondition, apply_prefix, validate_prefix_condition
 
 
 def _tensor_signature(value):
@@ -41,7 +42,7 @@ class NativeFastGraph:
     def invalidate(self):
         self.graph = None
         self.signature = None
-        for name in ("current", "bridge", "conditioning_bridge", "text", "text_mask", "noise", "output", "timesteps", "deltas", "video_cache"):
+        for name in ("current", "bridge", "conditioning_bridge", "text", "text_mask", "noise", "prefix", "output", "timesteps", "deltas", "video_cache"):
             if hasattr(self, name):
                 delattr(self, name)
 
@@ -51,14 +52,15 @@ class NativeFastGraph:
         if any(p.requires_grad for p in self.model.parameters()):
             raise RuntimeError("native graph requires frozen inference weights")
 
-    def _signature(self, current, bridge, text, text_mask, noise):
+    def _signature(self, current, bridge, text, text_mask, noise, prefix):
         # Values remain dynamic, including both clocks; only shape/dtype and a
         # host-side bool branch are part of the capture contract.
         null = bridge.null_bridge
         null_signature = _tensor_signature(null) if torch.is_tensor(null) else ("host_bool", bool(null))
         return (tuple(_tensor_signature(v) for v in (current.rgb, current.rgb_valid_mask,
                     current.state, current.motion, current.motion_interval_valid_mask,
-                    current.motion_acceleration_valid_mask, current.age.state_delta, text, text_mask, noise)),
+                    current.motion_acceleration_valid_mask, current.age.state_delta, text, text_mask, noise,
+                    prefix.actions, prefix.lengths)),
                 tuple(_tensor_signature(v) for v in (*bridge.video_k, *bridge.video_v, bridge.seq_lens)),
                 null_signature, bool(bridge.all_video_tokens_valid),
                 tuple(float(v) for v in self.model.fast_schedule.action_sigmas.cpu()),
@@ -79,7 +81,7 @@ class NativeFastGraph:
                          column(current.age.delta_actions, dtype),
                          column(current.age.bridge_valid, torch.bool), current.age.state_delta)
 
-    def _allocate(self, current, bridge, text, text_mask, noise):
+    def _allocate(self, current, bridge, text, text_mask, noise, prefix):
         device = noise.device
         def clone(value):
             return None if value is None else value.detach().to(device=device).clone()
@@ -99,6 +101,7 @@ class NativeFastGraph:
         self.conditioning_bridge = replace(self.bridge, null_bridge=torch.as_tensor(
             self.bridge.null_bridge, device=device, dtype=torch.bool))
         self.text, self.text_mask, self.noise = clone(text), clone(text_mask), clone(noise)
+        self.prefix = PrefixCondition(clone(prefix.actions), clone(prefix.lengths))
         self.video_cache = materialize_attention_cache(self.bridge.as_video_cache(), device=device,
             dtype=self.model.backbone.action_attention_spec.precision)
         # All solver constants are materialized before capture; constructing a
@@ -109,7 +112,7 @@ class NativeFastGraph:
             self.timesteps.append(timestep.to(device=device, dtype=noise.dtype).reshape(1).expand(noise.shape[0]))
             self.deltas.append((next_sigma - sigma).to(device=device))
 
-    def _copy_inputs(self, current, bridge, text, text_mask, noise):
+    def _copy_inputs(self, current, bridge, text, text_mask, noise, prefix):
         for name in ("rgb", "state", "motion", "motion_interval_valid_mask", "motion_acceleration_valid_mask"):
             getattr(self.current, name).copy_(getattr(current, name))
         if self.current.rgb_valid_mask is not None:
@@ -121,6 +124,9 @@ class NativeFastGraph:
         if self.text_mask is not None:
             self.text_mask.copy_(text_mask)
         self.noise.copy_(noise)
+        # Refresh EVERY replay, including prefix=None (canonical d=0).
+        self.prefix.actions.copy_(prefix.actions)
+        self.prefix.lengths.copy_(prefix.lengths)
         self.bridge.seq_lens.copy_(bridge.seq_lens)
         if torch.is_tensor(self.bridge.null_bridge):
             self.bridge.null_bridge.copy_(bridge.null_bridge)
@@ -150,8 +156,9 @@ class NativeFastGraph:
         actions = self.noise
         for timestep, delta in zip(self.timesteps, self.deltas, strict=True):
             velocity = self.model.predict_fast_velocity(actions, timestep, self.current,
-                self.bridge, memory, video_cache=self.video_cache)
+                self.bridge, memory, video_cache=self.video_cache, prefix=self.prefix)
             actions = actions + scheduler_delta_product(velocity, delta)
+            actions = apply_prefix(actions, self.prefix)
         return actions
 
     def _capture(self):
@@ -174,32 +181,39 @@ class NativeFastGraph:
         self.stats["last_capture_ms"] = (time.perf_counter() - start) * 1000
 
     @torch.inference_mode()
-    def sample(self, current, bridge, text, text_mask, noise):
+    def sample(self, current, bridge, text, text_mask, noise, prefix=None):
         self._check_model()
+        if prefix is None:
+            prefix = PrefixCondition(torch.zeros_like(noise),
+                torch.zeros(noise.shape[0], device=noise.device, dtype=torch.long))
+        # Value checks are deliberately outside capture. Invalid delays fail;
+        # they must never be clipped silently to the trained maximum.
+        validate_prefix_condition(prefix,
+            max_prefix=int(getattr(self.model, "rtc_prefix_max", 0)), reference=noise)
         use_graph = self.requested_enabled and noise.is_cuda
         self.stats["enabled"] = use_graph
         if not use_graph:
             self.stats["eager_calls"] += 1
             memory = self.model.prepare_fast_memory(current, bridge, text, text_mask)
-            return self.model.sample_fast_actions(current, bridge, memory, noise)
-        if len(self.model.fast_schedule.action_sigmas) not in (1, 2):
-            raise ValueError("native CUDA graph supports trained one/two-step inference only")
+            return self.model.sample_fast_actions(current, bridge, memory, noise, prefix=prefix)
+        if len(self.model.fast_schedule.action_sigmas) not in (1, 2, 4, 10):
+            raise ValueError("native CUDA graph supports trained 1/2/4/10-step inference only")
         if not bridge.all_video_tokens_valid:
             raise ValueError("native CUDA graph requires a certified dense world cache")
         if torch.is_autocast_enabled("cuda"):
             raise RuntimeError("native graph must run under the normal explicit-dtype inference policy")
         self.model.backbone.absolute_motion_tokens.validate_inputs(current.motion,
             current.motion_interval_valid_mask, current.motion_acceleration_valid_mask)
-        signature = self._signature(current, bridge, text, text_mask, noise)
+        signature = self._signature(current, bridge, text, text_mask, noise, prefix)
         try:
             if signature != self.signature:
                 self.invalidate()
-                self._allocate(current, bridge, text, text_mask, noise)
+                self._allocate(current, bridge, text, text_mask, noise, prefix)
                 self._capture()
                 self.signature = signature
                 self.stats["last_signature"] = repr(signature)
             else:
-                self._copy_inputs(current, bridge, text, text_mask, noise)
+                self._copy_inputs(current, bridge, text, text_mask, noise, prefix)
             with torch.cuda.device(noise.device):
                 self.graph.replay()
             self.stats["replays"] += 1

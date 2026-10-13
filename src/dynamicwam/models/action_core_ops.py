@@ -118,6 +118,7 @@ class ActionCoreOps:
         video_cache: Dict[str, object],
         *,
         null_bridge: bool = False,
+        video_kv_adapter=None,
     ) -> torch.Tensor:
         spec = self.action_attention_spec
         action_block = self.action_expert.blocks[layer_idx]
@@ -163,6 +164,8 @@ class ActionCoreOps:
             if not video_cache.get("attention_ready", False):
                 vk = vk.to(device=action_q.device, dtype=attention_dtype)
                 vv = vv.to(device=action_v.device, dtype=attention_dtype)
+            if video_kv_adapter is not None:
+                vk, vv = video_kv_adapter(layer_idx, action_tokens, vk, vv)
             dense = bool(video_cache.get("all_video_tokens_valid", False))
             if isinstance(null_bridge, bool):
                 # No Tensor -> Python decisions in the 12-layer/10-step loop.
@@ -283,6 +286,7 @@ class ActionCoreOps:
         *,
         fast_residual=None,
         null_bridge: bool = False,
+        video_kv_adapter=None,
     ) -> Dict[str, torch.Tensor]:
         video_cache = batch["video_cache"]
         noisy_actions = batch["noisy_actions"]
@@ -294,6 +298,9 @@ class ActionCoreOps:
             noisy_actions,
             initial_state,
         )
+        if batch.get("rtc_prefix") is not None:
+            from dynamicwam.models.rtc_prefix import action_token_times
+            action_t = action_token_times(action_t, batch["rtc_prefix"], action_tokens.shape[1])
         action_head_time_emb, action_adaln_params = self._build_action_time_embeddings(
             action_t,
             action_tokens.shape[1],
@@ -310,6 +317,7 @@ class ActionCoreOps:
                 layer_idx,
                 video_cache,
                 null_bridge=null_bridge,
+                video_kv_adapter=video_kv_adapter,
             )
             if fast_residual is not None:
                 action_tokens = fast_residual(layer_idx, action_tokens)

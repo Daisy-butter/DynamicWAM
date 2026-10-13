@@ -1,0 +1,13 @@
+{
+  "checked_date": "2026-10-13",
+  "rtc_decision": "Original RTC is inference-time PiGDM/VJP guidance and does not require retraining. For an asynchronous queue, this candidate uses training-time clean action-prefix conditioning, tokenwise clean timestep, and suffix-only loss. Continuous synchronous simulation is not itself RTC. Queue wiring and real timing parity are required before claiming asynchronous evaluation.",
+  "flow_convention": "x=(1-sigma)*clean+sigma*noise; t=1000*sigma; clean prefix t=0",
+  "sources": [
+    {"name":"RTC and Training-Time Action Conditioning official implementation", "url":"https://github.com/Physical-Intelligence/real-time-chunking-kinetix", "evidence":"src/model.py:200-263 implements both VJP guidance and clean-prefix training/inference; README links original 2506.07339 and follow-up 2512.05964", "use":"Prefix conditioning with a trained delay distribution; no claim that original RTC requires retraining."},
+    {"name":"VLASH original paper", "url":"https://arxiv.org/html/2512.01031v1", "evidence":"Section 4.2 trains fixed visual observation with jointly offset future robot state/action; official code mit-han-lab/vlash", "use":"Timestamp alignment and future-state awareness; cannot substitute for dynamic-object motion updates."},
+    {"name":"Realtime-VLA V2 official implementation", "url":"https://github.com/dexmal/realtime-vla-v2", "evidence":"Triton backend extends realtime-vla with training-time RTC action prefill and time-axis planning", "use":"Static inference and execution-time alignment; do not conflate trajectory speed with model latency."},
+    {"name":"Flash-WAM official implementation", "url":"https://github.com/NU-World-Model-Embodied-AI/Flash-WAM", "evidence":"Modality-specific consistency distillation for video and action", "use":"Later step distillation after obtaining a reliable teacher; naive NFE cuts are not equivalent."},
+    {"name":"Efficient-WAM official implementation", "url":"https://github.com/jiajun613/Efficient-WAM", "evidence":"Compact video expert, multiscale future latents, asymmetric video-action denoising", "use":"Control-relevant coarse dynamics; does not establish exact cross-action-condition KV cache reuse."},
+    {"name":"Fast-WAM official implementation", "url":"https://github.com/yuantianyuan01/FastWAM", "evidence":"Video co-training with optional future-free inference; compiled denoise, batched VAE, CUDA Graph, cached text embeddings", "use":"System optimization organization; retain DynamicWAM dynamics rather than assume future-free inference is harmless on DOMINO."}
+  ]
+}

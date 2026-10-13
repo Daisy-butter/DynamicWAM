@@ -56,6 +56,7 @@ class MultiratePolicy:
         reuse_action_noise: bool = False,
         bridge_wait_budget_ms: float = 150.0,
         native_cuda_graph: bool = True,
+        allow_zero_prefix_ablation: bool = False,
     ) -> None:
         if scheduling not in {"controlled_ratio", "independent_worker"}:
             raise ValueError("unknown multirate scheduling mode")
@@ -65,6 +66,9 @@ class MultiratePolicy:
         self.reuse_action_noise = bool(reuse_action_noise)
         self.bridge_wait_budget_ms = float(bridge_wait_budget_ms)
         self.native_cuda_graph = bool(native_cuda_graph)
+        if type(allow_zero_prefix_ablation) is not bool:
+            raise TypeError("allow_zero_prefix_ablation must be an explicit bool")
+        self.allow_zero_prefix_ablation = allow_zero_prefix_ablation
         self.fast_graph = None
         self.worker = None
         self._producer_stream = None
@@ -109,7 +113,8 @@ class MultiratePolicy:
         )
         runner = self.base.runner
         payload = load_checkpoint_payload(self.checkpoint_path)
-        schedule, self.contract = validate_runtime_contract(payload, self.runtime)
+        schedule, self.contract = validate_runtime_contract(payload, self.runtime,
+            allow_zero_prefix_ablation=self.allow_zero_prefix_ablation)
         validate_native_scheduling(self.contract, self.scheduling)
         spec = payload["modules"]
         compact = spec.get("compact_fast")
@@ -148,7 +153,8 @@ class MultiratePolicy:
         self.wrapper.eval().requires_grad_(False)
         # Slow bridge keeps runner.model (VAE + Video DiT). Action sampling uses
         # a second read-only copy with no world weights.
-        self.fast_model = isolated_fast_runtime(payload, device=runner.device, dtype=precision)
+        self.fast_model = isolated_fast_runtime(payload, device=runner.device, dtype=precision,
+            allow_zero_prefix_ablation=self.allow_zero_prefix_ablation)
         if self.contract.get('native_multirate'):
             from dynamicwam.inference.native_fast_graph import NativeFastGraph
             self.fast_graph = NativeFastGraph(self.fast_model,
