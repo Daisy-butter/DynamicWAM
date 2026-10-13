@@ -25,7 +25,7 @@ pairing:
   stress_probability: 0.0
   age_weighting: uniform
 training:
-  name: motionkv_rtc_smoke_1gpu_20261013
+  name: motionkv_rtc_smoke_1gpu_20261014_r2
   device: cuda
   log_level: INFO
   max_steps: 4

@@ -168,6 +168,51 @@ def validate_clearance(evidence, clearance_path, selected_uuids):
     return dict(path=str(clearance_path.resolve()), sha256=digest(clearance_path.read_bytes()), value=clearance)
 
 
+def process_identity(pid):
+    """Read Linux process identity without creating processes or signalling it."""
+    try:
+        text = Path(f"/proc/{int(pid)}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    # comm can contain spaces and parentheses; fields after the final ')' are
+    # state(3), ppid(4), pgrp(5), ... starttime(22).
+    fields = text.rsplit(")", 1)[1].split()
+    return dict(pid=int(pid), state=fields[0], ppid=int(fields[1]),
+        pgrp=int(fields[2]), starttime=int(fields[19]))
+
+
+def training_descendant(pid, root_pid, *, reader=process_identity):
+    """True for the exact live torchrun tree, False for outsiders, None if gone.
+
+    Elastic workers may create separate process groups. Membership is therefore
+    proved through /proc ancestry, never through a shared username or command.
+    The supervisor owns/reaps root_pid, preventing its reuse while Popen is live.
+    """
+    original = reader(pid)
+    root = reader(root_pid)
+    if original is None or original["state"] == "Z" or root is None:
+        return None
+    current, seen = original, set()
+    for _ in range(256):
+        if current["pid"] in seen:
+            break
+        seen.add(current["pid"])
+        if current["pid"] == root_pid:
+            again, root_again = reader(pid), reader(root_pid)
+            if again is None or root_again is None or again["state"] == "Z":
+                return None
+            return (again["starttime"] == original["starttime"] and
+                root_again["starttime"] == root["starttime"])
+        if current["ppid"] <= 1:
+            break
+        current = reader(current["ppid"])
+        if current is None:
+            # CUDA/NVML can still report an already exiting process. Only
+            # excuse disappearance of that exact PID, not an unknown ancestor.
+            return None if reader(pid) is None else False
+    return None if reader(pid) is None else False
+
+
 def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib, *, own_pgid=None):
     columns = "uuid,pci.bus_id,name,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     rows = list(csv.reader(io.StringIO(command(["nvidia-smi", "--query-gpu=" + columns, "--format=csv,noheader,nounits"]))))
@@ -184,7 +229,15 @@ def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib, *, own_pgid=N
         if len(row) != 4:
             continue
         item = dict(zip(("gpu_uuid", "pid", "process_name", "used_gpu_memory"), [v.strip() for v in row]))
-        item["owner"] = command(["ps", "-o", "user=", "-p", item["pid"]]).strip()
+        identity = process_identity(int(item["pid"]))
+        if identity is None or identity["state"] == "Z":
+            continue
+        # /proc can disappear between the NVML snapshot and this read.
+        try:
+            import pwd
+            item["owner"] = pwd.getpwuid(Path(f"/proc/{item['pid']}").stat().st_uid).pw_name
+        except (FileNotFoundError, ProcessLookupError):
+            continue
         processes.append(item)
     for uuid in uuids:
         gpu = by_uuid[uuid]
@@ -192,7 +245,9 @@ def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib, *, own_pgid=N
             raise RuntimeError(f"GPU {uuid} exceeds explicit temperature/memory launch limit")
         for item in processes:
             if item["gpu_uuid"] == uuid:
-                if own_pgid is None or os.getpgid(int(item["pid"])) != own_pgid:
+                relation = training_descendant(int(item["pid"]), own_pgid) if own_pgid is not None else False
+                item["training_ancestry"] = "owned" if relation else "exited" if relation is None else "external"
+                if relation is False:
                     raise RuntimeError(f"GPU {uuid} has a compute process outside this run; no unrelated process is stopped")
     return dict(devices=devices, processes=processes, selected_uuids=uuids,
         temperature_limit_c=max_temp_c, used_memory_limit_mib=max_used_mib)
