@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""One-shot, SSD-only training launcher/supervisor; never repairs or polls GPUs.
+"""One-shot SSD training supervisor with a bounded startup health window.
 
 Use --preflight-only to inspect gates, or --detach to leave a durable supervisor.
-Formal runs require an independently verified smoke receipt. An existing NVRM
-anomaly blocks launch unless a human provides the exact current anomaly clearance;
-this program never creates a clearance, retries training, or waits for health.
+Formal runs require an independently verified smoke receipt. Known historical
+assertions require explicit, evidence-bound authorization; authorization is not a
+claim that a driver was repaired. Never creates clearance, repairs, or retries.
 """
 from __future__ import annotations
 
@@ -36,6 +36,27 @@ def utc():
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def file_digest(path):
+    sha = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            sha.update(block)
+    return sha.hexdigest()
+
+
+def json_file(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def referenced_receipt(reference):
+    if not isinstance(reference, dict) or not reference.get("path"):
+        raise ValueError("receipt requires path and sha256")
+    path = Path(reference["path"]).resolve(strict=True)
+    if file_digest(path) != reference.get("sha256"):
+        raise ValueError(f"receipt content hash mismatch: {path}")
+    return json_file(path)
 
 
 def atomic_json(path, data):
@@ -93,7 +114,7 @@ def verify_ssd(root, minimum_free_gib):
 
 def driver_evidence():
     kernel = command(["dmesg", "--color=never"])
-    pattern = re.compile(r"NVRM.*(?:assert|error|Xid|RmInitAdapter|IOVAS|iovaspace)|Xid\s*\(|fallen off the bus|GPU.*(?:fault|error)", re.I)
+    pattern = re.compile(r"NVRM.*(?:assert|error|Xid|RmInitAdapter|IOVAS|iovaspace)|Xid\s*\(|fallen off the bus|GPU.*(?:fault|error)|AER.*\bFatal\b|PCIe Bus Error:.*\bFatal\b", re.I)
     anomalies = [line.strip() for line in kernel.splitlines() if pattern.search(line)]
     latest = anomalies[-1] if anomalies else None
     return dict(host=socket.gethostname(), boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
@@ -102,24 +123,52 @@ def driver_evidence():
         dmesg_tail=kernel.splitlines()[-200:])
 
 
-def validate_clearance(evidence, clearance_path):
+def driver_identity(evidence):
+    return tuple(evidence.get(k) for k in (
+        "host", "boot_id", "anomaly_count", "driver_anomalies_sha256",
+        "latest_driver_anomaly_sha256"))
+
+
+def validate_clearance(evidence, clearance_path, selected_uuids):
     """Read ONLY; no mechanism in this launcher produces/updates clearance."""
     if evidence["latest_driver_anomaly"] is None:
         return None
     if clearance_path is None:
         raise RuntimeError("driver anomaly blocks launch; latest SHA256=" + evidence["latest_driver_anomaly_sha256"])
-    clearance = json.loads(clearance_path.read_text(encoding="utf-8"))
-    for key in ("host", "boot_id", "latest_driver_anomaly_sha256"):
+    clearance = json_file(clearance_path)
+    for key in ("host", "boot_id", "driver_anomalies_sha256", "latest_driver_anomaly_sha256"):
         if clearance.get(key) != evidence[key]:
             raise RuntimeError(f"health clearance does not match current {key}; new/changed anomaly blocks launch")
-    if clearance.get("healthy_to_start") is not True or not isinstance(clearance.get("reason"), str) or not clearance["reason"].strip():
-        raise RuntimeError("clearance must contain human reason and healthy_to_start=true")
+    if sorted(clearance.get("selected_gpu_uuids", [])) != sorted(selected_uuids):
+        raise RuntimeError("authorization must cover exactly the selected GPU UUIDs")
+    if not isinstance(clearance.get("reason"), str) or not clearance["reason"].strip():
+        raise RuntimeError("authorization requires a reason")
     if not isinstance(clearance.get("approved_by"), str) or not clearance["approved_by"].strip():
-        raise RuntimeError("clearance must identify the person who approved current GPU health")
+        raise RuntimeError("authorization must identify its human source")
+    kind = clearance.get("authorization_kind")
+    if kind == "admin_health_clearance":
+        if clearance.get("healthy_to_start") is not True:
+            raise RuntimeError("administrator health clearance requires healthy_to_start=true")
+    elif kind == "user_authorized_controlled_start":
+        if clearance.get("driver_resolved") is not False or clearance.get("authorized_to_start") is not True:
+            raise RuntimeError("controlled start must acknowledge unresolved history and explicit authorization")
+        diagnostic = referenced_receipt(clearance.get("diagnostic_receipt"))
+        if diagnostic.get("passed") is not True:
+            raise RuntimeError("controlled start requires an actually passed diagnostic")
+        for key in ("boot_id", "driver_anomalies_sha256", "latest_driver_anomaly_sha256"):
+            if diagnostic.get(key) != evidence[key]:
+                raise RuntimeError(f"diagnostic does not cover current {key}")
+        tested = set(diagnostic.get("gpu_uuids", []))
+        if not tested or tested != set(selected_uuids):
+            raise RuntimeError("diagnostic UUIDs must exactly cover authorized devices")
+        # Every selected device must have an actual diagnostic result.
+        clearance["diagnostically_tested_gpu_uuids"] = sorted(tested)
+    else:
+        raise RuntimeError("explicit user_authorized_controlled_start or admin_health_clearance required")
     return dict(path=str(clearance_path.resolve()), sha256=digest(clearance_path.read_bytes()), value=clearance)
 
 
-def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib):
+def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib, *, own_pgid=None):
     columns = "uuid,pci.bus_id,name,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     rows = list(csv.reader(io.StringIO(command(["nvidia-smi", "--query-gpu=" + columns, "--format=csv,noheader,nounits"]))))
     names = columns.split(",")
@@ -139,10 +188,12 @@ def gpu_preflight(uuids, expected_count, max_temp_c, max_used_mib):
         processes.append(item)
     for uuid in uuids:
         gpu = by_uuid[uuid]
-        if float(gpu["temperature.gpu"]) >= max_temp_c or float(gpu["memory.used"]) > max_used_mib:
+        if float(gpu["temperature.gpu"]) >= max_temp_c or (max_used_mib is not None and float(gpu["memory.used"]) > max_used_mib):
             raise RuntimeError(f"GPU {uuid} exceeds explicit temperature/memory launch limit")
-        if any(p["gpu_uuid"] == uuid for p in processes):
-            raise RuntimeError(f"GPU {uuid} has an existing compute process; no process is stopped")
+        for item in processes:
+            if item["gpu_uuid"] == uuid:
+                if own_pgid is None or os.getpgid(int(item["pid"])) != own_pgid:
+                    raise RuntimeError(f"GPU {uuid} has a compute process outside this run; no unrelated process is stopped")
     return dict(devices=devices, processes=processes, selected_uuids=uuids,
         temperature_limit_c=max_temp_c, used_memory_limit_mib=max_used_mib)
 
@@ -156,17 +207,46 @@ def source_files_and_hash(repo):
     return files, sha.hexdigest()
 
 
-def validate_smoke(path, config_sha256, source_sha256):
+def validate_smoke(path, config_sha256, source_sha256, ssd):
     if path is None:
         raise ValueError("formal training requires --smoke-receipt")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json_file(path)
     for key in ("passed", "gpu_smoke", "checkpoint_reload"):
         if data.get(key) is not True:
             raise ValueError(f"smoke receipt missing verified {key}=true")
     for key, expected in (("formal_config_sha256", config_sha256), ("source_sha256", source_sha256)):
         if data.get(key) != expected:
             raise ValueError(f"smoke receipt does not cover current {key}")
+    smoke_run = inside_ssd(data["smoke_run_dir"], ssd, must_exist=True)
+    manifest_path, status_path = smoke_run / "manifest.json", smoke_run / "status.json"
+    for file, key in ((manifest_path, "smoke_manifest_sha256"), (status_path, "smoke_status_sha256")):
+        if file_digest(file) != data.get(key):
+            raise ValueError(f"smoke receipt does not match source {key}")
+    manifest, status = json_file(manifest_path), json_file(status_path)
+    if manifest.get("mode") != "smoke" or manifest.get("source_sha256") != source_sha256:
+        raise ValueError("receipt source is not a matching smoke run")
+    if status.get("state") != "process_exited" or status.get("exit_code") != 0 or status.get("stop_reason"):
+        raise ValueError("smoke source did not exit cleanly without supervisor termination")
+    checkpoint = inside_ssd(data["checkpoint_path"], ssd, must_exist=True)
+    output = Path(manifest["paths"]["training_output"]).resolve()
+    if output not in checkpoint.parents or file_digest(checkpoint) != data.get("checkpoint_sha256"):
+        raise ValueError("smoke checkpoint identity/location mismatch")
+    reload = referenced_receipt(data.get("checkpoint_reload_receipt"))
+    if reload.get("passed") is not True or reload.get("checkpoint_sha256") != data["checkpoint_sha256"]:
+        raise ValueError("checkpoint reload evidence does not validate this checkpoint")
+    if reload.get("source_sha256") != source_sha256:
+        raise ValueError("checkpoint reload evidence used different code")
     return dict(path=str(path.resolve()), sha256=digest(path.read_bytes()))
+
+
+def startup_health(args, baseline, pgid):
+    driver = driver_evidence()
+    if driver_identity(driver) != driver_identity(baseline):
+        error = RuntimeError("driver evidence changed since authorized baseline (new anomaly or log change)")
+        error.driver_evidence = driver
+        raise error
+    gpu = gpu_preflight(args.uuids, args.expected_gpus, args.max_temp_c, None, own_pgid=pgid)
+    return dict(timestamp=utc(), driver_identity=driver_identity(driver), gpu=gpu)
 
 
 def parse_args():
@@ -183,6 +263,11 @@ def parse_args():
     p.add_argument("--min-free-gib", type=float, default=20)
     p.add_argument("--health-clearance", type=Path)
     p.add_argument("--smoke-receipt", type=Path)
+    p.add_argument("--startup-health-seconds", type=float, default=600,
+        help="bounded initial read-only GPU/driver checking window; none afterwards")
+    p.add_argument("--health-check-interval", type=float, default=30)
+    p.add_argument("--max-runtime-seconds", type=float, default=0,
+        help="positive value sends TERM to this run's process group at the deadline")
     p.add_argument("--preflight-only", action="store_true")
     p.add_argument("--detach", action="store_true")
     a = p.parse_args()
@@ -193,6 +278,8 @@ def parse_args():
         p.error("invalid explicit GPU launch limits")
     if a.detach and a.preflight_only:
         p.error("--detach and --preflight-only are mutually exclusive")
+    if a.startup_health_seconds < 0 or a.health_check_interval <= 0 or a.max_runtime_seconds < 0:
+        p.error("invalid monitoring/deadline durations")
     return a
 
 
@@ -261,20 +348,23 @@ def main():
             env[key] = str(actual)
         env.update(CUDA_VISIBLE_DEVICES=",".join(args.uuids), PYTHONUNBUFFERED="1", PYTHONPATH=str(repo / "src"),
             WANDB_MODE="disabled", OMP_NUM_THREADS="4", TOKENIZERS_PARALLELISM="false",
-            PYTHONDONTWRITEBYTECODE="1")
+            PYTHONDONTWRITEBYTECODE="1", PYTORCH_NVML_BASED_CUDA_CHECK="1",
+            ACCELERATE_USE_DEEPSPEED="true", ACCELERATE_MIXED_PRECISION="bf16")
         env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
         config_hash = digest(config.read_bytes())
         source_files, source_hash = source_files_and_hash(repo)
-        smoke = validate_smoke(args.smoke_receipt, config_hash, source_hash) if args.mode == "formal" else None
+        smoke = validate_smoke(args.smoke_receipt, config_hash, source_hash, ssd) if args.mode == "formal" else None
         driver = driver_evidence()
         atomic_json(run / "driver_preflight.json", driver)
-        clearance = validate_clearance(driver, args.health_clearance)
+        clearance = validate_clearance(driver, args.health_clearance, args.uuids)
+        if clearance and clearance["value"]["authorization_kind"] == "user_authorized_controlled_start" and args.startup_health_seconds <= 0:
+            raise ValueError("controlled start requires a nonzero bounded startup health window")
         gpu = gpu_preflight(args.uuids, args.expected_gpus, args.max_temp_c, args.max_used_mib)
         frozen = run / "training_config.yaml"
         shutil.copyfile(config, frozen)
         argv = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nnodes=1",
             f"--nproc_per_node={len(args.uuids)}", str(repo / "scripts/train_multirate.py"), "--config", str(frozen)]
-        manifest = dict(created_at=utc(), host=socket.gethostname(), repo=str(repo),
+        manifest = dict(created_at=utc(), host=socket.gethostname(), repo=str(repo), mode=args.mode,
             git_head=command(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
             git_branch=command(["git", "branch", "--show-current"], cwd=repo).strip(),
             harness_sha256=digest(harness.read_bytes()), route="Route1",
@@ -282,8 +372,10 @@ def main():
             config_path=str(config), config_sha256=config_hash, frozen_config=str(frozen), command=argv,
             supervisor_pid=os.getpid(), paths=resolved, storage=storage, gpu_preflight=gpu,
             driver_preflight_file=str(run / "driver_preflight.json"), health_clearance=clearance,
-            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "PYTHONPATH", "WANDB_MODE")},
-            retry_policy="none", postlaunch_gpu_polling=False)
+            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "PYTHONPATH", "WANDB_MODE", "PYTORCH_NVML_BASED_CUDA_CHECK", "ACCELERATE_USE_DEEPSPEED", "ACCELERATE_MIXED_PRECISION", "PATH")},
+            retry_policy="none", startup_health_seconds=args.startup_health_seconds,
+            health_check_interval=args.health_check_interval, max_runtime_seconds=args.max_runtime_seconds,
+            postwindow_gpu_polling=False, termination_policy="TERM own registered process group only")
         with tarfile.open(run / "source_snapshot.tar.gz", "w:gz") as archive:
             for name in source_files:
                 archive.add(repo / name, arcname=name, recursive=False)
@@ -295,9 +387,9 @@ def main():
             print(json.dumps(status))
             return 0
         # One final driver comparison prevents accepting a clearance for a newer
-        # anomaly appearing during configuration/source checks. No GPU polling.
+        # anomaly appearing during configuration/source checks.
         now = driver_evidence()
-        if (now["boot_id"], now["latest_driver_anomaly_sha256"]) != (driver["boot_id"], driver["latest_driver_anomaly_sha256"]):
+        if driver_identity(now) != driver_identity(driver):
             atomic_json(run / "driver_changed.json", now)
             raise RuntimeError("new driver anomaly since startup preflight; training not started")
         if stop["signal"]:
@@ -314,21 +406,40 @@ def main():
                 manifest.update(training_pid=process.pid, training_pgid=pgid, started_at=utc())
                 atomic_json(run / "manifest.json", manifest)
                 status.update(state="running", training_pid=process.pid, training_pgid=pgid)
+                started = time.monotonic()
                 last_heartbeat, stop_sent = 0., None
+                next_health = started + min(args.health_check_interval, args.startup_health_seconds)
+                status["startup_health_window_seconds"] = args.startup_health_seconds
+                status["stop_reason"] = None
                 while process.poll() is None:
                     elapsed = time.monotonic()
+                    runtime = elapsed - started
+                    if args.max_runtime_seconds > 0 and runtime >= args.max_runtime_seconds and not stop["signal"]:
+                        stop["signal"] = signal.SIGTERM
+                        status["stop_reason"] = "max_runtime_seconds_exceeded"
+                    if not stop["signal"] and args.startup_health_seconds > 0 and runtime <= args.startup_health_seconds and elapsed >= next_health:
+                        try:
+                            health = startup_health(args, driver, pgid)
+                            atomic_json(run / "startup_health_latest.json", health)
+                            status["last_startup_health_at"] = health["timestamp"]
+                        except Exception as health_error:
+                            status["stop_reason"] = "startup_health_failed"
+                            status["health_error"] = f"{type(health_error).__name__}: {health_error}"
+                            atomic_json(run / "startup_health_failure.json", dict(timestamp=utc(), error=status["health_error"],
+                                driver_evidence=getattr(health_error, "driver_evidence", None)))
+                            stop["signal"] = signal.SIGTERM
+                        next_health = time.monotonic() + args.health_check_interval
+                    status["startup_health_window_closed"] = runtime > args.startup_health_seconds
                     if stop["signal"] and stop_sent is None:
                         if os.getpgid(process.pid) != pgid or pgid != process.pid:
                             raise RuntimeError("refusing to signal a process group with changed ownership")
                         os.killpg(pgid, signal.SIGTERM)
                         stop_sent = elapsed
                         status["state"] = "stopping_own_training_group"
-                    if stop_sent is not None and elapsed - stop_sent > 60 and process.poll() is None:
-                        if os.getpgid(process.pid) == pgid == process.pid:
-                            os.killpg(pgid, signal.SIGKILL)
+                        status["stop_reason"] = status["stop_reason"] or "supervisor_signal"
                     if elapsed - last_heartbeat >= 30:
                         status.update(timestamp=utc(), log_bytes=(run / "train.log").stat().st_size,
-                            stop_signal=stop["signal"])
+                            stop_signal=stop["signal"], runtime_seconds=runtime)
                         atomic_json(run / "status.json", status)
                         last_heartbeat = elapsed
                     time.sleep(1)
@@ -337,6 +448,10 @@ def main():
             training_success_not_inferred_from_exit_alone=True)
         atomic_json(run / "status.json", status)
         print(json.dumps(status))
+        if status.get("stop_reason") == "max_runtime_seconds_exceeded":
+            return 124
+        if status.get("stop_reason"):
+            return 2
         return code if code >= 0 else 128 - code
     except Exception as exc:
         if process is not None and process.poll() is None:
@@ -347,9 +462,7 @@ def main():
                     try:
                         process.wait(timeout=15)
                     except subprocess.TimeoutExpired:
-                        if os.getpgid(process.pid) == process.pid:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        process.wait(timeout=5)
+                        status["own_group_termination_pending"] = True
             except ProcessLookupError:
                 pass
         status.update(state="blocked_before_training" if process is None else "supervisor_error",

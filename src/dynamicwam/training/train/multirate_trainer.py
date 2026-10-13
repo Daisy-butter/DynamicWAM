@@ -797,6 +797,8 @@ class MultirateTrainer:
         self.model.train()
         fast_cfg = self.config["model"]["fast_conditioner"]
         grad_norm = None
+        distributed_type = getattr(self.accelerator, "distributed_type", None)
+        is_deepspeed = getattr(distributed_type, "value", distributed_type) == "DEEPSPEED"
         with self.accelerator.accumulate(self.model):
             prepared = prepare_multirate_batch(
                 batch,
@@ -827,25 +829,40 @@ class MultirateTrainer:
             if not torch.isfinite(total.detach()):
                 raise FloatingPointError("nonfinite multirate loss; aborting before optimizer update")
             self.accelerator.backward(total)
-            if self.accelerator.sync_gradients:
+            if self.accelerator.sync_gradients and not is_deepspeed:
                 grad_norm = self.accelerator.clip_grad_norm_(
                     self._trainable_parameters(),
                     max_norm=float(self.config["grad_clip_norm"]),
                 )
-                if grad_norm is not None and not torch.isfinite(torch.as_tensor(grad_norm)):
+                if grad_norm is None:
+                    raise RuntimeError("gradient clipping did not return a gradient norm")
+                if not torch.isfinite(torch.as_tensor(grad_norm)):
                     raise FloatingPointError("nonfinite gradient norm; aborting before optimizer update")
             self.optimizer.step()
+            if self.accelerator.sync_gradients and is_deepspeed:
+                # Accelerate delegates clipping and the optimizer update to the
+                # DeepSpeed engine (some versions do so inside backward()). Read
+                # the engine's stored global norm only after that update boundary.
+                engine = self.model
+                if not callable(getattr(engine, "get_global_grad_norm", None)):
+                    engine = getattr(getattr(self.accelerator, "deepspeed_engine_wrapped", None), "engine", None)
+                if not callable(getattr(engine, "get_global_grad_norm", None)):
+                    raise RuntimeError("DeepSpeed engine does not expose get_global_grad_norm")
+                grad_norm = engine.get_global_grad_norm()
+                if grad_norm is None:
+                    raise RuntimeError("DeepSpeed global gradient norm is unavailable after a synchronized update")
+                if not torch.isfinite(torch.as_tensor(grad_norm)):
+                    raise FloatingPointError("nonfinite DeepSpeed global gradient norm after optimizer update; stopping training")
             if self.accelerator.sync_gradients and not getattr(self.accelerator, "optimizer_step_was_skipped", False):
                 self.scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
         if not self.accelerator.sync_gradients:
             return None
-        if grad_norm is not None:
-            metrics["grad/norm"] = float(
-                grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm
-            )
-        else:
-            metrics["grad/norm"] = 0.0
+        if grad_norm is None:
+            raise RuntimeError("synchronized training step has no measured gradient norm")
+        metrics["grad/norm"] = float(
+            grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm
+        )
         metrics.update(get_learning_rate_metrics(self.optimizer))
         return metrics
 
