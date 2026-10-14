@@ -433,7 +433,11 @@ def main():
                     from eval_metrics import EvalMetricsTracker
                     session.metrics_tracker = EvalMetricsTracker(env, {"use_dynamic": True})
                     session.metrics_tracker.on_episode_start()
-                    initial_clock = session.physics_time(); env.get_obs()
+                    initial_clock = session.physics_time()
+                    camera_reference = env.get_obs()
+                    camera_equivalence = session.validate_camera_reader(camera_reference)
+                    save(directory / "camera_equivalence.json", camera_equivalence)
+                    del camera_reference
                     if session.physics_time() != initial_clock:
                         raise RuntimeError("camera warmup advanced physics")
                     ready_barrier = cohort.wait(episode, "ready")
@@ -446,6 +450,7 @@ def main():
                     report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
                     report["post_terminal_inference_drain_wall_s"] = drain_finished_episode(worker)
                     finished_barrier = cohort.wait(episode, "finished")
+                    report["camera_equivalence"] = camera_equivalence
                     report["cohort_scheduling"] = dict(mode=COHORT_MODE, ready=ready_barrier, finished=finished_barrier,
                         manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads())
                     report.update({**descriptor, **source, "checkpoint": str(args.checkpoint.resolve()), "checkpoint_sha256": checkpoint_sha,

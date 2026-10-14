@@ -63,3 +63,10 @@ Guard-before-telemetry source d05b47d passed actual telemetry lifecycle and eigh
 ## Latest RTC repair authorization, 2026-10-14
 
 User explicitly requested diagnosing/fixing RTC timeout then restarting eight-GPU evaluation. Follow harness v1.0 on fix/route1-rtc-deadline-pipeline-20261014: exact flow-pair cache, explicit OpenCV threads, non-overlapping cohort setup/live phases, granular timings. Preserve trained timing/deadline and frozen700scenes. Require actual8tasks x2episodes smoke including place_object_basket,16MP4 decode and clean finalguard close before formal03. Driver286 is historical evidence, not a driver repair; bind fresh user authorization and guard-before-telemetry mode. No automatic retries/recurring inspection/device recovery.
+
+
+## Native RGB candidate after formal03 RTC miss
+
+Source6b72ff9 passed16shortsmoke episodes, but formal03 later missed origin64 deadline by21ms. Allguards/workers closed anddriver286 unchanged. Userstillauthorizes fixingRTC and8GPUevaluation; no deadline relaxation. Follow harnessv1.1: exactfourcamera nativebatch RGB, pinnedoriginalABI/retainedoldbinary, CPUconversion equality andsame-submitted-frame nativeDOMINO equality at existingwarmup. Require8tasks x2FULL-native-limit episodes beforeformal04;64actionsmoke is insufficient. Preserveformal03 failure and do not describe it as running.
+
+Native RGB candidate validation: 45 focused CPU tests (7 native conversion, RTC/controller/cache/cohort/launch fences), existing 12 camera lifecycle tests and 16 standalone pipeline gates passed. SAPIEN import in the first build check unexpectedly invoked nvidia-smi; corrected CPU checks disable os.system discovery. Fresh driver identity remained 286 unchanged after that observation; no device recovery was attempted. Next actual guarded test remains required.

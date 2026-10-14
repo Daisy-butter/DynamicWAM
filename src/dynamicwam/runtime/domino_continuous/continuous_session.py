@@ -27,7 +27,7 @@ class ContinuousSyncSession(DominoLevel1Session):
                  timing_mode="native_mplib_limits", **kwargs):
         super().__init__(*args, **kwargs)
         from . import _sapien_color_reader
-        self.camera_reader = SelectiveAsyncCameraCapture(reader=_sapien_color_reader.read_color)
+        self.camera_reader = SelectiveAsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
         self.pending_capture = None
         self.action_interval_s = float(action_interval_s)
         if timing_mode not in PROTOCOL_BY_TIMING:
@@ -104,6 +104,36 @@ class ContinuousSyncSession(DominoLevel1Session):
             "mplib_acceleration_limits": self._a.tolist(),
         }
         return track
+
+    def validate_camera_reader(self, reference_observation):
+        """Compare all four already-rendered buffers before the episode clock.
+
+        Caller obtains reference with env.get_obs(); this method never renders,
+        advances physics, or mutates the scene. No fallback is permitted.
+        """
+        import hashlib
+        from . import _sapien_color_reader
+        if self.camera_reader.busy:
+            raise RuntimeError("cannot validate while a capture is pending")
+        cameras = self.camera_reader._camera_handles(self.env)
+        started = time.perf_counter()
+        images, durations = _sapien_color_reader.read_rgb_batch(tuple(handle for _, handle in cameras))
+        if len(images) != len(cameras) or len(durations) != len(cameras):
+            raise RuntimeError("native batch validation camera count mismatch")
+        receipts = []
+        for (name, _), image, duration in zip(cameras, images, durations):
+            reference = reference_observation["observation"][name]["rgb"]
+            if (reference.dtype != np.uint8 or image.dtype != np.uint8
+                    or not image.flags.owndata or not image.flags.c_contiguous
+                    or not np.array_equal(reference, image)):
+                raise RuntimeError(f"native RGB batch differs from original camera pixels: {name}")
+            receipts.append({"camera": name, "shape": list(image.shape),
+                "pixel_sha256": hashlib.sha256(image.tobytes()).hexdigest(),
+                "equal": True, "native_readback_conversion_s": float(duration)})
+        return {"contract": _sapien_color_reader.rgb_batch_contract,
+            "passed": True, "camera_count": len(cameras), "all_equal": True, "cameras": receipts,
+            "wall_ms": 1000 * (time.perf_counter() - started),
+            "same_submitted_buffers": True, "new_render": False, "physics_stepped": False}
 
     def begin_capture(self, *, for_inference):
         self.capture_for_inference = bool(for_inference)

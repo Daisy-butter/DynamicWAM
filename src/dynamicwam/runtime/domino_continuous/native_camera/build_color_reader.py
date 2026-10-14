@@ -5,6 +5,7 @@ Run with the exact DOMINO Python interpreter. The Ubuntu compiler packages
 are only unpacked beneath external/native_camera_deps; no apt install/sudo.
 """
 import argparse
+import copy
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -39,13 +40,14 @@ def command(args, **kwargs):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--project", type=Path, required=True)
-    p.add_argument("--pybind-archive", type=Path, required=True)
+    p.add_argument("--pybind-archive", type=Path)
+    p.add_argument("--output-dir", type=Path)
     p.add_argument("--prepare-toolchain", action="store_true")
     args = p.parse_args()
     root = args.project.resolve()
     if not (root / "src/dynamicwam/runtime/domino_continuous").is_dir():
         raise RuntimeError("expected existing DynamicWAM project root")
-    deps = root / "external/native_camera_deps"
+    deps = (root / "external/native_camera_deps").resolve()
     deps.mkdir(parents=True, exist_ok=True)
     gccroot = deps / "gcc10"
     gccroot.mkdir(exist_ok=True)
@@ -64,13 +66,24 @@ def main():
         raise RuntimeError("GCC10 toolchain missing; use --prepare-toolchain")
     pybind = deps / f"pybind11-{PYBIND_COMMIT}"
     if not (pybind / "include/pybind11/smart_holder.h").exists():
+        if args.pybind_archive is None:
+            raise RuntimeError("missing existing pybind headers; provide --pybind-archive")
         pybind.mkdir(exist_ok=True)
         with tarfile.open(args.pybind_archive) as archive:
-            for member in archive.getmembers():
+            members = archive.getmembers()
+            prefix = "pybind11-" + PYBIND_COMMIT + "/"
+            extracted = []
+            for original in members:
+                member = copy.copy(original)
+                if member.name.rstrip("/") == prefix.rstrip("/"):
+                    continue
+                if member.name.startswith(prefix):
+                    member.name = member.name[len(prefix):]
                 resolved = (pybind / member.name).resolve()
                 if pybind not in resolved.parents or not (member.isfile() or member.isdir()):
                     raise RuntimeError("unsafe dependency archive entry")
-            archive.extractall(pybind)
+                extracted.append(member)
+            archive.extractall(pybind, members=extracted)
     if importlib.metadata.version("sapien") != "3.0.0b1":
         raise RuntimeError("bridge is audited only for SAPIEN 3.0.0b1")
     spec = importlib.util.find_spec("sapien")
@@ -92,19 +105,30 @@ def main():
     python_include = Path(sysconfig.get_path("include"))
     if not (python_include / "Python.h").exists():
         raise RuntimeError("Python C headers are missing")
+    eigen = (deps / "eigen3/usr/include/eigen3" if (deps / "eigen3/usr/include/eigen3/Eigen/Dense").is_file()
+             else Path("/usr/include/eigen3"))
+    if not (eigen / "Eigen/Dense").is_file():
+        raise RuntimeError("Eigen headers missing; unpack libeigen3-dev beneath native_camera_deps/eigen3")
     source = Path(__file__).with_name("sapien_color_reader.cpp")
-    target = root / "src/dynamicwam/runtime/domino_continuous" / ("_sapien_color_reader" + sysconfig.get_config_var("EXT_SUFFIX"))
+    output_dir = (args.output_dir.resolve() if args.output_dir is not None
+                  else root / "src/dynamicwam/runtime/domino_continuous")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / ("_sapien_color_reader" + sysconfig.get_config_var("EXT_SUFFIX"))
     temporary = target.with_suffix(target.suffix + ".building")
     flags = [compiler, "-std=c++20", "-O2", "-shared", "-fPIC", "-fvisibility=hidden",
              "-D_GLIBCXX_USE_CXX11_ABI=0", "-DPYBIND11_USE_SMART_HOLDER_AS_DEFAULT",
              "-DNDEBUG", "-I" + str(pybind / "include"), "-I" + str(python_include),
-             "-I" + str(include), "-I" + str(include / "physx/include"), "-I/usr/include/eigen3",
+             "-I" + str(include), "-I" + str(include / "physx/include"), "-I" + str(eigen),
              source, library, "-Wl,-rpath," + str(libdir), "-L/usr/lib/x86_64-linux-gnu",
              "-o", temporary]
     command(flags, timeout=180)
     check = r'''
 import gc, importlib.util, json, sys
-import sapien.pysapien as s
+from unittest.mock import patch
+# SAPIEN imports normally execute nvidia-smi through os.system. Disable those
+# discovery probes for this deliberately CPU-only cast/exception check.
+with patch("os.system", return_value=1):
+ import sapien.pysapien as s
 p=sys.argv[1]
 spec=importlib.util.spec_from_file_location("_sapien_color_reader",p)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -112,21 +136,24 @@ assert m.pybind_internals_id=="__pybind11_internals_v4_gcc_libstdcpp_cxxabi1014_
 assert m.cpp_string_abi==0 and m.compiler_cxxabi==1014
 camera=s.render.RenderCameraComponent(37,23)
 for _ in range(20):
- try: m.read_color(camera)
- except RuntimeError as e: assert "not added to scene" in str(e), str(e)
- else: raise AssertionError("unattached camera unexpectedly succeeded")
+ for read in (lambda: m.read_color(camera), lambda: m.read_rgb_batch([camera])):
+  try: read()
+  except RuntimeError as e: assert "not added to scene" in str(e), str(e)
+  else: raise AssertionError("unattached camera unexpectedly succeeded")
 try: m.read_color(object())
 except (RuntimeError,TypeError): pass
 else: raise AssertionError("wrong type accepted")
 del camera;gc.collect()
-print(json.dumps({"import":True,"registered_camera_cast":True,"native_exception_reacquires_gil":True,"wrong_type_rejected":True,"gpu_scene_created":False,"internals_id":m.pybind_internals_id}))
+print(json.dumps({"import":True,"registered_camera_cast":True,"native_exception_reacquires_gil":True,"wrong_type_rejected":True,"gpu_scene_created":False,"sapien_import_os_system_disabled":True,"internals_id":m.pybind_internals_id}))
 '''
     # importlib's extension suffix matching needs the final extension basename.
     temporary.replace(target)
     result = command([sys.executable, "-c", check, target], capture_output=True, timeout=60)
     print(result.stdout, flush=True)
     metadata = {"source_commit": PYBIND_COMMIT, "source_selection": "Latest first-parent commit in official archive/smart_holder before SAPIEN 3.0.0b1 PyPI release 2024-05-22; exact original wheel build commit unrecorded",
-        "pybind_archive_sha256": sha(args.pybind_archive), "pybind_repository": "https://github.com/pybind/pybind11.git",
+        "pybind_archive_sha256": sha(args.pybind_archive) if args.pybind_archive is not None else None,
+        "pybind_headers_sha256": hashlib.sha256("\n".join(str(f.relative_to(pybind))+":"+sha(f)
+            for f in sorted((pybind/"include").rglob("*")) if f.is_file()).encode()).hexdigest(), "pybind_repository": "https://github.com/pybind/pybind11.git",
         "expected_internals_id":EXPECTED_ID,"abi_string_evidence":old_string_symbol,
         "compiler":str(compiler),"compiler_version":command([compiler,"--version"],capture_output=True).stdout,
         "compiler_packages":PACKAGES,"arguments":list(map(str,flags)),"python":sys.executable,
