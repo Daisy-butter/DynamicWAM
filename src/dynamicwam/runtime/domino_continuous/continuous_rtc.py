@@ -255,13 +255,10 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         record["capture_stages"] = getattr(session, "last_capture_diagnostics", {})
         captures.append(record)
         pending = None
-        # Drain render-induced lag before submit so inference wall/physics clocks
-        # stay coupled. Ready captures already preempted catch-up in the outer
-        # loop / catch_up yield, so this drain no longer starves finish_capture.
-        before_catch_up = wall()
-        catch_up()
-        record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
         if not record["for_inference"] or stopped() is not None:
+            before_catch_up = wall()
+            catch_up()
+            record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
             return
         if reservation is not None and physical() > reservation.deadline_physics_s + 1e-9:
             fail("RTC query capture exceeded committed prefix deadline")
@@ -277,8 +274,16 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                       _rtc_cache_age_actions=record["action_origin"] % 16,
                       _rtc_observation_physics_s=record["physics_s"],
                       _rtc_action_interval_s=action_interval_s)
-        submit_wall, submit_physics = wall(), physical()
+        # Fire the worker before draining render lag so MotiionKV overlaps
+        # catch-up. Stamp submit wall/physics AFTER catch-up so the inference
+        # clock check only covers the coupled interval (smoke06 mismatch).
         request_id = worker.submit(packet)
+        before_catch_up = wall()
+        catch_up()
+        record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
+        submit_wall, submit_physics = wall(), physical()
+        if reservation is not None and submit_physics > reservation.deadline_physics_s + 1e-9:
+            fail("RTC query capture exceeded committed prefix deadline")
         active = {"query_index": query, "request_id": request_id,
                   "sampling_seed": packet["_sampling_seed"], "initial_query": query == 0,
                   "observation_physics_s": record["physics_s"], "observation_wall_s": record["wall_s"],
