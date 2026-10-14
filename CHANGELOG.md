@@ -1,5 +1,13 @@
 # Change log
 
+## 2026-10-14 — Eight-GPU launch audit and deterministic teardown
+
+Parent: `22b390081d77087aed41a614ffcc5b1c550bef9e`. The user superseded the unlaunched single-GPU plan with eight-GPU parallel training. Harness v0.6 records this scope. Eight-GPU profiles use batch 1, accumulation 2 (effective batch 16), and zero DataLoader workers for the initial validation.
+
+Audit found no missing `destroy_process_group`: installed Accelerate already handles it. Explicitly close owned DataLoader iterators and persistent workers, avoid an unnecessary zero-cursor loader clone, release application references before Accelerator shutdown, and preserve the original training exception. CPU lifecycle tests passed. An optional per-rank UUID wrapper and explicit NCCL transport manifest support controlled diagnostics; their presence does not establish GPU health. See the launch evidence document for actual minimal CUDA/NCCL results and the formal-training state.
+
+Actual outcome: independent overlapping CUDA processes passed; minimal DDP reproduced three IOVAS exit lines with default allocation, legacy allocation, and Socket transport. Numerical checks passed but exit health failed. Diagnostics stopped; no eight-GPU smoke or formal launch. Added reusable bounded reproduction, exact NCCL environment matching between smoke and formal, and retained all evidence on SSD. No workaround is declared successful.
+
 ## 2026-10-14 — Local SSH isolated training retry
 
 Following the user's new retry instruction after the two-GPU exit assertion, use one visible GPU with accumulation=14 and unchanged effective batch 14. Harness v0.5 records this scope. Fresh probe, smoke including post-exit health, and strict reload are required; no old clearance is reused. Record actual outcome in `route1_motionkv_20261013` on the SSD. Model architecture and accepted simulator baseline are unchanged by this launch adjustment.

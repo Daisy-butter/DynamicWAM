@@ -1,0 +1,150 @@
+schema_version: 3
+baseline: world_action_multirate_native_v1
+phase: fast_warmup
+paths:
+  project_root: /home/wuruihan/DynamicWAM
+  packed_dataset: data/packed/domino_absolute_motion_v2
+  source_dataset: data/converted/domino_exact_time
+  wan_root: external/Wan2.2-TI2V-5B
+  training_runs: /SSD_DISK/users/wuruihan/DynamicWAM/outputs/training
+  init_checkpoint: /SSD_DISK/users/wuruihan/DynamicWAM/external/checkpoints/DynamicWAM_full.pt
+  native_teacher_checkpoint: /SSD_DISK/users/wuruihan/DynamicWAM/external/checkpoints/DynamicWAM_full.pt
+pairing:
+  splits:
+  - clean
+  - randomized
+  execute_horizon: 4
+  every_fast_queries: 4
+  stress_offsets: []
+  seconds_per_frame: 0.03333333333333333
+  partition_seed: 20260928
+  sampler_seed: 20261013
+  validation_fraction: 0.1
+  clock_mode: required
+  samples_per_episode: 10
+  stress_probability: 0.0
+  age_weighting: uniform
+training:
+  name: motionkv_rtc_adapt_8gpu_20261014
+  device: cuda
+  log_level: INFO
+  max_steps: 12000
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 2
+  action_learning_rate: 1.0e-05
+  fast_learning_rate: 0.0001
+  video_learning_rate: 1.0e-05
+  weight_decay: 0.001
+  min_lr_ratio: 0.01
+  warmup_steps: 200
+  grad_clip_norm: 1.0
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  log_interval: 10
+  checkpoint_interval: 500
+  checkpoint_total_limit: 4
+  resume_from: ''
+  null_bridge_probability: 0.1
+  max_open_shards: 4
+  validation_batches: 16
+  fast_supervision: full_chunk
+  allow_pretrained_dataset_transfer: true
+  max_bridge_age_seconds: null
+  initialization_seed: 20261013
+  native_phase: adapt
+  native_fast_steps: 10
+  native_expert_weight: 1.0
+  native_fm_anchor_weight: 0.0
+  rtc_prefix_max: 4
+loss:
+  fast_weight: 1.0
+  action_weight: 0.0
+  native_teacher_weight: 0.1
+  video_weight: 0.0
+flow_matching:
+  shift: 5.0
+  sigma_min: 0.0
+  extra_one_step: true
+  training_timesteps: 1000
+model:
+  encoder_weights: ''
+  future_video_size:
+  - 192
+  - 160
+  global_downsample_rate: 3
+  compact_wan:
+    precision: bfloat16
+    dim: 2048
+    ffn_dim: 8192
+    num_heads: 16
+    num_layers: 12
+    head_dim: 128
+    hidden_anchor_layers:
+    - 1
+    - 3
+    - 5
+    - 7
+    - 9
+    - 12
+    motion_anchor_layers:
+    - 6
+    - 8
+    - 10
+    - 12
+    teacher_layer_mapping:
+    - 1
+    - 2
+    - 4
+    - 6
+    - 8
+    - 11
+    - 14
+    - 17
+    - 20
+    - 23
+    - 26
+    - 30
+  action_expert:
+    dim: 768
+    ffn_dim: 3072
+    num_layers: 12
+    chunk_size: 16
+    state_dim: 14
+    action_dim: 14
+  fast_conditioner:
+    world_aware: true
+    world_layers:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    world_heads: 16
+    world_head_dim: 128
+    world_queries: 16
+    world_dim: 192
+    encoder: compact_gn
+    dim: 768
+    layers: 12
+    heads: 8
+    head_dim: 96
+    text_dim: 4096
+    state_dim: 14
+    sim_scale: 1.0
+    action_scale: 16.0
+    motion_kv: true
+    kv_rank: 8
+    max_relative_update: 0.25
+distributed:
+  zero_stage: 0
+  bf16: true
+  steps_per_print: 2000

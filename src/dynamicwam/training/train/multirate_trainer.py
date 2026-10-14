@@ -1022,7 +1022,82 @@ class MultirateTrainer:
         logger.info("Exported multirate checkpoint to %s", full_path)
         logger.info("Exported fast-only weights to %s", fast_path)
 
+    def _close_data_loaders(self) -> None:
+        """Stop owned data workers/pinning threads before CUDA/NCCL teardown."""
+        errors = []
+        iterator = getattr(self, "_active_data_iterator", None)
+        self._active_data_iterator = None
+        close = getattr(iterator, "close", None)
+        if callable(close):
+            try:
+                close()
+            except BaseException as exc:
+                errors.append(exc)
+        loaders = list(getattr(self, "_run_loaders", None) or ())
+        loaders.extend((getattr(self, "train_loader", None), getattr(self, "val_loader", None)))
+        seen = set()
+        for loader in loaders:
+            if loader is None:
+                continue
+            base = getattr(loader, "base_dataloader", loader)
+            if id(base) in seen:
+                continue
+            seen.add(id(base))
+            worker_iterator = getattr(base, "_iterator", None)
+            shutdown = getattr(worker_iterator, "_shutdown_workers", None)
+            if callable(shutdown):
+                try:
+                    # PyTorch has no public close for persistent DataLoaders.
+                    # This joins the pin-memory thread before owned workers.
+                    shutdown()
+                except BaseException as exc:
+                    errors.append(exc)
+                else:
+                    base._iterator = None
+        for dataset in (getattr(self, "dataset", None), getattr(self, "val_dataset", None)):
+            close = getattr(dataset, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except BaseException as exc:
+                    errors.append(exc)
+        if errors:
+            raise errors[0]
+        self._run_loaders = []
+
+    def release_training_resources(self) -> None:
+        """Release our references; Accelerator then owns engine destruction."""
+        try:
+            self._close_data_loaders()
+        finally:
+            # free_memory does not clear registered custom checkpoint objects;
+            # our scheduler retains its optimizer. Remove only this scheduler.
+            scheduler = getattr(self, "scheduler", None)
+            registered = getattr(self.accelerator, "_custom_objects", None)
+            if isinstance(registered, list):
+                registered[:] = [obj for obj in registered if obj is not scheduler]
+            for name in ("model", "optimizer", "scheduler", "native_teacher",
+                         "native_source_bridge_builder", "_timesteps", "_sigmas",
+                         "train_loader", "val_loader", "dataset", "val_dataset",
+                         "_active_data_iterator", "_run_loaders"):
+                if hasattr(self, name):
+                    setattr(self, name, None)
+
     def run(self) -> None:
+        self._run_loaders = []
+        self._active_data_iterator = None
+        try:
+            self._run_training()
+        except BaseException:
+            try:
+                self._close_data_loaders()
+            except BaseException:
+                logger.exception("DataLoader cleanup failed while preserving training error")
+            raise
+        else:
+            self._close_data_loaders()
+
+    def _run_training(self) -> None:
         if self.accelerator.is_main_process:
             partition = get_run_dir(self.config) / "episode_partition.json"
             partition.parent.mkdir(parents=True, exist_ok=True)
@@ -1052,10 +1127,15 @@ class MultirateTrainer:
             self.train_loader.set_epoch(self.data_epoch)
         if self.batches_in_epoch > len(self.train_loader):
             raise RuntimeError("resume data cursor exceeds epoch length")
-        loader = self.accelerator.skip_first_batches(self.train_loader, self.batches_in_epoch)
+        # A zero-cursor skip still clones DataLoaderShard in Accelerate 1.14.
+        # Reuse the owned loader unless an actual resume cursor requires a clone.
+        loader = (self.accelerator.skip_first_batches(self.train_loader, self.batches_in_epoch)
+                  if self.batches_in_epoch else self.train_loader)
+        self._run_loaders.append(loader)
         if hasattr(loader, "set_epoch"):
             loader.set_epoch(self.data_epoch)
         data_iter = iter(loader)
+        self._active_data_iterator = data_iter
         while self.global_step < int(self.config["max_steps"]):
             try:
                 batch = next(data_iter)
@@ -1066,6 +1146,7 @@ class MultirateTrainer:
                 if hasattr(self.train_loader, "set_epoch"):
                     self.train_loader.set_epoch(self.data_epoch)
                 data_iter = iter(self.train_loader)
+                self._active_data_iterator = data_iter
                 batch = next(data_iter)
             self.batches_in_epoch += 1
             metrics = self.train_step(batch)

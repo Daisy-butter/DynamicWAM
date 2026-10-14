@@ -267,7 +267,29 @@ def source_files_and_hash(repo):
     return files, sha.hexdigest()
 
 
-def validate_smoke(path, config_sha256, source_sha256, ssd):
+def configure_nccl_transport(env, transport, allocation="auto"):
+    """Make P2P/allocation explicit, then capture every effective NCCL setting."""
+    if transport == "default":
+        env.pop("NCCL_P2P_DISABLE", None)
+    elif transport == "disable":
+        env["NCCL_P2P_DISABLE"] = "1"
+    else:
+        raise ValueError("unknown NCCL P2P transport selection")
+    allocation_keys = ("NCCL_CUMEM_ENABLE", "NCCL_CUMEM_HOST_ENABLE")
+    if allocation == "auto":
+        for key in allocation_keys:
+            env.pop(key, None)
+    elif allocation == "legacy":
+        for key in allocation_keys:
+            env[key] = "0"
+    else:
+        raise ValueError("unknown NCCL allocation selection")
+    return {key: value for key, value in sorted(env.items())
+        if key.startswith(("NCCL_", "TORCH_NCCL_"))}
+
+
+def validate_smoke(path, config_sha256, source_sha256, ssd, expected_transport="default",
+        expected_rank_visibility="all", expected_alloc="auto", expected_nccl_environment=None):
     if path is None:
         raise ValueError("formal training requires --smoke-receipt")
     data = json_file(path)
@@ -285,6 +307,37 @@ def validate_smoke(path, config_sha256, source_sha256, ssd):
     manifest, status = json_file(manifest_path), json_file(status_path)
     if manifest.get("mode") != "smoke" or manifest.get("source_sha256") != source_sha256:
         raise ValueError("receipt source is not a matching smoke run")
+    if expected_transport not in ("default", "disable") or manifest.get("nccl_p2p") != expected_transport:
+        raise ValueError("formal NCCL P2P transport must match its actual smoke manifest")
+    if expected_alloc not in ("auto", "legacy") or manifest.get("nccl_alloc") != expected_alloc:
+        raise ValueError("formal NCCL allocation must match its actual smoke manifest")
+    if expected_rank_visibility not in ("all", "isolated") or manifest.get("rank_visibility") != expected_rank_visibility:
+        raise ValueError("formal rank visibility must match its actual smoke manifest")
+    if expected_rank_visibility == "isolated" and expected_transport != "disable":
+        raise ValueError("isolated rank visibility requires disabled NCCL P2P")
+    if expected_rank_visibility == "isolated":
+        topology, environment = manifest.get("rank_topology", {}), manifest.get("environment", {})
+        assigned = topology.get("global_rank_gpu_uuids", [])
+        if (topology.get("launcher_cuda_masked") is not True or not assigned or
+                environment.get("CUDA_VISIBLE_DEVICES") != "" or
+                environment.get("WAM_ASSIGNED_GPU_UUIDS") != ",".join(assigned)):
+            raise ValueError("isolated smoke must verify the CUDA-masked torchrun parent and assigned UUIDs")
+    nccl_environment = manifest.get("nccl_environment")
+    if not isinstance(nccl_environment, dict):
+        raise ValueError("smoke manifest must record its effective NCCL environment")
+    if (expected_transport == "disable" and nccl_environment.get("NCCL_P2P_DISABLE") != "1") or (
+            expected_transport == "default" and "NCCL_P2P_DISABLE" in nccl_environment):
+        raise ValueError("smoke NCCL P2P transport and recorded environment disagree")
+    allocation_keys = ("NCCL_CUMEM_ENABLE", "NCCL_CUMEM_HOST_ENABLE")
+    if (expected_alloc == "legacy" and any(nccl_environment.get(key) != "0" for key in allocation_keys)) or (
+            expected_alloc == "auto" and any(key in nccl_environment for key in allocation_keys)):
+        raise ValueError("smoke NCCL allocation and recorded environment disagree")
+    if expected_nccl_environment is None:
+        expected_nccl_environment = configure_nccl_transport({}, expected_transport, expected_alloc)
+    # Compare every effective setting, including debug flags. The launcher does
+    # not silently ignore logging differences or inherit unrecorded options.
+    if nccl_environment != expected_nccl_environment:
+        raise ValueError("formal effective NCCL environment must exactly match its actual smoke manifest")
     if status.get("state") != "process_exited" or status.get("exit_code") != 0 or status.get("stop_reason"):
         raise ValueError("smoke source did not exit cleanly without supervisor termination")
     postexit_path = smoke_run / "postexit_health.json"
@@ -365,6 +418,12 @@ def parse_args():
     p.add_argument("--ssd-root", type=Path, required=True)
     p.add_argument("--run-dir", type=Path, required=True)
     p.add_argument("--gpu-uuids", required=True, help="comma-separated exact GPU UUIDs")
+    p.add_argument("--nccl-p2p", choices=("default", "disable"), default="default",
+        help="explicit NCCL P2P choice; default removes inherited NCCL_P2P_DISABLE")
+    p.add_argument("--nccl-alloc", choices=("auto", "legacy"), default="auto",
+        help="legacy disables NCCL cuMem allocation; auto removes inherited cuMem overrides")
+    p.add_argument("--rank-visibility", choices=("all", "isolated"), default="all",
+        help="isolated gives each global rank a single CUDA UUID before torch import")
     p.add_argument("--mode", choices=("smoke", "formal"), required=True)
     p.add_argument("--max-temp-c", type=float, required=True, help="explicit hardware/platform launch temperature limit")
     p.add_argument("--max-used-mib", type=float, default=100)
@@ -389,6 +448,8 @@ def parse_args():
         p.error("--detach and --preflight-only are mutually exclusive")
     if a.startup_health_seconds < 0 or a.health_check_interval <= 0 or a.max_runtime_seconds < 0:
         p.error("invalid monitoring/deadline durations")
+    if a.rank_visibility == "isolated" and a.nccl_p2p != "disable":
+        p.error("--rank-visibility isolated requires --nccl-p2p disable")
     return a
 
 
@@ -459,10 +520,21 @@ def main():
             WANDB_MODE="disabled", OMP_NUM_THREADS="4", TOKENIZERS_PARALLELISM="false",
             PYTHONDONTWRITEBYTECODE="1", PYTORCH_NVML_BASED_CUDA_CHECK="1",
             ACCELERATE_USE_DEEPSPEED="true", ACCELERATE_MIXED_PRECISION="bf16")
+        if args.rank_visibility == "isolated":
+            # torchrun itself must not initialize a multi-visible CUDA context.
+            # Its fresh rank subprocesses expose one assigned UUID in the
+            # pre-import wrapper; --nproc_per_node stays explicitly specified.
+            env["CUDA_VISIBLE_DEVICES"] = ""
+            env["WAM_ASSIGNED_GPU_UUIDS"] = ",".join(args.uuids)
+        else:
+            env.pop("WAM_ASSIGNED_GPU_UUIDS", None)
         env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+        nccl_environment = configure_nccl_transport(env, args.nccl_p2p, args.nccl_alloc)
         config_hash = digest(config.read_bytes())
         source_files, source_hash = source_files_and_hash(repo)
-        smoke = validate_smoke(args.smoke_receipt, config_hash, source_hash, ssd) if args.mode == "formal" else None
+        smoke = validate_smoke(args.smoke_receipt, config_hash, source_hash, ssd,
+            expected_transport=args.nccl_p2p, expected_rank_visibility=args.rank_visibility,
+            expected_alloc=args.nccl_alloc, expected_nccl_environment=nccl_environment) if args.mode == "formal" else None
         driver = driver_evidence()
         atomic_json(run / "driver_preflight.json", driver)
         clearance = validate_clearance(driver, args.health_clearance, args.uuids)
@@ -471,8 +543,14 @@ def main():
         gpu = gpu_preflight(args.uuids, args.expected_gpus, args.max_temp_c, args.max_used_mib)
         frozen = run / "training_config.yaml"
         shutil.copyfile(config, frozen)
+        entrypoint = [str(repo / "scripts/train_multirate.py"), "--config", str(frozen)]
+        if args.rank_visibility == "isolated":
+            wrapper = repo / "scripts/isolated_rank_entry.py"
+            if not wrapper.is_file():
+                raise RuntimeError("rank-isolated training requires its pre-import wrapper")
+            entrypoint.insert(0, str(wrapper))
         argv = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nnodes=1",
-            f"--nproc_per_node={len(args.uuids)}", str(repo / "scripts/train_multirate.py"), "--config", str(frozen)]
+            f"--nproc_per_node={len(args.uuids)}", *entrypoint]
         manifest = dict(created_at=utc(), host=socket.gethostname(), repo=str(repo), mode=args.mode,
             git_head=command(["git", "rev-parse", "HEAD"], cwd=repo).strip(),
             git_branch=command(["git", "branch", "--show-current"], cwd=repo).strip(),
@@ -481,7 +559,16 @@ def main():
             config_path=str(config), config_sha256=config_hash, frozen_config=str(frozen), command=argv,
             supervisor_pid=os.getpid(), paths=resolved, storage=storage, gpu_preflight=gpu,
             driver_preflight_file=str(run / "driver_preflight.json"), health_clearance=clearance,
-            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "PYTHONPATH", "WANDB_MODE", "PYTORCH_NVML_BASED_CUDA_CHECK", "ACCELERATE_USE_DEEPSPEED", "ACCELERATE_MIXED_PRECISION", "PATH")},
+            nccl_p2p=args.nccl_p2p, nccl_alloc=args.nccl_alloc, nccl_environment=nccl_environment,
+            rank_visibility=args.rank_visibility,
+            rank_topology=dict(physical_hosts=1, global_world_size=len(args.uuids),
+                logical_local_world_size=1 if args.rank_visibility == "isolated" else len(args.uuids),
+                logical_worker_groups=len(args.uuids) if args.rank_visibility == "isolated" else 1,
+                launcher_cuda_masked=args.rank_visibility == "isolated",
+                worker_uuid_source="WAM_ASSIGNED_GPU_UUIDS" if args.rank_visibility == "isolated" else "CUDA_VISIBLE_DEVICES",
+                global_rank_gpu_uuids=args.uuids,
+                local_rank_mapping="zero per isolated rank" if args.rank_visibility == "isolated" else "global rank index"),
+            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "WAM_ASSIGNED_GPU_UUIDS", "PYTHONPATH", "WANDB_MODE", "PYTORCH_NVML_BASED_CUDA_CHECK", "ACCELERATE_USE_DEEPSPEED", "ACCELERATE_MIXED_PRECISION", "PATH") if k in env},
             retry_policy="none", startup_health_seconds=args.startup_health_seconds,
             health_check_interval=args.health_check_interval, max_runtime_seconds=args.max_runtime_seconds,
             postwindow_gpu_polling=False, termination_policy="TERM own registered process group only")
