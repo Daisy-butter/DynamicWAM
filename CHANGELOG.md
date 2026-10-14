@@ -1,5 +1,9 @@
 # Change log
 
+## 2026-10-14 — Local SSH isolated training retry
+
+Following the user's new retry instruction after the two-GPU exit assertion, use one visible GPU with accumulation=14 and unchanged effective batch 14. Harness v0.5 records this scope. Fresh probe, smoke including post-exit health, and strict reload are required; no old clearance is reused. Record actual outcome in `route1_motionkv_20261013` on the SSD. Model architecture and accepted simulator baseline are unchanged by this launch adjustment.
+
 ## 2026-10-14 — Controlled training launch and truthful gradient evidence
 
 Parent: `fcdc600f66fe5698c7071d9fbb9a513a48ed6099`. Added bounded per-UUID CUDA probes, evidence-bound user authorization distinct from administrator clearance, smoke/export gates and a 600-second startup health window. Historical driver assertions are preserved; new anomalies stop the run without device recovery. DeepSpeed gradient logging now reads the actual engine norm and rejects missing/nonfinite values. CPU gate/control-flow checks passed; actual GPU training outcomes are recorded in SSD run receipts under `route1_motionkv_20261013`.
