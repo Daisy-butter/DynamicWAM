@@ -274,16 +274,27 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                       _rtc_cache_age_actions=record["action_origin"] % 16,
                       _rtc_observation_physics_s=record["physics_s"],
                       _rtc_action_interval_s=action_interval_s)
-        # Fire MotiionKV first, then drain render lag WITHOUT polling, but
-        # STOP catch-up before burning the committed H4 reservation. smoke11
-        # place_object_basket died with capture~148ms yet post_capture_catch_up
-        # ~560ms past the deadline; unbounded catch_up() after capture is the
-        # spike. Remaining lag overlaps inference (capture-yield intent).
-        # Still no mid-drain poll / early-install (smoke09 backlog-grows).
+        # Fire MotiionKV first, then drain render lag. smoke15 solo POB: model
+        # finished in ~70ms while deadline-capped catch_up still ran ~683ms and
+        # burned the H4 window, so the ready result sat unconsumed -> late suffix.
+        # smoke09 immediate mid-drain early-install left illegal backlog under
+        # 8-GPU contention. Compromise: poll during drain, but only stop early
+        # when the result is ready AND residual lag is within max_backlog_s.
+        # Otherwise keep the physics-deadline cap. No H4 widen.
         request_id = worker.submit(packet)
         before_catch_up = wall()
+        early = None
         previous_lag, growing, count = lag(), 0, 0
+        stopped_for_ready_lag = False
         while stopped() is None and lag() >= dt - 1e-9:
+            if early is None:
+                early = worker.poll()
+            if (
+                early is not None
+                and lag() <= max_backlog_s + 1e-9
+            ):
+                stopped_for_ready_lag = True
+                break
             if reservation is not None and physical() + dt > reservation.deadline_physics_s + 1e-9:
                 break
             if not tick(paced=False):
@@ -298,8 +309,13 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                 fail("RTC physical clock cannot catch up")
         record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
         record["post_capture_catch_up_capped_for_deadline"] = (
-            reservation is not None and lag() >= dt - 1e-9
+            reservation is not None
+            and lag() >= dt - 1e-9
+            and not stopped_for_ready_lag
         )
+        record["post_capture_catch_up_stopped_for_ready_result"] = bool(stopped_for_ready_lag)
+        if lag() > max_backlog_s and early is None:
+            fail("RTC wall/physics backlog exceeds declared limit", max_backlog_s=max_backlog_s)
         submit_wall, submit_physics = wall(), physical()
         if reservation is not None and submit_physics > reservation.deadline_physics_s + 1e-9:
             fail("RTC query capture exceeded committed prefix deadline")
@@ -316,6 +332,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                   "startup_delay_excluded": False, "history": session.history_diagnostics(),
                   "object_at_submit": np.asarray(session.object_position()).tolist()}
         query += 1
+        if early is not None:
+            finish_request(early, terminal=stopped() is not None)
 
     def finish_request(result=None, *, terminal=False):
         nonlocal active, reservation, grid0, last_handoff_boundary, last_handoff_query
