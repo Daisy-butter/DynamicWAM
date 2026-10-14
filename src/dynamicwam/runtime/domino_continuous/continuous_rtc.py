@@ -274,13 +274,32 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                       _rtc_cache_age_actions=record["action_origin"] % 16,
                       _rtc_observation_physics_s=record["physics_s"],
                       _rtc_action_interval_s=action_interval_s)
-        # Fire the worker before draining render lag so MotiionKV overlaps
-        # catch-up. Stamp submit wall/physics AFTER catch-up so the inference
-        # clock check only covers the coupled interval (smoke06 mismatch).
+        # Fire MotiionKV, drain render lag while polling, and stamp submit
+        # wall/physics only after that drain (or early result). The clock check
+        # then covers the coupled interval; the model still overlapped catch-up.
         request_id = worker.submit(packet)
         before_catch_up = wall()
-        catch_up()
+        early = None
+        previous_lag, growing, count = lag(), 0, 0
+        while stopped() is None and lag() >= dt - 1e-9:
+            early = worker.poll()
+            if early is not None:
+                break
+            if reservation is not None and physical() + dt > reservation.deadline_physics_s + 1e-9:
+                break
+            if not tick(paced=False):
+                break
+            count += 1
+            current_lag = lag()
+            growing = growing + 1 if current_lag >= previous_lag - 1e-9 else 0
+            if growing >= 8 and current_lag > max_backlog_s:
+                fail("RTC physical backlog grows during catch-up", max_backlog_s=max_backlog_s)
+            previous_lag = current_lag
+            if count > 10000:
+                fail("RTC physical clock cannot catch up")
         record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
+        if lag() > max_backlog_s and early is None:
+            fail("RTC wall/physics backlog exceeds declared limit", max_backlog_s=max_backlog_s)
         submit_wall, submit_physics = wall(), physical()
         if reservation is not None and submit_physics > reservation.deadline_physics_s + 1e-9:
             fail("RTC query capture exceeded committed prefix deadline")
@@ -297,6 +316,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                   "startup_delay_excluded": False, "history": session.history_diagnostics(),
                   "object_at_submit": np.asarray(session.object_position()).tolist()}
         query += 1
+        if early is not None:
+            finish_request(early, terminal=stopped() is not None)
 
     def finish_request(result=None, *, terminal=False):
         nonlocal active, reservation, grid0, last_handoff_boundary, last_handoff_query
