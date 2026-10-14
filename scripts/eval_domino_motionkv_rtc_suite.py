@@ -138,6 +138,9 @@ def parse():
     p.add_argument("--max-cohort-size", type=int, default=0,
                    help="Cap concurrent RTC cohort members (0=min(pending, n_gpus)). "
                         "Use 4 with 8 GPUs for two waves; halves camera contention.")
+    p.add_argument("--solo-tasks", default="",
+                   help="Comma-separated tasks that always form a size-1 cohort "
+                        "(e.g. place_object_basket). Other tasks still use max-cohort-size.")
     return p.parse_args()
 
 
@@ -156,6 +159,9 @@ def main():
     tasks = args.tasks.split(",") if args.tasks else list(configured)
     if len(configured) != 35 or len(set(configured)) != 35 or not tasks or len(tasks) != len(set(tasks)) or not set(tasks) <= set(configured):
         raise ValueError("task list must be unique members of the full 35-task benchmark")
+    solo_task_set = {name for name in args.solo_tasks.split(",") if name}
+    if solo_task_set - set(tasks):
+        raise ValueError("solo-tasks must be a subset of the suite task list")
     if args.episodes < 1 or args.seed < 0 or args.task_timeout_s <= 0 or not 0 < args.cohort_timeout_s < float("inf"):
         raise ValueError("invalid episode/seed/timeout")
     if args.max_cohort_size < 0:
@@ -200,6 +206,7 @@ def main():
         probe_action_limit=args.probe_action_limit, shared_tmpdir=str(shared_tmp), virtual_delay=False,
         scheduling_mode=None if args.prepare_only else COHORT_MODE, cohort_timeout_s=args.cohort_timeout_s,
         max_cohort_size=args.max_cohort_size or None,
+        solo_tasks=sorted(solo_task_set) or None,
         opencv_threads=1)
     if old_spec:
         if not args.resume or old_spec != spec:
@@ -219,13 +226,25 @@ def main():
                 # Cap concurrent live RTC workers so Vulkan/camera contention
                 # stays bounded; remaining tasks form later waves on free GPUs.
                 # Default 0 keeps legacy min(pending, n_gpus) behavior.
+                # Solo tasks (e.g. place_object_basket) always get a size-1 cohort.
                 cohort_cap = len(gpus) if args.max_cohort_size <= 0 else min(args.max_cohort_size, len(gpus))
-                members = list(pending)[:cohort_cap]
+                if pending[0] in solo_task_set:
+                    members = [pending[0]]
+                    cohort_cap = 1
+                else:
+                    members = []
+                    for name in list(pending):
+                        if name in solo_task_set:
+                            break
+                        if len(members) >= cohort_cap:
+                            break
+                        members.append(name)
                 cohort_dir = output / "cohorts" / f"cohort_{cohort_number:03d}"
                 cohort_dir.mkdir(parents=True, exist_ok=False)
                 save(cohort_dir / "manifest.json", dict(mode=COHORT_MODE, tasks=members,
                     episodes=args.episodes, barrier_timeout_s=args.cohort_timeout_s,
-                    max_cohort_size=args.max_cohort_size or None, cohort_cap=cohort_cap,
+                    max_cohort_size=args.max_cohort_size or None, cohort_cap=len(members),
+                    solo_tasks=sorted(solo_task_set) or None,
                     source_digest=source["source_digest"], protocol=PROTOCOL))
                 cohort_tasks = set(members)
                 cohort_number += 1
