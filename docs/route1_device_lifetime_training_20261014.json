@@ -1,0 +1,86 @@
+{
+  "recorded_at": "2026-10-14T04:08:33.769975+00:00",
+  "status": "formal_training_running_initial_segment_verified",
+  "source_commit": "5a44e942adc53181f4c036ba8e424e96c641b6ec",
+  "branch": "fix/route1-device-lifetime-20261014",
+  "source_sha256": "2cc8ef948e9e221598da6bec1f2f21ccc6b3fe9bb80bdda874616e7a2c185e32",
+  "harness_sha256": "d6bfefd14e873a770c68f96c8aaf94e76fff1764acdbb9f039bd79029e7092e0",
+  "accepted_baseline_commit": "b5907680bf4d713a2cce87d4c95b92a0561ff2f4",
+  "driver_repaired_claim": false,
+  "original_full_model_separate_training_tested": false,
+  "actual_eight_gpu_smoke_passed": true,
+  "smoke_steps": 4,
+  "strict_full_fast_reload_passed": true,
+  "formal_run": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/formal8_guard_20261014",
+  "formal_supervisor_pid": 1364813,
+  "formal_training_pid": 1365048,
+  "formal_started_at": "2026-10-14T04:02:35.382129+00:00",
+  "formal_training_output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/motionkv_rtc_adapt_8gpu_20261014",
+  "world_size": 8,
+  "per_gpu_batch": 1,
+  "gradient_accumulation": 2,
+  "effective_batch": 16,
+  "target_optimizer_steps": 12000,
+  "last_logged_step": 140,
+  "last_logged_loss": 0.496,
+  "last_logged_grad_norm": 1.02,
+  "startup_health_window_seconds": 300.0,
+  "startup_health_window_closed": true,
+  "last_startup_health_at": "2026-10-14T04:07:09.530044+00:00",
+  "startup_driver_identity": [
+    "nvidia",
+    "ecebaa85-6ac6-4e66-b7e5-b1d6e7424d2e",
+    264,
+    "cba39e5317b8a034e3dedf6e935f50c49f09859da193a40edd96d1ce9e70ab2a",
+    "638d45dacb5cf3b964ed5ae81d794606bc7876c277ec153cfc3c50cec27c1c56"
+  ],
+  "device_lifetime_guard": {
+    "enabled": true,
+    "helper_sha256": "53d2a0f0eb4fb3a7a18b5f6a520983c928d8e6e45edf2bceff0e2caf1db23303"
+  },
+  "recurrence_created": false,
+  "route2_modified": false,
+  "observations_are_a_snapshot_not_completion": true,
+  "artifacts": [
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/diag_device_lifetime_guard2_20261014.json",
+      "sha256": "cb0d3e1e9508a84c600f9b7a9f577e4227d37bb70085dda0a2dddb3b80561735"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/diag_device_lifetime_guard8_20261014.json",
+      "sha256": "c00f97f7cd8386e796fce8f02ed3504f055dc53ed229847bd747c8debcbd119c"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/controlled_start_guard8_20261014.json",
+      "sha256": "13688baf8559620aa205bfe17c3332335588a38cf7ecc74bac74572be35a4fe2"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/formal_guard8_smoke_receipt_20261014.json",
+      "sha256": "c8a46796b9b135fd597b114d83a5884119f2a64b263f43595c14d4adafdef39e"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/smoke8_guard_20261014/status.json",
+      "sha256": "6194f4e826bf5f187fa3267318cef828e57589aa6a31c1bd42ff9b26a4862ab4"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/smoke8_guard_20261014/postexit_health.json",
+      "sha256": "f7024a1cea2d41410da625dc0e9973f4e1741c9341263db738cd77748e2374f4"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/smoke8_guard_20261014/export_audit.json",
+      "sha256": "127774e392e4c3e37c362d4682f779221015f17b22682fa642a035ea619ded5a"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/formal8_guard_20261014/manifest.json",
+      "sha256": "3723bede09dbd6908436c00147ec2182dc94c659dcaaf9ad4e26122973d31acf"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/formal_initial_status.json",
+      "sha256": "0d2fed090553db06ce98141c9f9b79a0e60ece32e81c0af36d63d746248c816d"
+    },
+    {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/route1_motionkv_20261013/formal_initial_health.json",
+      "sha256": "e9f878e8407f4fad00d61bdc7adf2979cb438de8291f1ed67b20a96c16512d4d"
+    }
+  ]
+}
