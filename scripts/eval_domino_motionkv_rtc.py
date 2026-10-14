@@ -441,6 +441,14 @@ def main():
                     if session.physics_time() != initial_clock:
                         raise RuntimeError("camera warmup advanced physics")
                     ready_barrier = cohort.wait(episode, "ready")
+                    # Desynchronize live episode clocks across cohort GPUs so
+                    # age-0 refresh + Vulkan/camera capture peaks do not align.
+                    # Sleep is BEFORE wall0/phys0; RTC H/K/R and physics unchanged.
+                    members = list(cohort.members)
+                    live_start_stagger_index = members.index(args.task)
+                    live_start_stagger_s = live_start_stagger_index * (float(args.action_interval_s) * 0.5)
+                    if live_start_stagger_s > 0:
+                        time.sleep(live_start_stagger_s)
                     report = run_continuous_rtc_episode(session, worker, task=args.task, episode_seed=descriptor["seed"],
                         action_limit=action_limit, sink=events.append, max_backlog_s=args.max_backlog_s,
                         infer_clock_tolerance_s=args.infer_clock_tolerance_s, frame_period_s=args.history_frame_period_s,
@@ -452,7 +460,9 @@ def main():
                     finished_barrier = cohort.wait(episode, "finished")
                     report["camera_equivalence"] = camera_equivalence
                     report["cohort_scheduling"] = dict(mode=COHORT_MODE, ready=ready_barrier, finished=finished_barrier,
-                        manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads())
+                        manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads(),
+                        live_start_stagger_s=live_start_stagger_s, live_start_stagger_index=live_start_stagger_index,
+                        live_start_stagger_policy="cohort_task_index * 0.5 * action_interval_s")
                     report.update({**descriptor, **source, "checkpoint": str(args.checkpoint.resolve()), "checkpoint_sha256": checkpoint_sha,
                         "frozen_manifest_sha256": frozen_sha, "video_required": True, "probe_action_limit": args.probe_action_limit,
                         "worker_startup_metadata": worker.startup_metadata, "instruction_warmup": instruction_warmup,
