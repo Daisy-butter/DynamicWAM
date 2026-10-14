@@ -425,7 +425,11 @@ def main():
     p.add_argument('--timeout-seconds', type=int, default=120)
     p.add_argument('--child', action='store_true')
     p.add_argument('--independent-launcher', action='store_true')
+    p.add_argument('--device-lifetime-guard', action='store_true')
+    p.add_argument('--expected-driver-sha256')
     args = p.parse_args()
+    if args.device_lifetime_guard and (args.case != 'ddp' or not args.expected_driver_sha256):
+        raise ValueError('guard requires DDP and an explicitly recorded driver identity')
     if args.launcher == 'direct' and args.rank_visibility != 'isolated':
         raise ValueError('direct launch requires rank-isolated visibility')
     if args.backend == 'gloo' and (args.case != 'ddp' or args.init_mode != 'lazy'):
@@ -466,14 +470,24 @@ def main():
         log_directory=str(run), timeout_seconds=args.timeout_seconds,
         source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     expected = len(uuids) if args.case in ('ddp', 'independent') else 1
-    process, owned = None, {}
+    process, owned, guard = None, {}, None
     def interrupted(signum, _frame):
         raise RuntimeError(f'diagnostic parent received signal {signum}; stop owned children')
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, interrupted)
     try:
         report['before'] = baseline = driver()
+        if args.expected_driver_sha256 and baseline['driver_anomalies_sha256'] != args.expected_driver_sha256:
+            raise RuntimeError('driver evidence changed; no device open or workers launched')
         report['preflight'] = gpu_snapshot(uuids, idle=True)
+        if args.device_lifetime_guard:
+            from device_lifetime_guard import DeviceLifetimeGuard
+            report['guard_source_sha256'] = hashlib.sha256(Path(__file__).with_name('device_lifetime_guard.py').read_bytes()).hexdigest()
+            guard = DeviceLifetimeGuard(uuids, lambda events: write_json(run / 'device_guard.json', events))
+            guard.open()
+            report['after_guard_open'] = driver()
+            if driver_identity(report['after_guard_open']) != driver_identity(baseline):
+                raise RuntimeError('new driver evidence after guard open; no workers launched')
         env = os.environ.copy()
         # Prevent an inherited rank or transport setting from changing the case.
         for name in tuple(env):
@@ -532,8 +546,15 @@ def main():
                 time.sleep(.2)
         report['exit_code'] = process.returncode
         report['ranks'] = collect_rank_results(run, expected)
+        if guard is not None:
+            report['workers_exited_monotonic'] = time.monotonic()
+            time.sleep(3)
+            report['after_workers_before_guard_close'] = driver()
+            guard.close()
+            report['guard_fully_closed_monotonic'] = time.monotonic()
+            report['guard_all_handles_closed'] = not guard.handles
         # Catch errors emitted only when CUDA/NCCL contexts leave the process.
-        time.sleep(2)
+        time.sleep(5 if guard is not None else 2)
         report['after'] = after = driver()
         report['postexit_gpu'] = gpu_snapshot(uuids, idle=True)
         if process.returncode:
@@ -550,12 +571,20 @@ def main():
         if process is not None:
             register_children(run, process.pid, owned)
             stop_owned(process, owned)
+        if guard is not None:
+            try:
+                guard.close()
+                report['guard_all_handles_closed'] = not guard.handles
+            except BaseException as guard_exc:
+                report['guard_close_error'] = repr(guard_exc)
         try:
             report['after'] = driver()
             report['postfailure_gpu'] = gpu_snapshot(uuids, idle=False)
         except Exception as health_exc:
             report['postfailure_read_error'] = repr(health_exc)
     finally:
+        if guard is not None:
+            report['device_guard_events'] = guard.events
         report['finished_at'] = utc()
         report['owned_processes'] = list(owned.values())
         report['ranks'] = collect_rank_results(run, expected)

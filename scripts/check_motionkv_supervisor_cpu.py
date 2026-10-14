@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """CPU-only regression checks: smoke process teardown and health acceptance."""
 import importlib.util
+import ast
 import json
 from pathlib import Path
 import sys
@@ -88,6 +89,128 @@ class SmokePostexitTests(unittest.TestCase):
         driver.assert_not_called()
         self.assertEqual(status["exit_code"], 7)
         self.assertNotIn("postexit_health_passed", status)
+
+
+class DeviceGuardTests(unittest.TestCase):
+    def diagnostic(self):
+        return dict(guard_source_sha256="helper", guard_all_handles_closed=True,
+            device_guard_events=[
+                dict(event="after_open", uuid="GPU-A", fd=7, path="/dev/nvidia0", monotonic=1),
+                dict(event="after_close", uuid="GPU-A", fd=7, path="/dev/nvidia0", monotonic=2)])
+
+    def test_diagnostic_requires_actual_matching_final_close(self):
+        expected = {"enabled": True, "helper_sha256": "helper"}
+        supervisor.validate_guard_diagnostic(self.diagnostic(), ["GPU-A"], expected)
+        for change in ("missing_close", "wrong_fd", "wrong_source", "not_closed", "close_before_open"):
+            data = self.diagnostic()
+            if change == "missing_close":
+                data["device_guard_events"].pop()
+            elif change == "wrong_fd":
+                data["device_guard_events"][-1]["fd"] = 8
+            elif change == "wrong_source":
+                data["guard_source_sha256"] = "other"
+            elif change == "not_closed":
+                data["guard_all_handles_closed"] = False
+            else:
+                data["device_guard_events"][-1]["monotonic"] = .5
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                supervisor.validate_guard_diagnostic(data, ["GPU-A"], expected)
+
+    def test_finished_workers_precede_close_and_settling(self):
+        events = []
+        guard = SimpleNamespace(handles=[7])
+        def close():
+            events.append("close")
+            guard.handles.clear()
+        guard.close = close
+        def register(*args):
+            events.append("register")
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+                supervisor, "register_run_processes", side_effect=register), patch.object(
+                supervisor, "live_owned_processes", return_value=[]), patch.object(
+                supervisor.time, "sleep", side_effect=lambda secs: events.append(secs)), patch.object(
+                supervisor, "gpu_preflight") as gpu, patch.object(supervisor, "driver_evidence") as driver:
+            status = {}
+            supervisor.finish_device_guard(guard, Path(folder), status, None, {})
+        self.assertEqual(events, ["register", 3, "close", 5])
+        self.assertTrue(status["guard_workers_exited"])
+        self.assertTrue(status["guard_all_handles_closed"])
+        gpu.assert_not_called()
+        driver.assert_not_called()
+
+    def test_exception_still_closes_guard_and_fails(self):
+        guard = SimpleNamespace(handles=[7])
+        def close():
+            guard.handles.clear()
+        guard.close = close
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+                supervisor, "register_run_processes", side_effect=RuntimeError("cannot establish ownership")), patch.object(
+                supervisor.time, "sleep"):
+            status = {}
+            with self.assertRaisesRegex(RuntimeError, "cannot establish ownership"):
+                supervisor.finish_device_guard(guard, Path(folder), status, None, {})
+        self.assertFalse(status["guard_workers_exited"])
+        self.assertTrue(status["guard_all_handles_closed"])
+        self.assertFalse(guard.handles)
+
+    def test_reused_pid_is_never_treated_as_owned(self):
+        with patch.object(supervisor, "process_identity", return_value={"pid": 123, "state": "R", "starttime": 9}):
+            self.assertEqual(supervisor.live_owned_processes({123: {"starttime": 8}}), [])
+
+    def test_formal_receipt_requires_guard_identity_and_closed_smoke(self):
+        expected = {"enabled": True, "helper_sha256": "helper"}
+        with tempfile.TemporaryDirectory() as folder:
+            run = Path(folder)
+            checkpoint = run / "exports" / "weights.pt"
+            checkpoint.parent.mkdir()
+            checkpoint.write_bytes(b"CPU fixture")
+            event_path = run / "device_guard_events.json"
+            supervisor.atomic_json(event_path, self.diagnostic()["device_guard_events"])
+            supervisor.atomic_json(run / "postexit_health.json", {"passed": True})
+            manifest = dict(mode="smoke", source_sha256="source", nccl_p2p="default",
+                nccl_alloc="auto", nccl_environment={}, rank_visibility="all",
+                device_lifetime_guard=expected, rank_topology={"global_rank_gpu_uuids": ["GPU-A"]},
+                paths={"training_output": str(checkpoint.parent)})
+            status = dict(state="process_exited", exit_code=0, stop_reason=None,
+                guard_all_handles_closed=True, guard_workers_exited=True,
+                device_guard_events_sha256=supervisor.file_digest(event_path),
+                postexit_health_passed=True, postexit_health_sha256=supervisor.file_digest(run / "postexit_health.json"))
+            supervisor.atomic_json(run / "manifest.json", manifest)
+            supervisor.atomic_json(run / "status.json", status)
+            receipt = dict(passed=True, gpu_smoke=True, checkpoint_reload=True,
+                formal_config_sha256="config", source_sha256="source", smoke_run_dir=str(run),
+                smoke_manifest_sha256=supervisor.file_digest(run / "manifest.json"),
+                smoke_status_sha256=supervisor.file_digest(run / "status.json"),
+                checkpoint_path=str(checkpoint), checkpoint_sha256=supervisor.file_digest(checkpoint),
+                checkpoint_reload_receipt={}, device_lifetime_guard=expected)
+            receipt_path = run / "receipt.json"
+            reload = dict(passed=True, checkpoint_sha256=receipt["checkpoint_sha256"], source_sha256="source")
+            supervisor.atomic_json(receipt_path, receipt)
+            with patch.object(supervisor, "inside_ssd", side_effect=lambda value, *args, **kwargs: Path(value)), \
+                    patch.object(supervisor, "referenced_receipt", return_value=reload):
+                supervisor.validate_smoke(receipt_path, "config", "source", run,
+                    expected_device_lifetime_guard=expected)
+                for different in (supervisor.guard_identity(), {"enabled": True, "helper_sha256": "changed"}):
+                    with self.assertRaisesRegex(ValueError, "device lifetime guard"):
+                        supervisor.validate_smoke(receipt_path, "config", "source", run,
+                            expected_device_lifetime_guard=different)
+                status["guard_all_handles_closed"] = False
+                supervisor.atomic_json(run / "status.json", status)
+                receipt["smoke_status_sha256"] = supervisor.file_digest(run / "status.json")
+                supervisor.atomic_json(receipt_path, receipt)
+                with self.assertRaisesRegex(ValueError, "guard must close"):
+                    supervisor.validate_smoke(receipt_path, "config", "source", run,
+                        expected_device_lifetime_guard=expected)
+
+    def test_all_popen_calls_explicitly_exclude_guard_descriptors(self):
+        tree = ast.parse(Path(supervisor.__file__).read_text())
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "Popen"]
+        self.assertGreaterEqual(len(calls), 2)
+        for call in calls:
+            flags = {entry.arg: entry.value for entry in call.keywords}
+            self.assertIsInstance(flags["close_fds"], ast.Constant)
+            self.assertIs(flags["close_fds"].value, True)
 
 
 if __name__ == "__main__":

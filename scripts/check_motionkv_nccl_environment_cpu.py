@@ -48,6 +48,7 @@ class NCCLEnvironmentContractTest(unittest.TestCase):
         self.nccl_environment = supervisor.configure_nccl_transport({
             "NCCL_DEBUG": "WARN", "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1"}, "disable", "legacy")
         self.manifest = dict(mode="smoke", source_sha256="synthetic-source-hash",
+            device_lifetime_guard=dict(enabled=False, helper_sha256=None),
             paths=dict(training_output=str(self.output)), nccl_p2p="disable", nccl_alloc="legacy",
             nccl_environment=dict(self.nccl_environment), rank_visibility="isolated",
             rank_topology=dict(launcher_cuda_masked=True, global_rank_gpu_uuids=self.uuids),
@@ -61,6 +62,7 @@ class NCCLEnvironmentContractTest(unittest.TestCase):
             source_sha256="synthetic-source-hash", fixture_only=True))
         self.receipt = self.root / "synthetic-receipt.json"
         self.receipt_value = dict(passed=True, gpu_smoke=True, checkpoint_reload=True,
+            device_lifetime_guard=dict(enabled=False, helper_sha256=None),
             fixture_only=True, formal_config_sha256="synthetic-config-hash",
             source_sha256="synthetic-source-hash", smoke_run_dir=str(self.run),
             checkpoint_path=str(self.checkpoint), checkpoint_sha256=sha(self.checkpoint),

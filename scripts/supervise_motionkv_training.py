@@ -13,6 +13,7 @@ from contextlib import ExitStack
 import csv
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -129,9 +130,36 @@ def driver_identity(evidence):
         "latest_driver_anomaly_sha256"))
 
 
-def validate_clearance(evidence, clearance_path, selected_uuids):
+def guard_identity(enabled=False, helper=None):
+    return dict(enabled=bool(enabled), helper_sha256=file_digest(helper) if enabled else None)
+
+
+def validate_guard_diagnostic(diagnostic, selected_uuids, expected):
+    if diagnostic.get("guard_source_sha256") != expected["helper_sha256"]:
+        raise RuntimeError("device lifetime guard diagnostic used a different helper")
+    if diagnostic.get("guard_all_handles_closed") is not True:
+        raise RuntimeError("device lifetime guard diagnostic did not close every handle")
+    events = diagnostic.get("device_guard_events")
+    if not isinstance(events, list):
+        raise RuntimeError("device lifetime guard diagnostic lacks descriptor events")
+    selected = set(selected_uuids)
+    if not selected or any({e.get("uuid") for e in events if e.get("event") == name} != selected
+            for name in ("after_open", "after_close")):
+        raise RuntimeError("device lifetime guard diagnostic does not cover exactly the selected UUIDs")
+    for uuid in selected_uuids:
+        opened = [e for e in events if e.get("event") == "after_open" and e.get("uuid") == uuid]
+        closed = [e for e in events if e.get("event") == "after_close" and e.get("uuid") == uuid]
+        if (len(opened) != 1 or len(closed) != 1 or not isinstance(opened[0].get("fd"), int)
+                or opened[0]["fd"] < 0 or opened[0].get("fd") != closed[0].get("fd")
+                or opened[0].get("path") != closed[0].get("path")
+                or not opened[0].get("monotonic", float("inf")) < closed[0].get("monotonic", -1)):
+            raise RuntimeError("device lifetime guard diagnostic lacks matched open/close events")
+
+
+def validate_clearance(evidence, clearance_path, selected_uuids, expected_guard=None):
     """Read ONLY; no mechanism in this launcher produces/updates clearance."""
-    if evidence["latest_driver_anomaly"] is None:
+    expected_guard = expected_guard or guard_identity()
+    if evidence["latest_driver_anomaly"] is None and not expected_guard["enabled"]:
         return None
     if clearance_path is None:
         raise RuntimeError("driver anomaly blocks launch; latest SHA256=" + evidence["latest_driver_anomaly_sha256"])
@@ -145,6 +173,16 @@ def validate_clearance(evidence, clearance_path, selected_uuids):
         raise RuntimeError("authorization requires a reason")
     if not isinstance(clearance.get("approved_by"), str) or not clearance["approved_by"].strip():
         raise RuntimeError("authorization must identify its human source")
+    if expected_guard["enabled"]:
+        if clearance.get("device_lifetime_guard") != expected_guard:
+            raise RuntimeError("authorization must bind the enabled device lifetime guard helper")
+        diagnostic = referenced_receipt(clearance.get("diagnostic_receipt"))
+        if diagnostic.get("passed") is not True or set(diagnostic.get("gpu_uuids", [])) != set(selected_uuids):
+            raise RuntimeError("guard requires an actually passed diagnostic on exactly these GPUs")
+        for key in ("boot_id", "driver_anomalies_sha256", "latest_driver_anomaly_sha256"):
+            if diagnostic.get(key) != evidence[key]:
+                raise RuntimeError(f"guard diagnostic does not cover current {key}")
+        validate_guard_diagnostic(diagnostic, selected_uuids, expected_guard)
     kind = clearance.get("authorization_kind")
     if kind == "admin_health_clearance":
         if clearance.get("healthy_to_start") is not True:
@@ -289,7 +327,8 @@ def configure_nccl_transport(env, transport, allocation="auto"):
 
 
 def validate_smoke(path, config_sha256, source_sha256, ssd, expected_transport="default",
-        expected_rank_visibility="all", expected_alloc="auto", expected_nccl_environment=None):
+        expected_rank_visibility="all", expected_alloc="auto", expected_nccl_environment=None,
+        expected_device_lifetime_guard=None):
     if path is None:
         raise ValueError("formal training requires --smoke-receipt")
     data = json_file(path)
@@ -307,6 +346,18 @@ def validate_smoke(path, config_sha256, source_sha256, ssd, expected_transport="
     manifest, status = json_file(manifest_path), json_file(status_path)
     if manifest.get("mode") != "smoke" or manifest.get("source_sha256") != source_sha256:
         raise ValueError("receipt source is not a matching smoke run")
+    expected_guard = expected_device_lifetime_guard or guard_identity()
+    if manifest.get("device_lifetime_guard") != expected_guard or data.get("device_lifetime_guard") != expected_guard:
+        raise ValueError("formal device lifetime guard must match its actual smoke manifest and receipt")
+    if expected_guard["enabled"]:
+        guard_path = smoke_run / "device_guard_events.json"
+        if (status.get("guard_all_handles_closed") is not True or
+                status.get("guard_workers_exited") is not True or
+                file_digest(guard_path) != status.get("device_guard_events_sha256")):
+            raise ValueError("smoke guard must close after every worker before exit health verification")
+        validate_guard_diagnostic(dict(guard_source_sha256=expected_guard["helper_sha256"],
+            guard_all_handles_closed=True, device_guard_events=json_file(guard_path)),
+            manifest.get("rank_topology", {}).get("global_rank_gpu_uuids", []), expected_guard)
     if expected_transport not in ("default", "disable") or manifest.get("nccl_p2p") != expected_transport:
         raise ValueError("formal NCCL P2P transport must match its actual smoke manifest")
     if expected_alloc not in ("auto", "legacy") or manifest.get("nccl_alloc") != expected_alloc:
@@ -411,6 +462,113 @@ def record_process_exit(args, baseline, run, status, code):
     atomic_json(run / "status.json", status)
 
 
+def load_device_guard(helper, expected_hash, uuids, run):
+    # Load the exact preflighted source; a changed helper cannot enter the run.
+    if file_digest(helper) != expected_hash:
+        raise RuntimeError("device guard helper changed after preflight")
+    spec = importlib.util.spec_from_file_location("motionkv_device_lifetime_guard", helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.DeviceLifetimeGuard(uuids,
+        lambda events: atomic_json(run / "device_guard_events.json", events))
+
+
+def register_run_processes(run, process, owned):
+    """Identify this run, including reparented workers, without any GPU query.
+
+    The unique absolute run directory is set only in this launch's environment.
+    Never use process names, usernames alone, or an unverified process group.
+    """
+    marker = ("WAM_TRAINING_RUN_DIR=" + str(run)).encode()
+    if process is not None:
+        root = process_identity(process.pid)
+        if root:
+            owned.setdefault(process.pid, root)
+    for path in Path("/proc").iterdir():
+        if not path.name.isdigit():
+            continue
+        try:
+            if path.stat().st_uid != os.getuid():
+                continue
+            if marker not in (path / "environ").read_bytes().split(b"\0"):
+                continue
+            identity = process_identity(int(path.name))
+            if identity:
+                owned.setdefault(identity["pid"], identity)
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+
+
+def live_owned_processes(owned):
+    live = []
+    for pid, expected in owned.items():
+        current = process_identity(pid)
+        if expected is None:
+            continue
+        if current and current["state"] != "Z" and current["starttime"] == expected["starttime"]:
+            live.append(current)
+    return live
+
+
+def finish_device_guard(guard, run, status, process, owned):
+    """Bounded application cleanup, then actual guard close; never a keepalive.
+
+    Any exceptional/orphaned worker is terminated only after PID/starttime
+    verification. Descriptor close still occurs on failures, which fail the run.
+    Formal runs record this lifecycle without GPU/driver polling after startup.
+    """
+    if guard is None:
+        return
+    cleanup_error = None
+    try:
+        register_run_processes(run, process, owned)
+        live = live_owned_processes(owned)
+        if live:
+            status["stop_reason"] = status.get("stop_reason") or "remaining_run_workers_at_guard_close"
+            for sig, grace in ((signal.SIGTERM, 15), (signal.SIGKILL, 5)):
+                for current in live_owned_processes(owned):
+                    # Individual verified PIDs avoid accidentally including a
+                    # different process in an inherited/shared process group.
+                    try:
+                        os.kill(current["pid"], sig)
+                    except ProcessLookupError:
+                        pass
+                deadline = time.monotonic() + grace
+                while live_owned_processes(owned) and time.monotonic() < deadline:
+                    time.sleep(.1)
+                if process is not None:
+                    process.poll()
+                if not live_owned_processes(owned):
+                    break
+            if live_owned_processes(owned):
+                raise RuntimeError("run workers did not exit within bounded guard cleanup")
+        status["guard_workers_exited"] = True
+        status["guard_workers_exited_at"] = utc()
+        time.sleep(3)
+    except BaseException as exc:
+        cleanup_error = exc
+        status["guard_workers_exited"] = False
+        status["guard_cleanup_error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            guard.close()
+            status["guard_all_handles_closed"] = not guard.handles
+            status["guard_closed_at"] = utc()
+        except BaseException as exc:
+            status["guard_all_handles_closed"] = False
+            status["guard_close_error"] = f"{type(exc).__name__}: {exc}"
+            cleanup_error = cleanup_error or exc
+        events_path = run / "device_guard_events.json"
+        if events_path.is_file():
+            status["device_guard_events_sha256"] = file_digest(events_path)
+        status["device_guard_registered_processes"] = list(owned.values())
+        atomic_json(run / "status.json", status)
+    # Include delayed teardown after the actual final close in smoke acceptance.
+    time.sleep(5)
+    if cleanup_error:
+        raise cleanup_error
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, required=True)
@@ -424,6 +582,11 @@ def parse_args():
         help="legacy disables NCCL cuMem allocation; auto removes inherited cuMem overrides")
     p.add_argument("--rank-visibility", choices=("all", "isolated"), default="all",
         help="isolated gives each global rank a single CUDA UUID before torch import")
+    p.add_argument("--device-lifetime-guard", action="store_true",
+        help="hold this run's selected device descriptors through worker teardown, then close")
+    p.add_argument("--device-lifetime-guard-helper", type=Path,
+        default=Path(__file__).with_name("device_lifetime_guard.py"),
+        help="exact helper source bound by diagnostic and smoke receipts")
     p.add_argument("--mode", choices=("smoke", "formal"), required=True)
     p.add_argument("--max-temp-c", type=float, required=True, help="explicit hardware/platform launch temperature limit")
     p.add_argument("--max-used-mib", type=float, default=100)
@@ -465,12 +628,18 @@ def main():
     if args.detach:
         argv = [sys.executable, str(Path(__file__).resolve()), *[v for v in sys.argv[1:] if v != "--detach"]]
         with (run / "supervisor.log").open("a", encoding="utf-8") as log:
-            child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True, close_fds=True)
         print(json.dumps(dict(supervisor_pid=child.pid, run_dir=str(run), state="dispatched_not_preflight_verified")))
         return 0
     status = dict(state="preflight", timestamp=utc(), supervisor_pid=os.getpid(), mode=args.mode)
     atomic_json(run / "status.json", status)
     process = None
+    guard, guard_owned = None, {}
+    def finish_guard_once():
+        nonlocal guard
+        active, guard = guard, None
+        finish_device_guard(active, run, status, process, guard_owned)
     stop = {"signal": None}
     def request_stop(signum, _frame):
         stop["signal"] = signum
@@ -519,7 +688,8 @@ def main():
         env.update(CUDA_VISIBLE_DEVICES=",".join(args.uuids), PYTHONUNBUFFERED="1", PYTHONPATH=str(repo / "src"),
             WANDB_MODE="disabled", OMP_NUM_THREADS="4", TOKENIZERS_PARALLELISM="false",
             PYTHONDONTWRITEBYTECODE="1", PYTORCH_NVML_BASED_CUDA_CHECK="1",
-            ACCELERATE_USE_DEEPSPEED="true", ACCELERATE_MIXED_PRECISION="bf16")
+            ACCELERATE_USE_DEEPSPEED="true", ACCELERATE_MIXED_PRECISION="bf16",
+            WAM_TRAINING_RUN_DIR=str(run))
         if args.rank_visibility == "isolated":
             # torchrun itself must not initialize a multi-visible CUDA context.
             # Its fresh rank subprocesses expose one assigned UUID in the
@@ -530,14 +700,17 @@ def main():
             env.pop("WAM_ASSIGNED_GPU_UUIDS", None)
         env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
         nccl_environment = configure_nccl_transport(env, args.nccl_p2p, args.nccl_alloc)
+        guard_helper = args.device_lifetime_guard_helper.resolve(strict=True) if args.device_lifetime_guard else None
+        guard_config = guard_identity(args.device_lifetime_guard, guard_helper)
         config_hash = digest(config.read_bytes())
         source_files, source_hash = source_files_and_hash(repo)
         smoke = validate_smoke(args.smoke_receipt, config_hash, source_hash, ssd,
             expected_transport=args.nccl_p2p, expected_rank_visibility=args.rank_visibility,
-            expected_alloc=args.nccl_alloc, expected_nccl_environment=nccl_environment) if args.mode == "formal" else None
+            expected_alloc=args.nccl_alloc, expected_nccl_environment=nccl_environment,
+            expected_device_lifetime_guard=guard_config) if args.mode == "formal" else None
         driver = driver_evidence()
         atomic_json(run / "driver_preflight.json", driver)
-        clearance = validate_clearance(driver, args.health_clearance, args.uuids)
+        clearance = validate_clearance(driver, args.health_clearance, args.uuids, expected_guard=guard_config)
         if clearance and clearance["value"]["authorization_kind"] == "user_authorized_controlled_start" and args.startup_health_seconds <= 0:
             raise ValueError("controlled start requires a nonzero bounded startup health window")
         gpu = gpu_preflight(args.uuids, args.expected_gpus, args.max_temp_c, args.max_used_mib)
@@ -560,6 +733,8 @@ def main():
             supervisor_pid=os.getpid(), paths=resolved, storage=storage, gpu_preflight=gpu,
             driver_preflight_file=str(run / "driver_preflight.json"), health_clearance=clearance,
             nccl_p2p=args.nccl_p2p, nccl_alloc=args.nccl_alloc, nccl_environment=nccl_environment,
+            device_lifetime_guard=guard_config,
+            device_lifetime_guard_helper=str(guard_helper) if guard_helper else None,
             rank_visibility=args.rank_visibility,
             rank_topology=dict(physical_hosts=1, global_world_size=len(args.uuids),
                 logical_local_world_size=1 if args.rank_visibility == "isolated" else len(args.uuids),
@@ -568,7 +743,7 @@ def main():
                 worker_uuid_source="WAM_ASSIGNED_GPU_UUIDS" if args.rank_visibility == "isolated" else "CUDA_VISIBLE_DEVICES",
                 global_rank_gpu_uuids=args.uuids,
                 local_rank_mapping="zero per isolated rank" if args.rank_visibility == "isolated" else "global rank index"),
-            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "WAM_ASSIGNED_GPU_UUIDS", "PYTHONPATH", "WANDB_MODE", "PYTORCH_NVML_BASED_CUDA_CHECK", "ACCELERATE_USE_DEEPSPEED", "ACCELERATE_MIXED_PRECISION", "PATH") if k in env},
+            smoke_receipt=smoke, environment={k: env[k] for k in (*env_paths, "CUDA_VISIBLE_DEVICES", "WAM_ASSIGNED_GPU_UUIDS", "WAM_TRAINING_RUN_DIR", "PYTHONPATH", "WANDB_MODE", "PYTORCH_NVML_BASED_CUDA_CHECK", "ACCELERATE_USE_DEEPSPEED", "ACCELERATE_MIXED_PRECISION", "PATH") if k in env},
             retry_policy="none", startup_health_seconds=args.startup_health_seconds,
             health_check_interval=args.health_check_interval, max_runtime_seconds=args.max_runtime_seconds,
             postwindow_gpu_polling=False, termination_policy="TERM own registered process group only")
@@ -595,10 +770,18 @@ def main():
             for uuid in sorted(args.uuids):
                 lease = stack.enter_context((temporary / f"motionkv-training-{uuid}.lock").open("a+"))
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.device_lifetime_guard:
+                guard = load_device_guard(guard_helper, guard_config["helper_sha256"], args.uuids, run)
+                stack.callback(finish_guard_once)
+                guard.open()
             with (run / "train.log").open("a", encoding="utf-8") as log:
                 process = subprocess.Popen(argv, cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
                 pgid = os.getpgid(process.pid)
+                if guard is not None:
+                    root_identity = process_identity(process.pid)
+                    if root_identity:
+                        guard_owned[process.pid] = root_identity
                 manifest.update(training_pid=process.pid, training_pgid=pgid, started_at=utc())
                 atomic_json(run / "manifest.json", manifest)
                 status.update(state="running", training_pid=process.pid, training_pgid=pgid)
@@ -640,6 +823,7 @@ def main():
                         last_heartbeat = elapsed
                     time.sleep(1)
                 code = process.wait()
+                finish_guard_once()
                 # Keep this run's GPU leases while the smoke teardown is read.
                 record_process_exit(args, driver, run, status, code)
         print(json.dumps(status))
@@ -662,6 +846,13 @@ def main():
                 pass
         status.update(state="blocked_before_training" if process is None else "supervisor_error",
             timestamp=utc(), error=f"{type(exc).__name__}: {exc}")
+        if process is not None and args.device_lifetime_guard and status.get("device_guard_events_sha256"):
+            health = smoke_postexit_health(args, driver)
+            if health is not None:
+                atomic_json(run / "postexit_health.json", health)
+                status.update(postexit_health_passed=health["passed"],
+                    postexit_health_file=str(run / "postexit_health.json"),
+                    postexit_health_sha256=file_digest(run / "postexit_health.json"))
         atomic_json(run / "status.json", status)
         print(json.dumps(status), file=sys.stderr)
         return 2
