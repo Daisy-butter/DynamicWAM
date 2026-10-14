@@ -148,7 +148,6 @@ class MotionKVPolicy(MultiratePolicy):
         packet = dict(packet, action_index=origin, _query_index=self._queries,
             _episode_seed=self._episode_seed, _text=self.base.runner._get_text_embeddings())
         self._queries += 1
-        torch.cuda.synchronize()
         text_ms = (time.perf_counter()-started)*1000
         slow_started = time.perf_counter()
         # Bootstrap holds the robot while physics advances. Its first d=4
@@ -165,7 +164,9 @@ class MotionKVPolicy(MultiratePolicy):
         age = origin-self.bridge_action_index
         if age != expected_age or age not in (0, 4, 8, 12):
             raise RuntimeError('cache action age disagrees with trained/controller cadence')
-        torch.cuda.synchronize()
+        # Bridge build already records+synchronizes its producer stream. Do not
+        # insert extra device-wide syncs around the refresh gate: they only
+        # inflated wall time on the H4 critical path.
         slow_ms = (time.perf_counter()-slow_started)*1000
         actions, detail = self._sample_rtc_fast(packet, age, raw_prefix, length)
         if not np.isfinite(actions).all():

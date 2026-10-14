@@ -212,6 +212,11 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         count = 0
         previous_lag, growing = lag(), 0
         while stopped() is None and lag() >= dt - 1e-9:
+            # A ready camera must be consumed before more physics burns the
+            # committed H4 budget. Observation time is already frozen; every
+            # extra tick here only shrinks the inference window.
+            if pending is not None and session.capture_ready():
+                break
             if not tick(paced=False):
                 break
             count += 1
@@ -222,7 +227,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             previous_lag = current_lag
             if count > 10000:
                 fail("RTC physical clock cannot catch up")
-        if lag() > max_backlog_s:
+        if lag() > max_backlog_s and not (pending is not None and session.capture_ready()):
             fail("RTC wall/physics backlog exceeds declared limit", max_backlog_s=max_backlog_s)
 
     def capture(for_inference):
@@ -250,11 +255,12 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         record["capture_stages"] = getattr(session, "last_capture_diagnostics", {})
         captures.append(record)
         pending = None
-        before_catch_up = wall()
-        catch_up()
-        record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
         if not record["for_inference"] or stopped() is not None:
+            before_catch_up = wall()
+            catch_up()
+            record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
             return
+        # Deadline is on the frozen observation clock; check before starting work.
         if reservation is not None and physical() > reservation.deadline_physics_s + 1e-9:
             fail("RTC query capture exceeded committed prefix deadline")
         prefix = np.empty((0, 14), dtype=np.float64) if reservation is None else reservation.actions.copy()
@@ -269,8 +275,18 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                       _rtc_cache_age_actions=record["action_origin"] % 16,
                       _rtc_observation_physics_s=record["physics_s"],
                       _rtc_action_interval_s=action_interval_s)
-        submit_wall, submit_physics = wall(), physical()
+        # Start the worker before draining render lag so model compute overlaps
+        # catch-up. Wall stamp is the true start; physics stamp is taken after
+        # catch-up so the inference clock check does not treat lag recovery as
+        # model time.
+        submit_wall = wall()
         request_id = worker.submit(packet)
+        before_catch_up = wall()
+        catch_up()
+        record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
+        submit_physics = physical()
+        if reservation is not None and submit_physics > reservation.deadline_physics_s + 1e-9:
+            fail("RTC query capture exceeded committed prefix deadline")
         active = {"query_index": query, "request_id": request_id,
                   "sampling_seed": packet["_sampling_seed"], "initial_query": query == 0,
                   "observation_physics_s": record["physics_s"], "observation_wall_s": record["wall_s"],
@@ -373,9 +389,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
 
     capture(True)
     while stopped() is None:
-        catch_up()
-        if stopped() is not None:
-            break
+        # Service ready IO before catch-up so render lag cannot starve submit.
         if pending is not None and session.capture_ready():
             finish_capture()
         if stopped() is not None:
@@ -389,6 +403,13 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             if result is not None:
                 catch_up()
                 finish_request(result, terminal=stopped() is not None)
+        if stopped() is not None:
+            break
+        catch_up()
+        if stopped() is not None:
+            break
+        if pending is not None and session.capture_ready():
+            finish_capture()
         if stopped() is not None:
             break
         if track is None and queue.rows:

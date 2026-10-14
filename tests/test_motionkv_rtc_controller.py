@@ -195,6 +195,37 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(RealtimeViolation, "backlog"):
             self.run_case(session_args={"step_cost": .03}, durations=(.5,))
 
+    def test_ready_capture_not_starved_by_catch_up_lag(self):
+        """Render-induced lag must not drain before a ready inference capture.
+
+        begin_capture blocks like update_picture (~100ms+). That creates wall
+        lag while the async readback is already complete. Catch-up used to tick
+        away the whole lag before finish_capture, burning the H4 budget before
+        the worker even started. Ready captures must preempt catch-up.
+        """
+        clock = Clock()
+
+        class LaggySession(Session):
+            def begin_capture(self, *, for_inference):
+                super().begin_capture(for_inference=for_inference)
+                # Stay under max_backlog / clock-tolerance after finish drains
+                # lag, but large enough that starved catch-up would record many
+                # physics_ticks_during_capture.
+                self.clock.sleep(0.15)
+
+        session = LaggySession(clock, capture_duration=0.01)
+        worker = Worker(clock, (.05,))
+        report = run_continuous_rtc_episode(session, worker, task="test", episode_seed=7,
+            action_limit=12, clock=clock, sleep=clock.sleep,
+            action_interval_s=session.action_interval_s, frame_period_s=session.action_interval_s)
+        self.assertEqual(report["completed_targets"], 12)
+        inference = [c for c in report["captures"] if c.get("for_inference") and c.get("delivered")]
+        self.assertGreaterEqual(len(inference), 2)
+        # 0.15s lag / 0.01s dt = 15 ticks if catch-up ignores readiness.
+        for capture in inference[1:]:
+            self.assertLess(capture["physics_ticks_during_capture"], 5,
+                            msg=f"capture still starved: {capture}")
+
 
 if __name__ == "__main__":
     unittest.main()
