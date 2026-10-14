@@ -1,0 +1,7 @@
+# Route1 guarded telemetry repair candidate
+
+User explicitly requested repair and restart after formal startup NVLink failure. Historical error predates first guard open by 0.392 s; exact caller unproven. Exact 560.35.05 disassembly shows RX-state callback calls knvlinkExecGspRmRpc_IMPL, which fails GPU-group lock acquisition before GSP control. The gpumask printed is acquired-mask output (cleared before acquisition), not evidence of missing GPUs.
+
+The evaluation supervisor previously ran two nvidia-smi processes before guard.open. New mode fds_before_telemetry_v1 validates proc UUID/device mapping, opens all eight temporary guards, fences driver evidence, performs sequential existing telemetry, fences again before workers, then closes all handles after every worker exits. No driver changes, filtering or health-threshold relaxation. A preflight-only mode verifies this complete lifecycle without model/CUDA workers.
+
+13 CPU regression tests cover ordering, failures, unchanged authorization baseline and full exit checks. Next validation: one fresh all-adapter telemetry lifecycle, then real eight-GPU RTC smoke and full MP4 decode; formal restart only if all pass. Keep model, checkpoint, 0.16 s timing, continuous RTC contract, CUDA Graph and native output semantics unchanged. Reuse frozen700 scenes and save separate attempt directories. Final receipts live under /SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/motionkv_rtc_20261014.

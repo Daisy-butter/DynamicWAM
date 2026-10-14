@@ -34,41 +34,64 @@ STARTUP_DELTA = dict(BASELINE, anomaly_count=286,
 
 
 class LaunchFenceTest(unittest.TestCase):
-    def run_main(self, snapshots, *, preflight_error=None):
+    def run_main(self, snapshots, *, preflight_error=None, open_error=None,
+                 preflight_only=False, mode=supervisor.DEVICE_LIFETIME_MODE,
+                 cleanup_error=None, inventory_error=None, guard_count=8):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         run = root / 'run'
         uuids = [f'GPU-mocked-{i}' for i in range(8)]
         authorization = root / 'authorization.json'
-        authorization.write_text(json.dumps(dict(driver=BASELINE, gpu_uuids=uuids, guard_sha256='mocked')))
+        authorization.write_text(json.dumps(dict(driver=BASELINE, gpu_uuids=uuids,
+            guard_sha256='mocked', device_lifetime_mode=mode)))
+        events = []
         guard = Mock()
         guard.handles = []
+        def opened():
+            events.append('guard_open')
+            if open_error:
+                raise open_error
+        guard.open.side_effect = opened
+        guard.close.side_effect = lambda: events.append('guard_close')
         child = Mock(pid=12345, returncode=0)
         child.poll.return_value = 0
-        spawn = Mock(return_value=child)
+        def spawned(*args, **kwargs):
+            events.append('worker')
+            return child
+        spawn = Mock(side_effect=spawned)
         load = Mock(return_value=guard)
-        gpu = Mock(return_value={'devices': [{'uuid': value, 'pci.bus_id': str(i)} for i, value in enumerate(uuids)]})
-        if preflight_error:
-            gpu.side_effect = preflight_error
-
+        def telemetry(*args, **kwargs):
+            self.assertIn('guard_open', events)
+            self.assertNotIn('guard_close', events)
+            events.append('telemetry')
+            if preflight_error:
+                raise preflight_error
+            return {'devices': [{'uuid': value, 'pci.bus_id': str(i)} for i, value in enumerate(uuids)]}
+        gpu = Mock(side_effect=telemetry)
+        inventory = Mock(return_value=[{'uuid': value} for value in uuids])
+        if inventory_error:
+            inventory.side_effect = inventory_error
         def finish(guard, run, status, process, owned):
             if guard is not None:
                 guard.close()
                 status['guard_all_handles_closed'] = True
-
+            if cleanup_error:
+                raise cleanup_error
+        argv = ['supervisor', '--run-dir', str(run), '--gpus', ','.join(uuids[:guard_count]),
+            '--guard-gpus', ','.join(uuids[:guard_count]), '--authorization', str(authorization),
+            '--stage', 'smoke']
+        argv += ['--preflight-only'] if preflight_only else ['--', 'must-never-be-executed']
+        env = Mock(return_value={})
         with ExitStack() as stack:
             patches = {
-                'ROOT': root,
-                'verify_ssd': Mock(return_value=(root, {})),
+                'ROOT': root, 'verify_ssd': Mock(return_value=(root, {})),
                 'inside_ssd': Mock(side_effect=lambda path, ssd: path),
                 'driver_evidence': Mock(side_effect=copy.deepcopy(snapshots)),
-                'gpu_preflight': gpu,
-                'file_digest': Mock(return_value='mocked'),
-                'environment': Mock(return_value={}),
+                'gpu_preflight': gpu, 'proc_gpu_inventory': inventory,
+                'file_digest': Mock(return_value='mocked'), 'environment': env,
                 'source_files_and_hash': Mock(return_value=({}, 'mocked')),
-                'load_device_guard': load,
-                'finish_device_guard': Mock(side_effect=finish),
+                'load_device_guard': load, 'finish_device_guard': Mock(side_effect=finish),
             }
             for name, value in patches.items():
                 stack.enter_context(patch.object(supervisor, name, value))
@@ -76,74 +99,127 @@ class LaunchFenceTest(unittest.TestCase):
             stack.enter_context(patch.object(supervisor.subprocess, 'check_output', return_value='mocked'))
             stack.enter_context(patch.object(supervisor.signal, 'signal'))
             stack.enter_context(patch.object(supervisor.time, 'sleep'))
-            stack.enter_context(patch.object(sys, 'argv', ['supervisor', '--run-dir', str(run),
-                '--gpus', ','.join(uuids), '--authorization', str(authorization), '--stage', 'formal',
-                '--', 'must-never-be-executed']))
+            stack.enter_context(patch.object(sys, 'argv', argv))
             code = supervisor.main()
         status = json.loads((run / 'status.json').read_text())
-        phases = json.loads((run / 'driver_phases.json').read_text())
-        return code, status, phases, guard, spawn, load, run
+        phase_file = run / 'driver_phases.json'
+        phases = json.loads(phase_file.read_text()) if phase_file.exists() else []
+        return dict(code=code, status=status, phases=phases, guard=guard, spawn=spawn,
+            load=load, run=run, events=events, gpu=gpu, environment=env)
 
-    def test_saved_preflight_delta_blocks_before_guard_or_worker(self):
-        code, status, phases, guard, spawn, load, run = self.run_main([BASELINE, STARTUP_DELTA, STARTUP_DELTA])
-        self.assertEqual(code, 1)
-        self.assertEqual(status['failure_phase'], 'after_gpu_preflight')
-        self.assertTrue(status['blocked_before_worker'])
-        self.assertFalse(status['worker_started'])
-        self.assertFalse(status['driver_exit_clean'])
-        self.assertEqual(status['state'], 'failed')
-        self.assertEqual(status['final_exit_code'], 1)
-        self.assertIn('ended_at', status)
-        load.assert_not_called()
-        guard.open.assert_not_called()
-        spawn.assert_not_called()
-        self.assertEqual(phases[-1]['delta']['anomaly_count'], 1)
-        self.assertEqual(phases[-1]['delta']['new_dmesg_tail_lines'], STARTUP_DELTA['dmesg_tail'])
-        self.assertEqual(phases[-1]['baseline_identity'], list(supervisor.driver_identity(BASELINE)))
+    def test_saved_delta_before_guard_blocks_telemetry_and_worker(self):
+        r = self.run_main([BASELINE, STARTUP_DELTA, STARTUP_DELTA])
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['failure_phase'], 'before_guard_open')
+        self.assertTrue(r['status']['blocked_before_worker'])
+        self.assertFalse(r['status']['driver_exit_clean'])
+        r['guard'].open.assert_not_called()
+        r['gpu'].assert_not_called()
+        r['spawn'].assert_not_called()
+        self.assertEqual(r['phases'][-1]['delta']['anomaly_count'], 1)
+        self.assertEqual(r['phases'][-1]['delta']['new_dmesg_tail_lines'], STARTUP_DELTA['dmesg_tail'])
+        self.assertEqual(r['phases'][-1]['baseline_identity'], list(supervisor.driver_identity(BASELINE)))
 
-    def test_gap_after_source_collection_blocks_before_guard_open(self):
-        code, status, phases, guard, spawn, load, run = self.run_main([BASELINE, BASELINE, STARTUP_DELTA, STARTUP_DELTA])
-        self.assertEqual(code, 1)
-        self.assertEqual(status['failure_phase'], 'before_guard_open')
-        guard.open.assert_not_called()
-        guard.close.assert_called_once()
-        spawn.assert_not_called()
-        self.assertEqual(json.loads((run / 'manifest.json').read_text())['driver'], BASELINE)
+    def test_after_guard_delta_closes_without_telemetry(self):
+        r = self.run_main([BASELINE, BASELINE, STARTUP_DELTA, STARTUP_DELTA])
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['failure_phase'], 'after_guard_open_before_telemetry')
+        self.assertTrue(r['status']['guard_all_handles_closed'])
+        self.assertEqual(r['events'], ['guard_open', 'guard_close'])
+        r['gpu'].assert_not_called()
+        r['spawn'].assert_not_called()
 
-    def test_after_guard_open_delta_closes_guard_without_worker(self):
-        code, status, phases, guard, spawn, load, run = self.run_main([BASELINE, BASELINE, BASELINE, STARTUP_DELTA, STARTUP_DELTA])
-        self.assertEqual(code, 1)
-        self.assertEqual(status['failure_phase'], 'after_guard_open_before_worker')
-        self.assertTrue(status['blocked_before_worker'])
-        self.assertTrue(status['guard_all_handles_closed'])
-        guard.open.assert_called_once()
-        guard.close.assert_called_once()
-        spawn.assert_not_called()
+    def test_saved_telemetry_delta_closes_guard_without_worker(self):
+        r = self.run_main([BASELINE] * 3 + [STARTUP_DELTA] * 2)
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['failure_phase'], 'after_gpu_preflight')
+        self.assertTrue(r['status']['blocked_before_worker'])
+        self.assertTrue(r['status']['guard_all_handles_closed'])
+        self.assertEqual(r['events'], ['guard_open', 'telemetry', 'guard_close'])
+        r['spawn'].assert_not_called()
 
-    def test_clean_path_launches_once_and_closes_guard(self):
-        code, status, phases, guard, spawn, load, run = self.run_main([BASELINE] * 5)
-        self.assertEqual(code, 0)
-        self.assertTrue(status['worker_started'])
-        self.assertTrue(status['driver_exit_clean'])
-        self.assertEqual(status['final_exit_code'], 0)
-        guard.open.assert_called_once()
-        guard.close.assert_called_once()
-        spawn.assert_called_once()
-        self.assertEqual([item['phase'] for item in phases], ['before_gpu_preflight',
-            'after_gpu_preflight', 'before_guard_open', 'after_guard_open_before_worker', 'worker_started'])
-        self.assertEqual(json.loads((run / 'manifest.json').read_text())['driver'], BASELINE)
+    def test_environment_gap_is_fenced_before_worker(self):
+        r = self.run_main([BASELINE] * 4 + [STARTUP_DELTA] * 2)
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['failure_phase'], 'before_worker_launch')
+        r['spawn'].assert_not_called()
+        r['guard'].close.assert_called_once()
 
-    def test_preflight_exception_gets_terminal_failure_receipt(self):
-        code, status, phases, guard, spawn, load, run = self.run_main([BASELINE, STARTUP_DELTA],
-            preflight_error=RuntimeError('mocked telemetry failed'))
-        self.assertEqual(code, 1)
-        self.assertEqual(status['failure_phase'], 'gpu_preflight')
-        self.assertTrue(status['blocked_before_worker'])
-        self.assertEqual(status['stop_reason'], 'mocked telemetry failed')
-        self.assertEqual(status['final_exit_code'], 1)
-        self.assertIn('ended_at', status)
-        guard.open.assert_not_called()
-        spawn.assert_not_called()
+    def test_clean_path_guards_telemetry_then_worker_then_close(self):
+        r = self.run_main([BASELINE] * 6)
+        self.assertEqual(r['code'], 0)
+        self.assertTrue(r['status']['worker_started'])
+        self.assertTrue(r['status']['driver_exit_clean'])
+        self.assertEqual(r['events'], ['guard_open', 'telemetry', 'worker', 'guard_close'])
+        r['spawn'].assert_called_once()
+        self.assertEqual([item['phase'] for item in r['phases']], ['before_guard_open',
+            'after_guard_open_before_telemetry', 'after_gpu_preflight', 'before_worker_launch', 'worker_started'])
+        manifest = json.loads((r['run'] / 'manifest.json').read_text())
+        self.assertEqual(manifest['driver'], BASELINE)
+        self.assertEqual(manifest['device_lifetime_mode'], supervisor.DEVICE_LIFETIME_MODE)
+
+    def test_preflight_only_runs_same_telemetry_and_final_close_without_worker(self):
+        r = self.run_main([BASELINE] * 5, preflight_only=True)
+        self.assertEqual(r['code'], 0)
+        self.assertEqual(r['status']['state'], 'preflight_complete')
+        self.assertFalse(r['status']['worker_started'])
+        self.assertTrue(r['status']['driver_exit_clean'])
+        self.assertTrue(r['status']['guard_all_handles_closed'])
+        self.assertEqual(r['events'], ['guard_open', 'telemetry', 'guard_close'])
+        r['spawn'].assert_not_called()
+        r['environment'].assert_not_called()
+
+    def test_occupied_or_failed_telemetry_closes_guard(self):
+        r = self.run_main([BASELINE] * 4, preflight_error=RuntimeError('GPU occupied'))
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['failure_phase'], 'gpu_preflight')
+        self.assertEqual(r['status']['stop_reason'], 'GPU occupied')
+        self.assertTrue(r['status']['guard_all_handles_closed'])
+        self.assertEqual(r['events'], ['guard_open', 'telemetry', 'guard_close'])
+        r['spawn'].assert_not_called()
+
+    def test_open_exception_closes_guard_and_prevents_queries(self):
+        r = self.run_main([BASELINE] * 3, open_error=RuntimeError('mocked partial open'))
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['failure_phase'], 'guard_open')
+        r['guard'].close.assert_called_once()
+        r['gpu'].assert_not_called()
+        r['spawn'].assert_not_called()
+
+    def test_old_authorization_mode_cannot_open_or_query(self):
+        r = self.run_main([BASELINE] * 2, mode=None)
+        self.assertEqual(r['code'], 1)
+        r['load'].assert_not_called()
+        r['gpu'].assert_not_called()
+        r['spawn'].assert_not_called()
+
+    def test_invalid_proc_inventory_cannot_open_or_query(self):
+        r = self.run_main([BASELINE] * 2, inventory_error=RuntimeError('invalid device node'))
+        self.assertEqual(r['code'], 1)
+        r['load'].assert_not_called()
+        r['gpu'].assert_not_called()
+        r['spawn'].assert_not_called()
+
+    def test_incomplete_simulator_guard_coverage_is_rejected(self):
+        r = self.run_main([BASELINE] * 2, guard_count=1)
+        self.assertEqual(r['code'], 1)
+        r['load'].assert_not_called()
+        r['gpu'].assert_not_called()
+        r['spawn'].assert_not_called()
+
+    def test_final_guard_close_error_overrides_zero_child_exit(self):
+        r = self.run_main([BASELINE] * 6, cleanup_error=RuntimeError('mocked close failure'))
+        self.assertEqual(r['code'], 1)
+        self.assertEqual(r['status']['state'], 'failed')
+        self.assertEqual(r['status']['stop_reason'], 'mocked close failure')
+        self.assertIn('ended_at', r['status'])
+
+    def test_new_anomaly_after_final_close_fails_preflight_only(self):
+        r = self.run_main([BASELINE] * 4 + [STARTUP_DELTA], preflight_only=True)
+        self.assertEqual(r['code'], 1)
+        self.assertFalse(r['status']['driver_exit_clean'])
+        self.assertEqual(r['status']['state'], 'failed')
+        r['spawn'].assert_not_called()
 
 
 if __name__ == '__main__':

@@ -41,3 +41,9 @@ Harness v0.8 documents the evaluation contract. Rollback target remains `route1-
 ## 2026-10-14 - Formal evaluation stopped before episodes
 
 The 700-scene preparation succeeded, but formal startup stopped on a new NVLink/RPC lock-status error before any model episode. This delta contained no new IOVAS/pIOVAS. Added explicit prelaunch driver phase fences on a new branch, preserving the original baseline and failure evidence; CPU-only validation, no GPU restart or driver-repair claim. See [failure audit](docs/route1_eval_start_failure_20261014.md).
+
+
+## 2026-10-14: protect evaluation telemetry lifecycle
+- Open all-adapter temporary device FDs before NVML telemetry; bind launch mode and proc inventory in manifest.
+- Add no-worker telemetry lifecycle gate and 13 CPU launch/cleanup regression tests.
+- Preserve original RTC protocol, scenes, checkpoint and all failed receipts; explicit user-authorized restart still requires fresh clean eight-GPU smoke.

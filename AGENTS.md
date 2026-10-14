@@ -48,3 +48,8 @@ See `docs/route1_device_lifetime_training_20261014.json`. Real eight-GPU 4-step 
 ## Latest formal evaluation failure, 2026-10-14
 
 See `docs/route1_eval_start_failure_20261014.md`. The 700-scene prepare completed cleanly; formal failed with 0/700 valid episodes and all processes/FDs closed. New delta is NVLink RPC/lock status (285->286 matched lines), not new IOVAS. Error predates first guard open and worker launch. Do not treat old launch snapshots as running status, reuse stale authorization, retry automatically or perform device recovery. CPU-only phase-fence fixes on `fix/route1-eval-preflight-health-20261014` improve detection, not driver health; original `abd2dc7` source and all run evidence remain preserved.
+
+
+## Latest explicit repair/restart authorization, 2026-10-14
+
+User requested fixing NVLink lock/state queries and restarting GPU evaluation. Follow harness v0.9 on fix/route1-guarded-telemetry-20261014. The all-adapter temporary FD guard must precede every GPU telemetry call. Bind fresh authorization to device_lifetime_mode=fds_before_telemetry_v1 and current evidence, run one guarded telemetry lifecycle test then fresh actual eight-GPU RTC smoke with full video decode before formal35x20. Reuse and rehash the 700 prepared scenes; preserve failed runs and frozen abd2dc7 source. This is an application lifecycle remedy, not a proven driver repair. No automatic retry, permanent keepalive, device recovery or recurring inspections.
