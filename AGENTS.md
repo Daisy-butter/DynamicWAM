@@ -58,3 +58,8 @@ User requested fixing NVLink lock/state queries and restarting GPU evaluation. F
 ## Terminal restart result, 2026-10-14 20:19 Beijing
 
 Guard-before-telemetry source d05b47d passed actual telemetry lifecycle and eight-GPU RTC smoke (8/8, eight MP4 fully decoded), with no new driver anomalies. Formal35x20_eval_02 was restarted but stopped after three saved reports: place_object_basket episode0 missed the H4 suffix deadline at action20/origin16 slow refresh. Capture359.879ms and111.803ms to submission left about168ms; earlier slow model calls took248-254ms. Other workers were concurrently initializing their next episodes/CuRobo, but contention causality is unproven. All owned workers and eight guard FDs closed; final driver identity remains286, no new NVLink/IOVAS. No retry was launched. See SSD outputs/evaluation/motionkv_rtc_20261014/guarded_telemetry_restart_receipt.json. Preserve current failed receipts, source and trained RTC contract; do not report formal as running or completed. User emphasizes token conservation.
+
+
+## Latest RTC repair authorization, 2026-10-14
+
+User explicitly requested diagnosing/fixing RTC timeout then restarting eight-GPU evaluation. Follow harness v1.0 on fix/route1-rtc-deadline-pipeline-20261014: exact flow-pair cache, explicit OpenCV threads, non-overlapping cohort setup/live phases, granular timings. Preserve trained timing/deadline and frozen700scenes. Require actual8tasks x2episodes smoke including place_object_basket,16MP4 decode and clean finalguard close before formal03. Driver286 is historical evidence, not a driver repair; bind fresh user authorization and guard-before-telemetry mode. No automatic retries/recurring inspection/device recovery.

@@ -6,7 +6,7 @@ reader, it must not update render state again until that read is consumed.
 """
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from copy import deepcopy
 import math
 from typing import Any
@@ -113,6 +113,11 @@ class PhysicalTimeHeadHistory:
                              + 2 * self.endpoint_tolerance_s + self.frame_period_s)
         self._next_frame_id = 0
         self._diagnostics: dict[str, Any] = {}
+        # Consecutive H4 queries normally share four of their five exact
+        # endpoint pairs. Cache only immutable pixel-pair results, never a
+        # motion feature or timestamp: velocity/acceleration are rebuilt below.
+        self._pair_cache: OrderedDict[tuple[int, int], tuple] = OrderedDict()
+        self._pair_cache_limit = 2 * (self.history_count + 1)
 
     @property
     def latest_timestamp(self) -> float | None:
@@ -126,6 +131,7 @@ class PhysicalTimeHeadHistory:
         self._frames.clear()
         self._next_frame_id = 0
         self._diagnostics = {}
+        self._pair_cache.clear()
 
     def push(self, frame_rgb_u8: np.ndarray, *, simulator_time_seconds: float) -> None:
         if (not isinstance(frame_rgb_u8, np.ndarray) or frame_rgb_u8.dtype != np.uint8
@@ -144,6 +150,10 @@ class PhysicalTimeHeadHistory:
         self._next_frame_id += 1
         while self._frames and self._frames[0][1] < timestamp - self._retention_s:
             self._frames.popleft()
+        retained = {sample[2] for sample in self._frames}
+        for key in tuple(self._pair_cache):
+            if key[0] not in retained or key[1] not in retained:
+                del self._pair_cache[key]
 
     def observation(self, *, reference_time_s: float | None = None):
         if not self._frames:
@@ -165,14 +175,26 @@ class PhysicalTimeHeadHistory:
             selected.append(candidate if abs(candidate[1] - target) <= self.endpoint_tolerance_s + 1e-9
                             else None)
         flow_rgb, displacement, starts, ends, valid, temporal, quality = [], [], [], [], [], [], []
+        cache_hits = cache_misses = 0
         for previous, current in zip(selected, selected[1:]):
             is_temporal = (previous is not None and current is not None
                            and previous[2] != current[2] and current[1] > previous[1])
             if is_temporal:
-                rgb, stats, _fraction, quality_valid = self._compute(
-                    previous[0], current[0], compute_size=self.compute_size,
-                    normalization_percentile=self.normalization_percentile,
-                    farneback=self.farneback, quality=self.quality)
+                key = (previous[2], current[2])
+                cached = self._pair_cache.get(key)
+                if cached is None:
+                    cached = self._compute(
+                        previous[0], current[0], compute_size=self.compute_size,
+                        normalization_percentile=self.normalization_percentile,
+                        farneback=self.farneback, quality=self.quality)
+                    self._pair_cache[key] = cached
+                    cache_misses += 1
+                    if len(self._pair_cache) > self._pair_cache_limit:
+                        self._pair_cache.popitem(last=False)
+                else:
+                    self._pair_cache.move_to_end(key)
+                    cache_hits += 1
+                rgb, stats, _fraction, quality_valid = cached
             else:
                 rgb = np.zeros((*self.compute_size, 3), dtype=np.uint8)
                 stats, quality_valid = np.zeros(4, dtype=np.float32), False
@@ -193,6 +215,7 @@ class PhysicalTimeHeadHistory:
             "frame_period_s": self.frame_period_s, "target_interval_s": self.interval_s,
             "endpoint_tolerance_s": self.endpoint_tolerance_s,
             "retained_frames": len(self._frames),
+            "flow_pair_cache_hits": cache_hits, "flow_pair_cache_misses": cache_misses,
             "endpoint_target_times_s": targets,
             "endpoint_capture_times_s": [s[1] if s is not None else None for s in selected],
             "endpoint_frame_ids": [s[2] if s is not None else None for s in selected],

@@ -234,6 +234,7 @@ def parse():
     parser.add_argument("--replay-from", type=Path)
     parser.add_argument("--result-stamp")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--cohort-dir", type=Path)
     parser.add_argument("--probe-action-limit", type=int)
     parser.add_argument("--max-backlog-s", type=float, default=.25)
     parser.add_argument("--infer-clock-tolerance-s", type=float, default=.02)
@@ -248,6 +249,8 @@ def main():
         raise KeyboardInterrupt(f"received signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
     import numpy as np
+    import cv2
+    cv2.setNumThreads(1)
     import yaml
     from harness_preflight import require_ssd
     from dynamicwam.config.loader import load_profile
@@ -277,6 +280,15 @@ def main():
         raise ValueError("only dynamic DOMINO Level-1 is supported")
     native_limit = int(yaml.safe_load((domino / "task_config/_eval_step_limit.yml").read_text())[args.task])
     action_limit = min(native_limit, args.probe_action_limit) if args.probe_action_limit else native_limit
+    from rtc_episode_cohort import EpisodeCohort, MODE as COHORT_MODE
+    cohort = None
+    if not args.prepare_only:
+        if args.cohort_dir is None or args.resume:
+            raise ValueError("RTC evaluation requires a fresh fixed cohort; resume is not implicit")
+        require_ssd(args.cohort_dir)
+        cohort = EpisodeCohort(args.cohort_dir, args.task)
+        if cohort.manifest["episodes"] != args.episodes:
+            raise ValueError("cohort episode count differs")
     output = args.output_dir.resolve() / args.task
     output.mkdir(parents=True, exist_ok=True)
     source = provenance(args.config)
@@ -321,7 +333,10 @@ def main():
                 frozen_manifest_sha256=frozen_sha, native_action_limit=native_limit, action_limit=action_limit,
                 probe_action_limit=args.probe_action_limit, native_result_dir=str(native_dir) if native_dir else None,
                 action_interval_s=args.action_interval_s, history_frame_period_s=args.history_frame_period_s,
-                max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s)
+                max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
+                opencv_threads=cv2.getNumThreads(), scheduling_mode=COHORT_MODE if cohort else None,
+                cohort_dir=str(cohort.directory) if cohort else None,
+                cohort_manifest_sha256=sha(cohort.directory / "manifest.json") if cohort else None)
     lock = acquire_lock(output / ".evaluation.lock")
     started = output / "task_started.json"
     if started.exists():
@@ -421,6 +436,7 @@ def main():
                     initial_clock = session.physics_time(); env.get_obs()
                     if session.physics_time() != initial_clock:
                         raise RuntimeError("camera warmup advanced physics")
+                    ready_barrier = cohort.wait(episode, "ready")
                     report = run_continuous_rtc_episode(session, worker, task=args.task, episode_seed=descriptor["seed"],
                         action_limit=action_limit, sink=events.append, max_backlog_s=args.max_backlog_s,
                         infer_clock_tolerance_s=args.infer_clock_tolerance_s, frame_period_s=args.history_frame_period_s,
@@ -429,6 +445,9 @@ def main():
                         raise RuntimeError("RTC rollout failed its protocol/clock gates")
                     report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
                     report["post_terminal_inference_drain_wall_s"] = drain_finished_episode(worker)
+                    finished_barrier = cohort.wait(episode, "finished")
+                    report["cohort_scheduling"] = dict(mode=COHORT_MODE, ready=ready_barrier, finished=finished_barrier,
+                        manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads())
                     report.update({**descriptor, **source, "checkpoint": str(args.checkpoint.resolve()), "checkpoint_sha256": checkpoint_sha,
                         "frozen_manifest_sha256": frozen_sha, "video_required": True, "probe_action_limit": args.probe_action_limit,
                         "worker_startup_metadata": worker.startup_metadata, "instruction_warmup": instruction_warmup,
@@ -453,6 +472,8 @@ def main():
             finally:
                 original_error = sys.exc_info()[1]
                 if original_error is not None:
+                    if cohort is not None:
+                        cohort.abort(f"{args.task} episode {episode}: {type(original_error).__name__}: {original_error}")
                     preserve_failed_video(session, directory, episode, original_error)
                     try:
                         cleanup_episode(session, env, directory, events)

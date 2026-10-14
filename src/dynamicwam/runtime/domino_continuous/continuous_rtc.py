@@ -246,9 +246,12 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         packet = session.finish_capture()
         record.update(duration_s=wall() - record["wall_s"], delivered=True,
                       physics_ticks_during_capture=int(round((physical() - record["physics_s"]) / dt)))
+        record["capture_stages"] = getattr(session, "last_capture_diagnostics", {})
         captures.append(record)
         pending = None
+        before_catch_up = wall()
         catch_up()
+        record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
         if not record["for_inference"] or stopped() is not None:
             return
         if reservation is not None and physical() > reservation.deadline_physics_s + 1e-9:

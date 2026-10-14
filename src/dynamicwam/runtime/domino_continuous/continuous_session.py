@@ -1,5 +1,6 @@
 """DOMINO integration for full-chunk continuous synchronous playback."""
 from copy import deepcopy
+import time
 import numpy as np
 
 from .domino_session import DominoLevel1Session
@@ -124,14 +125,30 @@ class ContinuousSyncSession(DominoLevel1Session):
                                    capture_wall_perf_s=captured.capture_wall_perf_s)
 
     def finish_capture(self):
+        before = time.perf_counter()
         captured = self.camera_reader.finish(self.pending_capture)
+        consumed = time.perf_counter()
         self.pending_capture = None
         self.record_video_capture(captured)
+        video_done = time.perf_counter()
         self.flow.push(head_camera_frame(captured.observation), simulator_time_seconds=captured.physics_time_s)
+        history_done = time.perf_counter()
+        packet = None
         if self.capture_for_inference:
             self.env.now_obs = deepcopy(captured.observation)
-            return self._packet_from_observation(captured.observation)
-        return None
+            packet = self._packet_from_observation(captured.observation)
+        done = time.perf_counter()
+        self.last_capture_diagnostics = {
+            "render_submit_ms": 1000 * (captured.render_submitted_wall_perf_s - captured.capture_wall_perf_s),
+            "native_readback_ms": 1000 * (captured.readback_finished_wall_perf_s - captured.readback_started_wall_perf_s),
+            "camera_readback_seconds": captured.camera_readback_seconds,
+            "owner_consume_ms": 1000 * (consumed - before),
+            "video_append_ms": 1000 * (video_done - consumed),
+            "history_push_ms": 1000 * (history_done - video_done),
+            "packet_and_flow_ms": 1000 * (done - history_done),
+            "owner_finish_ms": 1000 * (done - before),
+        }
+        return packet
 
     def step_command(self, position, velocity):
         if position is None:

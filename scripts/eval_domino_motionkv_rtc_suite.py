@@ -134,6 +134,7 @@ def parse():
     p.add_argument("--action-interval-s", type=float, default=.16)
     p.add_argument("--history-frame-period-s", type=float, default=.16)
     p.add_argument("--task-timeout-s", type=float, default=14400.)
+    p.add_argument("--cohort-timeout-s", type=float, default=900.)
     return p.parse_args()
 
 
@@ -152,10 +153,12 @@ def main():
     tasks = args.tasks.split(",") if args.tasks else list(configured)
     if len(configured) != 35 or len(set(configured)) != 35 or not tasks or len(tasks) != len(set(tasks)) or not set(tasks) <= set(configured):
         raise ValueError("task list must be unique members of the full 35-task benchmark")
-    if args.episodes < 1 or args.seed < 0 or args.task_timeout_s <= 0:
+    if args.episodes < 1 or args.seed < 0 or args.task_timeout_s <= 0 or not 0 < args.cohort_timeout_s < float("inf"):
         raise ValueError("invalid episode/seed/timeout")
     checkpoint_sha = frozen_sha = None
     if not args.prepare_only:
+        if args.resume:
+            raise ValueError("phased RTC cohorts require a fresh output; automatic resume is unsupported")
         if any(value is None for value in (args.checkpoint, args.checkpoint_audit, args.timing_contract, args.replay_from)):
             raise ValueError("evaluation requires audited checkpoint, timing, and frozen scenes")
         require_ssd(args.checkpoint); require_ssd(args.replay_from)
@@ -180,6 +183,7 @@ def main():
     old_spec = read(output / "suite_started.json") if (output / "suite_started.json").exists() else None
     stamp = args.result_stamp or (old_spec["result_stamp"] if old_spec and args.resume else datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"))
     source = provenance(args.config)
+    from rtc_episode_cohort import MODE as COHORT_MODE, write_abort
     spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else PROTOCOL, prepare_only=args.prepare_only,
         tasks=tasks, episodes_per_task=args.episodes, seed=args.seed, result_stamp=stamp, gpus=gpus,
         gpu_pci={uuid: by_uuid[uuid][2] for uuid in gpus}, config=str(args.config.resolve()), config_sha256=sha(args.config),
@@ -188,7 +192,9 @@ def main():
         timing_contract_sha256=sha(args.timing_contract) if args.timing_contract else None,
         action_interval_s=args.action_interval_s, history_frame_period_s=args.history_frame_period_s,
         max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
-        probe_action_limit=args.probe_action_limit, shared_tmpdir=str(shared_tmp), virtual_delay=False)
+        probe_action_limit=args.probe_action_limit, shared_tmpdir=str(shared_tmp), virtual_delay=False,
+        scheduling_mode=None if args.prepare_only else COHORT_MODE, cohort_timeout_s=args.cohort_timeout_s,
+        opencv_threads=1)
     if old_spec:
         if not args.resume or old_spec != spec:
             raise ValueError("resume requires the exact frozen suite configuration/source")
@@ -200,9 +206,19 @@ def main():
     pending, free = deque(sorted(tasks, key=lambda task: limits[task], reverse=True)), deque(gpus)
     running, finished = [], []
     failed = False
+    cohort_dir, cohort_tasks, cohort_number = None, set(), 0
     try:
         while pending or running:
-            while pending and free and not failed:
+            if not args.prepare_only and not running and pending and not failed:
+                members = list(pending)[:len(gpus)]
+                cohort_dir = output / "cohorts" / f"cohort_{cohort_number:03d}"
+                cohort_dir.mkdir(parents=True, exist_ok=False)
+                save(cohort_dir / "manifest.json", dict(mode=COHORT_MODE, tasks=members,
+                    episodes=args.episodes, barrier_timeout_s=args.cohort_timeout_s,
+                    source_digest=source["source_digest"], protocol=PROTOCOL))
+                cohort_tasks = set(members)
+                cohort_number += 1
+            while pending and free and not failed and (args.prepare_only or pending[0] in cohort_tasks):
                 task, gpu = pending.popleft(), free.popleft()
                 if args.resume:
                     archive_file(output / "logs" / f"{task}.log", output / "logs/history")
@@ -223,6 +239,7 @@ def main():
                 if args.prepare_only:
                     command.append("--prepare-only")
                 else:
+                    command.extend(["--cohort-dir", str(cohort_dir)])
                     for key in ("checkpoint", "checkpoint_audit", "timing_contract", "replay_from"):
                         command.extend(["--" + key.replace("_", "-"), str(getattr(args, key).resolve())])
                 if args.resume: command.append("--resume")
@@ -248,6 +265,7 @@ def main():
                 if code != 0: failed = True
             save(output / "suite_status.json", dict(protocol=spec["protocol"], pid=os.getpid(), heartbeat_unix_s=time.time(),
                  state="failed_draining" if failed else "running", pending=list(pending), finished=finished,
+                 cohort_dir=str(cohort_dir) if cohort_dir else None,
                  running=[dict(task=r["task"], gpu=r["gpu"], pid=r["child"].pid) for r in running]))
             if failed:
                 raise RuntimeError("a worker failed; expansion stopped, no automatic retry")
@@ -257,6 +275,8 @@ def main():
              valid_completed=summary["valid_completed"], planned_total=len(tasks) * args.episodes, finished=finished))
         return 0 if summary["complete"] else 1
     except BaseException as exc:
+        if cohort_dir is not None:
+            write_abort(cohort_dir, f"suite: {type(exc).__name__}: {exc}")
         save(output / "suite_error.json", dict(error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc(), finished=finished, pending=list(pending)))
         traceback.print_exc(); return 1
     finally:
