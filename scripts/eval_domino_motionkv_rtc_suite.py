@@ -135,6 +135,9 @@ def parse():
     p.add_argument("--history-frame-period-s", type=float, default=.16)
     p.add_argument("--task-timeout-s", type=float, default=14400.)
     p.add_argument("--cohort-timeout-s", type=float, default=900.)
+    p.add_argument("--max-cohort-size", type=int, default=0,
+                   help="Cap concurrent RTC cohort members (0=min(pending, n_gpus)). "
+                        "Use 4 with 8 GPUs for two waves; halves camera contention.")
     return p.parse_args()
 
 
@@ -155,6 +158,8 @@ def main():
         raise ValueError("task list must be unique members of the full 35-task benchmark")
     if args.episodes < 1 or args.seed < 0 or args.task_timeout_s <= 0 or not 0 < args.cohort_timeout_s < float("inf"):
         raise ValueError("invalid episode/seed/timeout")
+    if args.max_cohort_size < 0:
+        raise ValueError("max-cohort-size must be >= 0")
     checkpoint_sha = frozen_sha = None
     if not args.prepare_only:
         if args.resume:
@@ -194,6 +199,7 @@ def main():
         max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
         probe_action_limit=args.probe_action_limit, shared_tmpdir=str(shared_tmp), virtual_delay=False,
         scheduling_mode=None if args.prepare_only else COHORT_MODE, cohort_timeout_s=args.cohort_timeout_s,
+        max_cohort_size=args.max_cohort_size or None,
         opencv_threads=1)
     if old_spec:
         if not args.resume or old_spec != spec:
@@ -210,11 +216,16 @@ def main():
     try:
         while pending or running:
             if not args.prepare_only and not running and pending and not failed:
-                members = list(pending)[:len(gpus)]
+                # Cap concurrent live RTC workers so Vulkan/camera contention
+                # stays bounded; remaining tasks form later waves on free GPUs.
+                # Default 0 keeps legacy min(pending, n_gpus) behavior.
+                cohort_cap = len(gpus) if args.max_cohort_size <= 0 else min(args.max_cohort_size, len(gpus))
+                members = list(pending)[:cohort_cap]
                 cohort_dir = output / "cohorts" / f"cohort_{cohort_number:03d}"
                 cohort_dir.mkdir(parents=True, exist_ok=False)
                 save(cohort_dir / "manifest.json", dict(mode=COHORT_MODE, tasks=members,
                     episodes=args.episodes, barrier_timeout_s=args.cohort_timeout_s,
+                    max_cohort_size=args.max_cohort_size or None, cohort_cap=cohort_cap,
                     source_digest=source["source_digest"], protocol=PROTOCOL))
                 cohort_tasks = set(members)
                 cohort_number += 1
