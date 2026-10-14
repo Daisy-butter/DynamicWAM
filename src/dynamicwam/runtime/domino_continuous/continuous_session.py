@@ -29,6 +29,8 @@ class ContinuousSyncSession(DominoLevel1Session):
         from . import _sapien_color_reader
         self.camera_reader = SelectiveAsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
         self.pending_capture = None
+        self._step_profile = {"steps": 0, "commanded_steps": 0,
+            "qf_requested": 0, "qf_computed": 0, "qf_reused": 0, "timing_ms": {}}
         self.action_interval_s = float(action_interval_s)
         if timing_mode not in PROTOCOL_BY_TIMING:
             raise ValueError(
@@ -70,7 +72,10 @@ class ContinuousSyncSession(DominoLevel1Session):
     def current_qpos(self):
         # The ordinary jointState API returns drive targets, not articulation
         # feedback. Use measured arm positions for interpolation and tracking.
-        return np.asarray(self.env.robot.get_left_arm_real_jointState()+self.env.robot.get_right_arm_real_jointState(), dtype=float)
+        before = time.perf_counter()
+        result = np.asarray(self.env.robot.get_left_arm_real_jointState()+self.env.robot.get_right_arm_real_jointState(), dtype=float)
+        self._record_step_timing("feedback", time.perf_counter() - before)
+        return result
 
     def plan_chunk(self, actions):
         current = self.current_qpos()
@@ -180,19 +185,84 @@ class ContinuousSyncSession(DominoLevel1Session):
         }
         return packet
 
+    def _ensure_step_profile(self):
+        if not hasattr(self, "_step_profile"):
+            self._step_profile = {"steps": 0, "commanded_steps": 0,
+                "qf_requested": 0, "qf_computed": 0, "qf_reused": 0, "timing_ms": {}}
+        return self._step_profile
+
+    def _record_step_timing(self, name, elapsed_s):
+        self._ensure_step_profile()
+        bucket = self._step_profile["timing_ms"].setdefault(name, {"count": 0, "total": 0., "max": 0.})
+        value = 1000 * elapsed_s
+        bucket["count"] += 1
+        bucket["total"] += value
+        bucket["max"] = max(bucket["max"], value)
+
+    def runtime_timing_summary(self):
+        result = deepcopy(self._ensure_step_profile())
+        for bucket in result["timing_ms"].values():
+            bucket["mean"] = bucket["total"] / bucket["count"] if bucket["count"] else 0.
+        return result
+
     def step_command(self, position, velocity):
+        self._ensure_step_profile()
+        before = time.perf_counter()
         if position is None:
             self._hold()
         else:
             robot = self.env.robot
-            robot.set_arm_joints(position[:6], velocity[:6], "left")
-            robot.set_arm_joints(position[7:13], velocity[7:13], "right")
-            robot.set_gripper(position[6], "left")
-            robot.set_gripper(position[13], "right")
+            original_qf = robot._entity_qf
+            had_override = "_entity_qf" in vars(robot)
+            previous_override = vars(robot).get("_entity_qf")
+            seen = set()
+            requested = computed = 0
+
+            def once_per_entity(entity):
+                nonlocal requested, computed
+                requested += 1
+                key = id(entity)
+                if key not in seen:
+                    # No physics step/qpos/qvel mutation occurs between the
+                    # four native setters. Passive gravity/Coriolis forces are
+                    # therefore identical across their repeated calls. Keep
+                    # every original arm/gripper setter and ordering intact.
+                    original_qf(entity)
+                    seen.add(key)
+                    computed += 1
+
+            robot._entity_qf = once_per_entity
+            try:
+                robot.set_arm_joints(position[:6], velocity[:6], "left")
+                robot.set_arm_joints(position[7:13], velocity[7:13], "right")
+                robot.set_gripper(position[6], "left")
+                robot.set_gripper(position[13], "right")
+            finally:
+                if had_override:
+                    robot._entity_qf = previous_override
+                else:
+                    del robot._entity_qf
+                self._step_profile["qf_requested"] += requested
+                self._step_profile["qf_computed"] += computed
+                self._step_profile["qf_reused"] += requested - computed
+            self._step_profile["commanded_steps"] += 1
+        command_done = time.perf_counter()
         self.env._update_kinematic_tasks()
+        kinematics_done = time.perf_counter()
         self.env.scene.step()
+        scene_done = time.perf_counter()
         self.env._update_transient_checks()
+        transient_done = time.perf_counter()
         self._consume_events()
+        events_done = time.perf_counter()
+        self._step_profile["steps"] += 1
+        for name, elapsed in (("command", command_done - before),
+                              ("kinematics", kinematics_done - command_done),
+                              ("scene", scene_done - kinematics_done),
+                              ("transient", transient_done - scene_done),
+                              ("events", events_done - transient_done),
+                              ("total", events_done - before)):
+            self._record_step_timing(name, elapsed)
 
     def record_target_metrics(self):
         if self.metrics_tracker is not None:

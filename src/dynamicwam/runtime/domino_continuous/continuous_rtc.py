@@ -147,7 +147,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         diagnostics = {"physics_s": physical(), "wall_s": wall(), "completed_targets": completed,
                        "started_targets": started, "query_index": query,
                        "active_request": active, "pending_capture": pending,
-                       "completed_requests": requests, "completed_captures": captures, **details}
+                       "completed_requests": requests, "completed_captures": captures,
+                       "physics_runtime_timing": getattr(session, "runtime_timing_summary", lambda: {})(), **details}
         raise RealtimeViolation(message, diagnostics=diagnostics)
 
     def lag():
@@ -442,6 +443,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             "capture_gap_physics_max_s": float(capture_gaps.max()) if len(capture_gaps) else None,
             "tracking_abs_error_mean": feedback.mean(axis=0).tolist() if tracking else None,
             "tracking_abs_error_max": feedback.max(axis=0).tolist() if tracking else None,
+            "physics_runtime_timing": getattr(session, "runtime_timing_summary", lambda: {})(),
             "requests": requests, "captures": captures, "blocks": blocks,
             "object_displacement": (np.asarray(session.object_position()) - object0).tolist(),
             "stop_reason": stopped(), "success": stopped() == "success"}
