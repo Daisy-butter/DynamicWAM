@@ -274,15 +274,32 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                       _rtc_cache_age_actions=record["action_origin"] % 16,
                       _rtc_observation_physics_s=record["physics_s"],
                       _rtc_action_interval_s=action_interval_s)
-        # Fire the worker before draining render lag so MotiionKV overlaps
-        # catch-up. Stamp submit wall/physics AFTER catch-up so the inference
-        # clock check only covers the coupled interval. Do NOT poll+early-install
-        # inside this drain: smoke09 showed that mid-drain poll can trip
-        # "backlog grows during catch-up" under 8-GPU contention.
+        # Fire MotiionKV first, then drain render lag WITHOUT polling, but
+        # STOP catch-up before burning the committed H4 reservation. smoke11
+        # place_object_basket died with capture~148ms yet post_capture_catch_up
+        # ~560ms past the deadline; unbounded catch_up() after capture is the
+        # spike. Remaining lag overlaps inference (capture-yield intent).
+        # Still no mid-drain poll / early-install (smoke09 backlog-grows).
         request_id = worker.submit(packet)
         before_catch_up = wall()
-        catch_up()
+        previous_lag, growing, count = lag(), 0, 0
+        while stopped() is None and lag() >= dt - 1e-9:
+            if reservation is not None and physical() + dt > reservation.deadline_physics_s + 1e-9:
+                break
+            if not tick(paced=False):
+                break
+            count += 1
+            current_lag = lag()
+            growing = growing + 1 if current_lag >= previous_lag - 1e-9 else 0
+            if growing >= 8 and current_lag > max_backlog_s:
+                fail("RTC physical backlog grows during catch-up", max_backlog_s=max_backlog_s)
+            previous_lag = current_lag
+            if count > 10000:
+                fail("RTC physical clock cannot catch up")
         record["post_capture_catch_up_ms"] = 1000 * (wall() - before_catch_up)
+        record["post_capture_catch_up_capped_for_deadline"] = (
+            reservation is not None and lag() >= dt - 1e-9
+        )
         submit_wall, submit_physics = wall(), physical()
         if reservation is not None and submit_physics > reservation.deadline_physics_s + 1e-9:
             fail("RTC query capture exceeded committed prefix deadline")
