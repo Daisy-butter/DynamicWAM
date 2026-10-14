@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import gc
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
@@ -134,12 +136,100 @@ def collect_rank_results(run, expected):
     return results
 
 
+def distributed_init_kwargs(init_mode, device):
+    """Keep the original eager path; lazy matches older DOMINO DeepSpeed."""
+    kwargs = dict(timeout=timedelta(seconds=45))
+    if init_mode == 'eager':
+        kwargs['device_id'] = device
+    elif init_mode != 'lazy':
+        raise ValueError('unknown distributed initialization mode')
+    return kwargs
+
+
+def child_arguments(args, output):
+    return [str(Path(__file__).resolve()), '--child', '--case', args.case,
+        '--gpu-uuids', args.gpu_uuids, '--p2p', args.p2p, '--nccl-alloc', args.nccl_alloc,
+        '--nccl-link', args.nccl_link, '--rank-visibility', args.rank_visibility,
+        '--init-mode', args.init_mode, '--backend', args.backend, '--launcher', args.launcher, '--output', str(output)] + (['--mapped-host'] if args.mapped_host else []) + (
+            ['--release-before-destroy'] if args.release_before_destroy else [])
+
+
+def loaded_cudart():
+    """Reuse the runtime already mapped by torch; never search/load another CUDA version."""
+    paths = set()
+    for line in Path('/proc/self/maps').read_text().splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) == 6 and Path(fields[5]).name.startswith('libcudart.so'):
+            paths.add(fields[5])
+    if len(paths) != 1:
+        raise RuntimeError(f'expected exactly one loaded libcudart, found {sorted(paths)}')
+    path = paths.pop()
+    return ctypes.CDLL(path, mode=os.RTLD_NOW | os.RTLD_NOLOAD), path
+
+
+def mapped_host_probe(runtime, stage, overlap, rank):
+    """Exercise NCCL's generic mapped-host allocation primitive without NCCL."""
+    signatures = {
+        'cudaHostAlloc': [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint],
+        'cudaHostGetDevicePointer': [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint],
+        'cudaMemcpy': [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int],
+        'cudaFreeHost': [ctypes.c_void_p],
+        'cudaDeviceSynchronize': [],
+    }
+    for name, arguments in signatures.items():
+        function = getattr(runtime, name)
+        function.argtypes, function.restype = arguments, ctypes.c_int
+    def check(name, *arguments):
+        status = getattr(runtime, name)(*arguments)
+        if status != 0:
+            raise RuntimeError(f'{name} returned CUDA error {status}')
+    size = 4096
+    host, device = ctypes.c_void_p(), ctypes.c_void_p()
+    record = dict(bytes=size, flags=2, allocation='cudaHostAllocMapped', rank=rank)
+    stage('before_mapped_host_alloc')
+    check('cudaHostAlloc', ctypes.byref(host), size, 2)
+    record['allocated_monotonic'] = time.monotonic()
+    try:
+        if not host.value:
+            raise RuntimeError('successful cudaHostAlloc returned a null pointer')
+        stage('after_mapped_host_alloc')
+        expected = bytes((index + rank * 17) % 251 for index in range(size))
+        ctypes.memmove(host, expected, size)
+        check('cudaHostGetDevicePointer', ctypes.byref(device), host, 0)
+        if not device.value:
+            raise RuntimeError('successful cudaHostGetDevicePointer returned a null pointer')
+        overlap()
+        record['overlap_confirmed_monotonic'] = time.monotonic()
+        copied = ctypes.create_string_buffer(size)
+        check('cudaMemcpy', copied, device, size, 2)  # cudaMemcpyDeviceToHost
+        check('cudaDeviceSynchronize')
+        if copied.raw != expected:
+            raise RuntimeError('mapped host bytes failed device-to-host round trip')
+        record['roundtrip_passed'] = True
+        stage('after_mapped_host_roundtrip')
+    finally:
+        # Release this allocation explicitly even if validation or the file barrier fails.
+        stage('before_mapped_host_free')
+        check('cudaFreeHost', host)
+        record['freed_monotonic'] = time.monotonic()
+        stage('after_mapped_host_free')
+    check('cudaDeviceSynchronize')
+    record['final_synchronize_monotonic'] = time.monotonic()
+    return record
+
+
 def independent_launcher(args):
     """Launch concurrent single-visible children without importing torch."""
-    assert args.case == 'independent' and args.rank_visibility == 'isolated'
+    assert (args.case == 'independent' or args.launcher == 'direct') and args.rank_visibility == 'isolated'
     assert os.environ.get('CUDA_VISIBLE_DEVICES', '') == ''
     uuids = args.gpu_uuids.split(',')
-    assert len(uuids) == 2
+    assert len(uuids) >= 2
+    rendezvous = {}
+    if args.case == 'ddp':
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+        rendezvous = dict(MASTER_ADDR='127.0.0.1', MASTER_PORT=str(port))
     run = args.output.parent / (args.output.stem + '_logs')
     children, owned = [], {}
     def interrupted(signum, _frame):
@@ -150,18 +240,18 @@ def independent_launcher(args):
         for rank in range(len(uuids)):
             env = os.environ.copy()
             # Pass an already isolated UUID as well as explicit rank metadata.
-            # No parent imports torch and no distributed rendezvous is created.
+            # The parent never imports torch; direct DDP shares a localhost
+            # rendezvous, while independent CUDA children need none.
             env.update(CUDA_VISIBLE_DEVICES=uuids[rank], RANK=str(rank), WORLD_SIZE=str(len(uuids)),
                 LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(len(uuids)))
-            argv = [sys.executable, str(Path(__file__).resolve()), '--child', '--case', 'independent',
-                '--rank-visibility', 'isolated', '--gpu-uuids', args.gpu_uuids,
-                '--p2p', args.p2p, '--nccl-alloc', args.nccl_alloc, '--output', str(args.output)]
+            env.update(rendezvous)
+            argv = [sys.executable] + child_arguments(args, args.output)
             process = subprocess.Popen(argv, env=env, start_new_session=True)
             children.append(process)
             owned[process.pid] = process_identity(process.pid)
         write_json(run / 'independent_launcher.json', dict(pid=os.getpid(),
             launcher_cuda_visible_devices=os.environ['CUDA_VISIBLE_DEVICES'],
-            torch_imported='torch' in sys.modules, children=list(owned.values())))
+            torch_imported='torch' in sys.modules, rendezvous=rendezvous, children=list(owned.values())))
         deadline = time.monotonic() + args.timeout_seconds
         while any(process.poll() is None for process in children):
             if any(process.returncode not in (None, 0) for process in children):
@@ -194,6 +284,14 @@ def child(args):
         local_rank = 0
     run = args.output.parent / (args.output.stem + '_logs')
     write_json(run / f'rank_{rank}.identity.json', process_identity(os.getpid()))
+    stages = []
+    def stage(name):
+        event = dict(stage=name, rank=rank, init_mode=args.init_mode,
+            monotonic=time.monotonic(), utc=utc())
+        stages.append(event)
+        write_json(run / f'rank_{rank}.stages.json', stages)
+        print(json.dumps(event), flush=True)
+    stage('before_torch_import')
     import torch
     if args.case == 'ddp':
         import torch.distributed as dist
@@ -204,6 +302,7 @@ def child(args):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.manual_seed(20261014)
     context_ready_at = None
+    mapped_host_result = None
     if args.case == 'independent':
         # File synchronization, not a CUDA or distributed communication path.
         context_marker = torch.zeros(1, device=local_rank)
@@ -216,13 +315,28 @@ def child(args):
             if time.monotonic() >= deadline:
                 raise TimeoutError('independent CUDA context overlap barrier timed out')
             time.sleep(.02)
+        if args.mapped_host:
+            runtime, runtime_path = loaded_cudart()
+            def mapped_overlap():
+                write_json(run / f'rank_{rank}.mapped_ready.json', dict(rank=rank,
+                    ready_monotonic=time.monotonic()))
+                deadline = time.monotonic() + 45
+                while not all((run / f'rank_{other}.mapped_ready.json').is_file() for other in range(2)):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('mapped host allocation overlap barrier timed out')
+                    time.sleep(.02)
+            mapped_host_result = mapped_host_probe(runtime, stage, mapped_overlap, rank)
+            mapped_host_result['libcudart_path'] = runtime_path
     if args.case == 'ddp':
-        dist.init_process_group('nccl', timeout=timedelta(seconds=45), device_id=torch.device('cuda', local_rank))
+        stage('before_distributed_init')
+        dist.init_process_group(args.backend, **distributed_init_kwargs(args.init_mode, torch.device('cuda', local_rank)))
+        stage('after_distributed_init')
     try:
         cpu = torch.nn.Linear(64, 32, bias=False)
         reference_weight = cpu.weight.detach().clone()
         layer = cpu.to(local_rank)
         model = torch.nn.parallel.DistributedDataParallel(layer, device_ids=[local_rank]) if args.case == 'ddp' else layer
+        stage('after_model_wrapper')
         optimizer = torch.optim.SGD(model.parameters(), lr=.01)
         value = torch.randn(8, 64)
         data = value.to(local_rank)
@@ -242,11 +356,24 @@ def child(args):
             reduced = torch.tensor([rank + 1.0], device=local_rank)
             dist.all_reduce(reduced)
             assert reduced.item() == dist.get_world_size() * (dist.get_world_size() + 1) / 2
-            dist.barrier(device_ids=[local_rank])
+            if args.backend == 'gloo':
+                bf16 = torch.tensor([rank + 1.0], device=local_rank, dtype=torch.bfloat16)
+                dist.all_reduce(bf16)
+                assert bf16.item() == reduced.item()
+                gathered = [torch.empty_like(bf16) for _ in range(dist.get_world_size())]
+                dist.all_gather(gathered, bf16)
+                assert all(value.item() == bf16.item() for value in gathered)
+                dist.barrier()
+            else:
+                dist.barrier(device_ids=[local_rank])
         torch.cuda.synchronize(local_rank)
         allocated = torch.cuda.max_memory_allocated(local_rank)
         assert allocated < 128 * 1024**2, 'diagnostic tensor bound exceeded'
+        stage('after_math')
         result = dict(passed=True, rank=rank, local_rank=local_rank, physical_local_rank=physical_local_rank,
+            init_mode=args.init_mode, backend=str(dist.get_backend()) if args.case == 'ddp' else None,
+            mapped_host=mapped_host_result,
+            release_before_destroy=args.release_before_destroy,
             visible_uuids=os.environ['CUDA_VISIBLE_DEVICES'], device=torch.cuda.get_device_name(local_rank),
             visible_device_count=torch.cuda.device_count(), torch=torch.__version__, loss=float(loss.detach()),
             gradient_norm=float(gradient.norm()), max_tensor_allocated_bytes=allocated,
@@ -255,13 +382,25 @@ def child(args):
             environment={key: value for key, value in os.environ.items() if key.startswith(('NCCL_', 'TORCH_NCCL_')) or key in (
                 'CUDA_VISIBLE_DEVICES', 'RANK', 'WORLD_SIZE', 'LOCAL_RANK', 'LOCAL_WORLD_SIZE', 'PYTORCH_NVML_BASED_CUDA_CHECK')},
             note='tensor allocation bound excludes CUDA/NCCL/library context memory')
+        if args.release_before_destroy:
+            stage('before_application_release')
+            del optimizer, model, layer, cpu, prediction, loss, gradient, data, reduced
+            gc.collect()
+            torch.cuda.synchronize(local_rank)
+            torch.cuda.empty_cache()
+            stage('after_application_release')
     finally:
         if args.case == 'ddp' and dist.is_initialized():
+            stage('before_distributed_destroy')
             dist.destroy_process_group()
+            stage('after_distributed_destroy')
     torch.cuda.synchronize(local_rank)
     result['distributed_teardown_returned'] = args.case == 'ddp'
     result['cuda_final_synchronize_returned'] = True
+    stage('before_result_write')
+    result['stages'] = stages
     write_json(run / f'rank_{rank}.result.json', result)
+    stage('after_result_write')
     print(json.dumps(result), flush=True)
 
 
@@ -274,11 +413,27 @@ def main():
         help='legacy disables NCCL cuMem allocation in DDP only; changes no transport settings')
     p.add_argument('--nccl-link', choices=['default', 'socket'], default='default')
     p.add_argument('--rank-visibility', choices=['all', 'isolated'], default='all')
+    p.add_argument('--init-mode', choices=['eager', 'lazy'], default='eager',
+        help='lazy omits init_process_group device_id; both paths set the local CUDA device first')
+    p.add_argument('--mapped-host', action='store_true',
+        help='independent-only 4 KiB mapped-host allocation, round trip and explicit free')
+    p.add_argument('--backend', choices=['nccl', 'gloo'], default='nccl')
+    p.add_argument('--launcher', choices=['torchrun', 'direct'], default='torchrun')
+    p.add_argument('--release-before-destroy', action='store_true',
+        help='DDP-only release application references and cache before process-group destruction')
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--timeout-seconds', type=int, default=120)
     p.add_argument('--child', action='store_true')
     p.add_argument('--independent-launcher', action='store_true')
     args = p.parse_args()
+    if args.launcher == 'direct' and args.rank_visibility != 'isolated':
+        raise ValueError('direct launch requires rank-isolated visibility')
+    if args.backend == 'gloo' and (args.case != 'ddp' or args.init_mode != 'lazy'):
+        raise ValueError('Gloo diagnostic requires DDP with lazy initialization')
+    if args.mapped_host and (args.case != 'independent' or args.rank_visibility != 'isolated'):
+        raise ValueError('mapped host contrast requires independent isolated CUDA workers')
+    if args.release_before_destroy and args.case != 'ddp':
+        raise ValueError('release-before-destroy applies only to DDP')
     if args.child:
         child(args)
         return
@@ -304,7 +459,10 @@ def main():
     run = out.parent / (out.stem + '_logs')
     run.mkdir(parents=True, exist_ok=False)
     report = dict(passed=False, driver_resolved=False, started_at=utc(), case=args.case,
-        p2p=args.p2p, nccl_alloc=args.nccl_alloc, nccl_link=args.nccl_link, rank_visibility=args.rank_visibility, gpu_uuids=uuids,
+        p2p=args.p2p, nccl_alloc=args.nccl_alloc, nccl_link=args.nccl_link, rank_visibility=args.rank_visibility,
+        init_mode=args.init_mode, backend=args.backend, launcher=args.launcher,
+        launcher_mode=args.launcher, mapped_host=args.mapped_host,
+        release_before_destroy=args.release_before_destroy, gpu_uuids=uuids,
         log_directory=str(run), timeout_seconds=args.timeout_seconds,
         source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     expected = len(uuids) if args.case in ('ddp', 'independent') else 1
@@ -345,14 +503,12 @@ def main():
             folder = run / 'cache' / name.lower()
             folder.mkdir(parents=True, exist_ok=True)
             env[name] = str(folder)
-        script_args = [str(Path(__file__).resolve()), '--child', '--case', args.case,
-            '--gpu-uuids', args.gpu_uuids, '--p2p', args.p2p, '--nccl-alloc', args.nccl_alloc,
-            '--nccl-link', args.nccl_link, '--rank-visibility', args.rank_visibility, '--output', str(out)]
+        script_args = child_arguments(args, out)
         argv = [sys.executable] + script_args
-        if args.case == 'ddp':
+        if args.case == 'ddp' and args.launcher == 'torchrun':
             argv = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nnodes=1',
                 f'--nproc-per-node={len(uuids)}', '--max-restarts=0'] + script_args
-        elif args.case == 'independent':
+        elif args.case == 'independent' or args.launcher == 'direct':
             argv = [sys.executable] + [part for part in script_args if part != '--child'] + ['--independent-launcher',
                 '--timeout-seconds', str(args.timeout_seconds)]
         report['command'] = argv
@@ -403,6 +559,11 @@ def main():
         report['finished_at'] = utc()
         report['owned_processes'] = list(owned.values())
         report['ranks'] = collect_rank_results(run, expected)
+        report['rank_stage_traces'] = {}
+        for rank in range(expected):
+            trace_path = run / f'rank_{rank}.stages.json'
+            if trace_path.is_file():
+                report['rank_stage_traces'][str(rank)] = json.loads(trace_path.read_text())
         for name in ('independent_launcher', 'independent_exit_codes'):
             path = run / f'{name}.json'
             if path.is_file():
