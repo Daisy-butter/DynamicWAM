@@ -43,3 +43,8 @@ The user authorized inspection of driver resource release using the minimal repr
 ## Actual eight-GPU formal start, 2026-10-14
 
 See `docs/route1_device_lifetime_training_20261014.json`. Real eight-GPU 4-step smoke, full/fast strict reload, all workers and final guard closure passed with unchanged driver evidence (264 matched lines). Formal `formal8_guard_20261014` started at 12:02:35 Beijing from training source commit `5a44e942adc53181f4c036ba8e424e96c641b6ec`, source SHA256 `2cc8ef948e9e221598da6bec1f2f21ccc6b3fe9bb80bdda874616e7a2c185e32`. At saved 12:08:33 snapshot: step 140/12000, loss 0.496, grad 1.02, eight GPUs/effective batch 16; supervisor PID 1364813, launcher PID 1365048. The 300-second startup health window is closed. No recurring inspection or further automatic GPU/driver polling. Keep the running source frozen; do not stop the run absent a new user request or observed fault. Documentation-only commits may follow the source freeze. This is an initial snapshot, not a completion or repaired-driver claim. Later status requires a fresh user-requested read.
+
+
+## Latest formal evaluation failure, 2026-10-14
+
+See `docs/route1_eval_start_failure_20261014.md`. The 700-scene prepare completed cleanly; formal failed with 0/700 valid episodes and all processes/FDs closed. New delta is NVLink RPC/lock status (285->286 matched lines), not new IOVAS. Error predates first guard open and worker launch. Do not treat old launch snapshots as running status, reuse stale authorization, retry automatically or perform device recovery. CPU-only phase-fence fixes on `fix/route1-eval-preflight-health-20261014` improve detection, not driver health; original `abd2dc7` source and all run evidence remain preserved.

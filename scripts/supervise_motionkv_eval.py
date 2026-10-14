@@ -17,6 +17,27 @@ from supervise_motionkv_training import (atomic_json, driver_evidence, driver_id
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def record_phase(run, phases, name, **values):
+    phases.append(dict(phase=name, at=utc(), monotonic=time.monotonic(), **values))
+    atomic_json(run / 'driver_phases.json', phases)
+
+
+def driver_fence(run, phases, status, phase, baseline):
+    """Fail closed against the original authorization; never advance its baseline."""
+    status['launch_phase'] = phase
+    current = driver_evidence()
+    before, after = driver_identity(baseline), driver_identity(current)
+    keys = ('host', 'boot_id', 'anomaly_count', 'driver_anomalies_sha256',
+            'latest_driver_anomaly_sha256')
+    record_phase(run, phases, phase, driver=current, baseline_identity=before,
+        delta=dict(changed_identity_fields=[key for key, old, new in zip(keys, before, after) if old != new],
+            anomaly_count=current['anomaly_count'] - baseline['anomaly_count'],
+            new_dmesg_tail_lines=[line for line in current.get('dmesg_tail', [])
+                if line not in baseline.get('dmesg_tail', [])]), passed=after == before)
+    if after != before:
+        raise RuntimeError('driver evidence changed at launch fence: ' + phase)
+
+
 def environment(run):
     env = os.environ.copy()
     ssd = Path('/SSD_DISK/users/wuruihan')
@@ -60,7 +81,7 @@ def main():
     ssd, storage = verify_ssd(Path('/SSD_DISK/users/wuruihan/DynamicWAM'), 30)
     run = inside_ssd(a.run_dir, ssd)
     run.mkdir(parents=True, exist_ok=True)
-    if (run / 'manifest.json').exists():
+    if any((run / name).exists() for name in ('manifest.json', 'status.json', 'driver_phases.json')):
         raise FileExistsError('each supervisor launch needs a fresh run directory')
     ids = a.gpus.split(',')
     if len(ids) != len(set(ids)) or any(not v.startswith('GPU-') for v in ids):
@@ -78,33 +99,12 @@ def main():
         raise ValueError('guard UUIDs must be distinct and include worker UUIDs')
     if not set(guard_ids).issubset(authorization['gpu_uuids']):
         raise RuntimeError('guard coverage exceeds current evidence')
-    gpu = gpu_preflight(guard_ids, 8, 70, 100)
-    if a.stage != 'graph' and set(guard_ids) != {row['uuid'] for row in gpu['devices']}:
-        raise RuntimeError('SAPIEN/Vulkan enumeration requires temporary guard coverage of every visible GPU')
-    guard_path = ROOT / 'scripts/device_lifetime_guard.py'
-    guard_sha = file_digest(guard_path)
-    if guard_sha != authorization['guard_sha256']:
-        raise RuntimeError('guard helper changed')
-    env = environment(run)
-    if a.single_worker:
-        if len(ids) != 1:
-            raise ValueError('single-worker requires one UUID')
-        env['CUDA_VISIBLE_DEVICES'] = ids[0]
-        device = next(x for x in gpu['devices'] if x['uuid'] == ids[0])
-        env.update(DYNAMICWAM_SIM_CUDA='0', DYNAMICWAM_INFER_CUDA='0', DYNAMICWAM_GPU_PCI=device['pci.bus_id'])
-    sources, source_sha = source_files_and_hash(ROOT)
-    manifest = dict(created_at=utc(), stage=a.stage, command=command, storage=storage, gpu=gpu,
-        driver=baseline, authorization=str(a.authorization.resolve()), authorization_sha256=file_digest(a.authorization),
-        device_guard_sha256=guard_sha, worker_gpu_uuids=ids, guard_gpu_uuids=guard_ids, git_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-        git_status=subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True), source_sha256=source_sha,
-        startup_health_seconds=a.startup_seconds, postwindow_polling=False, retry_policy='none',
-        environment={k:v for k,v in env.items() if k in {'TMPDIR','TMP','TEMP','CUDA_VISIBLE_DEVICES','HF_HOME','PYTHONPATH','LD_LIBRARY_PATH','VK_ICD_FILENAMES','SAPIEN_VULKAN_LIBRARY_PATH'} })
-    atomic_json(run/'manifest.json',manifest)
-    atomic_json(run/'source_files.json',sources)
-    guard = load_device_guard(guard_path,guard_sha,guard_ids,run)
+    guard = None
     process = None
     owned = {}
-    status = dict(state='starting', supervisor_pid=os.getpid(), stage=a.stage, started_at=utc(),stop_reason=None)
+    phases = []
+    status = dict(state='starting', supervisor_pid=os.getpid(), stage=a.stage,
+        started_at=utc(), stop_reason=None, worker_started=False)
     started = time.monotonic()
     code = 1
     def terminate(signum, _frame):
@@ -112,10 +112,41 @@ def main():
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
     try:
+        status['launch_phase'] = 'gpu_preflight'
+        record_phase(run, phases, 'before_gpu_preflight', driver=baseline)
+        gpu = gpu_preflight(guard_ids, 8, 70, 100)
+        driver_fence(run, phases, status, 'after_gpu_preflight', baseline)
+        if a.stage != 'graph' and set(guard_ids) != {row['uuid'] for row in gpu['devices']}:
+            raise RuntimeError('SAPIEN/Vulkan enumeration requires temporary guard coverage of every visible GPU')
+        guard_path = ROOT / 'scripts/device_lifetime_guard.py'
+        guard_sha = file_digest(guard_path)
+        if guard_sha != authorization['guard_sha256']:
+            raise RuntimeError('guard helper changed')
+        env = environment(run)
+        if a.single_worker:
+            if len(ids) != 1:
+                raise ValueError('single-worker requires one UUID')
+            env['CUDA_VISIBLE_DEVICES'] = ids[0]
+            device = next(x for x in gpu['devices'] if x['uuid'] == ids[0])
+            env.update(DYNAMICWAM_SIM_CUDA='0', DYNAMICWAM_INFER_CUDA='0', DYNAMICWAM_GPU_PCI=device['pci.bus_id'])
+        sources, source_sha = source_files_and_hash(ROOT)
+        manifest = dict(created_at=utc(), stage=a.stage, command=command, storage=storage, gpu=gpu,
+            driver=baseline, authorization=str(a.authorization.resolve()), authorization_sha256=file_digest(a.authorization),
+            device_guard_sha256=guard_sha, worker_gpu_uuids=ids, guard_gpu_uuids=guard_ids, git_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+            git_status=subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True), source_sha256=source_sha,
+            startup_health_seconds=a.startup_seconds, postwindow_polling=False, retry_policy='none',
+            environment={k:v for k,v in env.items() if k in {'TMPDIR','TMP','TEMP','CUDA_VISIBLE_DEVICES','HF_HOME','PYTHONPATH','LD_LIBRARY_PATH','VK_ICD_FILENAMES','SAPIEN_VULKAN_LIBRARY_PATH'} })
+        atomic_json(run/'manifest.json',manifest)
+        atomic_json(run/'source_files.json',sources)
+        guard = load_device_guard(guard_path,guard_sha,guard_ids,run)
+        driver_fence(run, phases, status, 'before_guard_open', baseline)
         guard.open()
+        driver_fence(run, phases, status, 'after_guard_open_before_worker', baseline)
         with (run/'run.log').open('w') as log:
+            status['launch_phase'] = 'worker_launch'
             process = subprocess.Popen(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
-            status.update(state='running',worker_pid=process.pid)
+            status.update(state='running',worker_pid=process.pid,worker_started=True)
+            record_phase(run, phases, 'worker_started', worker_pid=process.pid)
             next_health = time.monotonic() + 30
             while process.poll() is None:
                 register_run_processes(run,process,owned)
@@ -134,7 +165,8 @@ def main():
             code=process.returncode
             status.update(state='process_exited',exit_code=code)
     except BaseException as exc:
-        status.update(state='failed',stop_reason=str(exc),traceback=traceback.format_exc())
+        status.update(state='failed',stop_reason=str(exc),traceback=traceback.format_exc(),
+            blocked_before_worker=process is None, failure_phase=status.get('launch_phase'))
         code=1
     finally:
         try:

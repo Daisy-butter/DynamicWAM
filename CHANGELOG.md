@@ -36,3 +36,8 @@ Checkpoint audit, 140-episode timing audit, CPU contract tests, graph/eager pari
 Simulator Vulkan enumeration reaches all adapters before CUDA device selection. A single-worker/single-guard prep exposed new IOVAS teardown errors on the seven unguarded adapters (264 -> 285 anomaly lines). Application-only all-adapter temporary descriptor coverage completed the same 2-scene prep with final descriptor closure and no further assertions; failed receipts are preserved. No driver or PCI setting was changed. Actual RTC first episode completed 48 action slots/12 queries with continuous-time gates passing, but its result checker incorrectly compared absolute row times against tick-quantized per-block origins; correct comparison is the fixed global grid, with tick continuity checked separately. All later formal launch claims require fresh passed smoke and clean exit receipts.
 
 Harness v0.8 documents the evaluation contract. Rollback target remains `route1-continuous-domino-v1-20261013`; this candidate does not establish a new performance result until the full evaluation completes.
+
+
+## 2026-10-14 - Formal evaluation stopped before episodes
+
+The 700-scene preparation succeeded, but formal startup stopped on a new NVLink/RPC lock-status error before any model episode. This delta contained no new IOVAS/pIOVAS. Added explicit prelaunch driver phase fences on a new branch, preserving the original baseline and failure evidence; CPU-only validation, no GPU restart or driver-repair claim. See [failure audit](docs/route1_eval_start_failure_20261014.md).
