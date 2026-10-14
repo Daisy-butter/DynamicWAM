@@ -53,3 +53,8 @@ See `docs/route1_eval_start_failure_20261014.md`. The 700-scene prepare complete
 ## Latest explicit repair/restart authorization, 2026-10-14
 
 User requested fixing NVLink lock/state queries and restarting GPU evaluation. Follow harness v0.9 on fix/route1-guarded-telemetry-20261014. The all-adapter temporary FD guard must precede every GPU telemetry call. Bind fresh authorization to device_lifetime_mode=fds_before_telemetry_v1 and current evidence, run one guarded telemetry lifecycle test then fresh actual eight-GPU RTC smoke with full video decode before formal35x20. Reuse and rehash the 700 prepared scenes; preserve failed runs and frozen abd2dc7 source. This is an application lifecycle remedy, not a proven driver repair. No automatic retry, permanent keepalive, device recovery or recurring inspections.
+
+
+## Terminal restart result, 2026-10-14 20:19 Beijing
+
+Guard-before-telemetry source d05b47d passed actual telemetry lifecycle and eight-GPU RTC smoke (8/8, eight MP4 fully decoded), with no new driver anomalies. Formal35x20_eval_02 was restarted but stopped after three saved reports: place_object_basket episode0 missed the H4 suffix deadline at action20/origin16 slow refresh. Capture359.879ms and111.803ms to submission left about168ms; earlier slow model calls took248-254ms. Other workers were concurrently initializing their next episodes/CuRobo, but contention causality is unproven. All owned workers and eight guard FDs closed; final driver identity remains286, no new NVLink/IOVAS. No retry was launched. See SSD outputs/evaluation/motionkv_rtc_20261014/guarded_telemetry_restart_receipt.json. Preserve current failed receipts, source and trained RTC contract; do not report formal as running or completed. User emphasizes token conservation.
