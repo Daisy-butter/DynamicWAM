@@ -46,6 +46,7 @@ def main():
     from dynamicwam.models.rtc_prefix import PrefixCondition, prefix_mask
     from dynamicwam.observations.multiview import fast_views_from_composite
     from dynamicwam.runtime.ciwam.wam.multirate_policy import MultiratePolicy, packet_noise_generator
+    from dynamicwam.runtime.domino_continuous.motionkv_policy import pad_rtc_text
 
     if not torch.cuda.is_available():
         raise RuntimeError("requires one preflight-approved CUDA GPU; CPU tests cannot establish capture parity")
@@ -98,7 +99,9 @@ def main():
                 motion_acceleration_valid_mask=motion["absolute_motion_acceleration_valid_mask"],
                 text_embeddings=text_rows, rgb_valid_mask=torch.from_numpy(masks).unsqueeze(0).to(device),
                 age=BridgeAge(0., 0, True, (state - policy.bridge_state).reshape(-1)))
-            text, text_mask = pad_text_embeddings(text_rows)
+            # Match the real serving wrapper's shape-stable masked text layout.
+            text, text_mask = pad_rtc_text(text_rows)
+            report['serving_text_shape'] = list(text.shape)
             noise = runner._fresh_noisy_actions(generator=packet_noise_generator(packet, device, branch="fast"))
             batch = noise.shape[0]
             if args.prefix_length >= noise.shape[1]:

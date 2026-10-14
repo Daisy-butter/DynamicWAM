@@ -1,0 +1,490 @@
+#!/usr/bin/env python3
+"""Frozen-scene DOMINO continuous MotionKV RTC evaluation and scene preparation.
+
+The accepted synchronous evaluator is deliberately unchanged. Preparation only
+uses the environment/expert feasibility test; no policy weights are loaded and
+no policy success can affect the selected scenes.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict, is_dataclass
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import pickle
+import signal
+import sys
+import time
+import traceback
+
+ROOT = Path(__file__).resolve().parents[1]
+PROTOCOL = "continuous_world_actual_latency_motionkv_rtc_h4r4_v1"
+PREPARE_PROTOCOL = "domino_level1_policy_independent_scene_manifest_v1"
+POLICY_LABEL = "motionkv_rtc"
+for entry in (ROOT / "external/flash_attn_runtime", ROOT / "src"):
+    if str(entry) not in sys.path:
+        sys.path.insert(0, str(entry))
+
+from eval_domino_continuous_sync import (
+    acquire_lock, archive_file, close_episode_camera, cleanup_episode,
+    drain_finished_episode, plain, publish_episode_video_links,
+    publish_native_task_results, save, source_provenance,
+)
+
+
+def sha(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+def provenance(config):
+    value = source_provenance(semantics_id=PROTOCOL, config_path=config)
+    for name in ("scripts/eval_domino_motionkv_rtc.py", "scripts/eval_domino_motionkv_rtc_suite.py",
+                 "scripts/device_lifetime_guard.py",
+                 "src/dynamicwam/runtime/domino_continuous/motionkv_policy.py",
+                 "src/dynamicwam/runtime/domino_continuous/worker.py"):
+        path = ROOT / name
+        value["source_sha256"][name] = sha(path)
+    for path in (ROOT / "src/dynamicwam/runtime/domino_continuous").glob("*rtc*.py"):
+        value["source_sha256"][str(path.relative_to(ROOT))] = sha(path)
+    value["source_digest"] = hashlib.sha256(json.dumps(value["source_sha256"], sort_keys=True).encode()).hexdigest()
+    value["source_generation"] = value["source_digest"][:16]
+    return value
+
+
+def preserve_failed_video(session, episode_dir, episode, original_error):
+    """Keep available real camera frames without accepting a failed rollout.
+
+    Encoding happens after the rollout stopped. Diagnostics must never replace
+    the original policy/clock failure, and failed videos stay outside native
+    committed results and the valid-episode denominator.
+    """
+    receipt = dict(valid_episode=False, original_error=f"{type(original_error).__name__}: {original_error}",
+                   video_preserved=False)
+    try:
+        if session is None or getattr(session, "head_video", None) is None:
+            receipt["reason"] = "no_video_session"
+        else:
+            close_episode_camera(session)
+            video = session.head_video
+            if getattr(video, "_finalized", False):
+                receipt["reason"] = "native_video_already_finalized_before_later_failure"
+            elif not video.frames:
+                receipt["reason"] = "no_completed_camera_frames"
+            else:
+                destination = episode_dir.parent / "failed_artifacts" / episode_dir.name / str(time.time_ns())
+                receipt.update(video.finalize(destination / f"episode{episode}.mp4",
+                                             episode_end_physics_s=session.physics_time()))
+                receipt["video_preserved"] = True
+    except BaseException as artifact_error:
+        receipt["artifact_error"] = f"{type(artifact_error).__name__}: {artifact_error}"
+    try:
+        save(episode_dir / "failure_video_receipt.json", receipt)
+    except BaseException:
+        traceback.print_exc()
+    return receipt
+
+
+def validate_descriptor(item, task, episode, requested):
+    if (item.get("task") != task or item.get("episode_index") != episode
+            or item.get("requested_seed") != requested or type(item.get("seed")) is not int
+            or item["seed"] < requested):
+        raise ValueError("frozen scene task/index/seed chain mismatch")
+
+
+def load_frozen_task(run, task, episodes, seed, config_sha):
+    """Scene identity is independent of evaluated policy/checkpoint identity."""
+    run = Path(run)
+    suite = read(run / "suite_started.json")
+    completed = read(run / "suite_completed.json")
+    frozen = read(run / "frozen_manifest.json")
+    if (suite.get("protocol") != PREPARE_PROTOCOL or completed.get("complete") is not True
+            or frozen.get("complete") is not True or task not in suite["tasks"]
+            or suite["seed"] != seed or suite["episodes_per_task"] < episodes
+            or suite["config_sha256"] != config_sha):
+        raise ValueError("reference is not a complete compatible frozen preparation suite")
+    entries = [row for row in frozen["episodes"] if row["task"] == task]
+    if len(entries) < episodes:
+        raise ValueError("frozen task is incomplete")
+    references = []
+    requested = seed
+    for episode, entry in enumerate(entries[:episodes]):
+        base = run / task / f"episode_{episode:04d}"
+        descriptor_path, motion_path = base / "manifest.json", base / "expert_motion.pkl"
+        if sha(descriptor_path) != entry["manifest_sha256"] or sha(motion_path) != entry["motion_sha256"]:
+            raise ValueError("frozen scene artifact hash mismatch")
+        descriptor = read(descriptor_path)
+        validate_descriptor(descriptor, task, episode, requested)
+        motion_bytes = motion_path.read_bytes()
+        motion = pickle.loads(motion_bytes)
+        if motion["seed"] != descriptor["seed"]:
+            raise ValueError("frozen expert motion seed mismatch")
+        references.append((descriptor, motion, motion_bytes))
+        requested = descriptor["seed"] + 1
+    return references, sha(run / "frozen_manifest.json")
+
+
+def checked_episode(path, task, episode):
+    from video_artifacts import validate_video_artifacts
+    report, metric, descriptor = (read(path / name) for name in ("report.json", "metrics.json", "manifest.json"))
+    if (report.get("protocol") != PROTOCOL or report.get("realtime_valid") is not True
+            or report.get("task") != task or report.get("episode_index") != episode
+            or report.get("video_required") is not True or not validate_video_artifacts(report)):
+        raise ValueError("episode protocol/video validation failed")
+    for key in ("task", "episode_index", "seed", "requested_seed"):
+        if report[key] != descriptor[key]:
+            raise ValueError("episode scene identity mismatch")
+    score = metric["manipulation_score"]
+    if (not math.isfinite(score) or not 0 <= score <= 100 or metric["seed"] != report["seed"]
+            or bool(metric["success"]) != bool(report["success"])):
+        raise ValueError("episode metric mismatch")
+    validate_rtc_report(report)
+    return report, metric
+
+
+def validate_rtc_report(report):
+    """Independently verify saved causal timing, not just a runtime success flag."""
+    required = {"controller": "committed_clean_prefix_rtc_fixed_grid_h4r4", "clock": "actual_wall_clock",
+        "virtual_delay": False, "startup_delay_excluded": False, "rtc_strategy": "trained_clean_prefix_conditioning",
+        "rtc_prefix_max": 4, "execute_horizon": 4, "slow_refresh_actions": 16, "limit_retiming": False,
+        "rows_dropped": 0, "guided_requests": 0, "asynchronous_camera_readback": True}
+    for key, expected in required.items():
+        if report.get(key) != expected:
+            raise ValueError(f"RTC report contract mismatch: {key}")
+    limits = report["clock_limits"]
+    if (not 0 < limits["max_backlog_s"] <= .25 or not 0 < limits["inference_clock_error_s"] <= .02
+            or not 0 <= report["max_backlog_s"] <= limits["max_backlog_s"] + 1e-8
+            or not 0 <= report["max_inference_clock_error_s"] <= limits["inference_clock_error_s"] + 1e-8):
+        raise ValueError("RTC report clock limits failed")
+    interval = report["action_interval_s"]
+    for index, request in enumerate(report.get("requests", [])):
+        expected_prefix = 0 if index == 0 else 4
+        if request["query_index"] != index or request["prefix_length"] != expected_prefix:
+            raise ValueError("RTC query order/prefix length mismatch")
+        if request["cache_age_actions"] != request["action_origin"] % 16 or request["cache_age_actions"] not in (0, 4, 8, 12):
+            raise ValueError("RTC cache age escaped training support")
+        if request["submit_physics_s"] + 1e-8 < request["observation_physics_s"]:
+            raise ValueError("RTC request predates observation")
+        if request.get("installed"):
+            if request["install_physics_s"] + 1e-8 < request["submit_physics_s"]:
+                raise ValueError("RTC installation predates submission")
+            if expected_prefix:
+                deadline = request["observation_physics_s"] + 4 * interval
+                if (not math.isclose(request["suffix_not_before_physics_s"], deadline, abs_tol=1e-8)
+                        or request["install_physics_s"] > deadline + 1e-8
+                        or not math.isclose(request["suffix_effective_physics_s"], deadline, abs_tol=1e-8)):
+                    raise ValueError("RTC suffix was late or moved off its committed action clock")
+        if request.get("inference_clock_check") == "complete_interval" and abs(request["inference_clock_error_s"]) > limits["inference_clock_error_s"] + 1e-8:
+            raise ValueError("RTC inference interval clock failed")
+    previous_end = None
+    grid0 = report.get("action_grid_start_physics_s")
+    physics_dt = report.get("physics_dt_s")
+    ticks_per_action = None
+    if report.get("blocks"):
+        if not isinstance(grid0, (int, float)) or not math.isfinite(grid0) or not isinstance(physics_dt, (int, float)) or not math.isfinite(physics_dt) or physics_dt <= 0:
+            raise ValueError("RTC block clock identity is missing")
+        ticks_per_action = round(interval / physics_dt)
+        if ticks_per_action < 1 or abs(ticks_per_action * physics_dt - interval) > 1e-7:
+            raise ValueError("RTC action interval is not an integer physics-tick interval")
+    expected_origin = 0
+    for block in report.get("blocks", []):
+        if block["origin"] != expected_origin or type(block["count"]) is not int or not 1 <= block["count"] <= 4:
+            raise ValueError("RTC block action indices are not contiguous")
+        if previous_end is not None and abs(block["start_physics_s"] - previous_end) > 1e-7:
+            raise ValueError("RTC block execution has a gap or overlap")
+        # Planned rows use the immutable nominal action grid. Engine time uses
+        # the actual (float32-valued) SAPIEN physics dt; rebasing planned rows on
+        # each measured start accumulates deterministic dt representation error.
+        # Check both clocks independently without widening either tolerance.
+        expected_engine_start = grid0 + block["origin"] * ticks_per_action * physics_dt
+        if abs(block["start_physics_s"] - expected_engine_start) > 1e-7:
+            raise ValueError("RTC block start moved off the engine tick grid")
+        expected_times = [grid0 + (block["origin"] + index + 1) * interval for index in range(block["count"])]
+        if any(abs(actual - expected) > 1e-7 for actual, expected in zip(block["row_times_physics_s"], expected_times)) or len(block["row_times_physics_s"]) != len(expected_times):
+            raise ValueError("RTC block action times changed")
+        expected_origin += block["count"]
+        if block.get("completed"):
+            expected_engine_end = grid0 + expected_origin * ticks_per_action * physics_dt
+            if abs(block["end_physics_s"] - expected_engine_end) > 1e-7:
+                raise ValueError("RTC block end moved off the engine tick grid")
+        previous_end = block.get("end_physics_s")
+
+
+def parse():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=ROOT / "configs/absolute_motion_v2.yaml")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--task", required=True)
+    parser.add_argument("--episodes", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=100000)
+    parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--checkpoint-audit", type=Path)
+    parser.add_argument("--timing-contract", type=Path)
+    parser.add_argument("--replay-from", type=Path)
+    parser.add_argument("--result-stamp")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--probe-action-limit", type=int)
+    parser.add_argument("--max-backlog-s", type=float, default=.25)
+    parser.add_argument("--infer-clock-tolerance-s", type=float, default=.02)
+    parser.add_argument("--action-interval-s", type=float, default=.16)
+    parser.add_argument("--history-frame-period-s", type=float, default=.16)
+    return parser.parse_args()
+
+
+def main():
+    args = parse()
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt(f"received signal {signum}")
+    signal.signal(signal.SIGTERM, interrupted)
+    import numpy as np
+    import yaml
+    from harness_preflight import require_ssd
+    from dynamicwam.config.loader import load_profile
+    from dynamicwam.runtime.domino_continuous.domino_session import prepare_level1_env
+    import sapien  # Native dependency bootstrap before GPU binding.
+    from dynamicwam.runtime.domino_continuous.gpu_binding import install_gpu_binding
+    if install_gpu_binding() is None:
+        raise RuntimeError("a pinned UUID/PCI identity is required")
+    if args.episodes < 1 or args.seed < 0 or not (0 < args.max_backlog_s <= .25):
+        raise ValueError("invalid episode count/seed/backlog")
+    if not (0 < args.infer_clock_tolerance_s <= .02):
+        raise ValueError("inference clock tolerance cannot exceed 20ms")
+    if any(not math.isfinite(value) or value <= 0 for value in
+           (args.action_interval_s, args.history_frame_period_s)):
+        raise ValueError("invalid action/history grid")
+    if args.probe_action_limit is not None and args.probe_action_limit < 1:
+        raise ValueError("probe action limit must be positive")
+    require_ssd(args.output_dir)
+    profile = load_profile(args.config.resolve())
+    benchmark, inference = profile.benchmark_config(), profile.inference_config()
+    if args.task not in benchmark["tasks"]:
+        raise ValueError("unknown Level-1 task")
+    domino = (ROOT / benchmark["domino_root"]).resolve()
+    sys.path.insert(0, str(domino / "script"))
+    task_cfg = yaml.safe_load((domino / "task_config" / f"{benchmark['task_config']}.yml").read_text())
+    if not task_cfg.get("use_dynamic") or task_cfg.get("dynamic_level") != 1:
+        raise ValueError("only dynamic DOMINO Level-1 is supported")
+    native_limit = int(yaml.safe_load((domino / "task_config/_eval_step_limit.yml").read_text())[args.task])
+    action_limit = min(native_limit, args.probe_action_limit) if args.probe_action_limit else native_limit
+    output = args.output_dir.resolve() / args.task
+    output.mkdir(parents=True, exist_ok=True)
+    source = provenance(args.config)
+    config_sha = sha(args.config)
+    references, frozen_sha = (None, None)
+    native_dir = None
+    checkpoint_sha = None
+    timing_sha = None
+    if not args.prepare_only:
+        if any(value is None for value in (args.checkpoint, args.checkpoint_audit, args.timing_contract,
+                                           args.replay_from, args.result_stamp)):
+            raise ValueError("evaluation requires checkpoint/audit/timing/frozen scenes/result stamp")
+        require_ssd(args.checkpoint)
+        audit = read(args.checkpoint_audit)
+        checkpoint_sha = sha(args.checkpoint)
+        contract = audit.get("contract", {})
+        if (audit.get("passed") is not True or audit.get("strict_full_reload") is not True
+                or audit.get("full_fast_equal") is not True or audit["full"]["sha256"] != checkpoint_sha
+                or audit["full"]["bytes"] != args.checkpoint.stat().st_size
+                or Path(audit["full"]["path"]).resolve() != args.checkpoint.resolve()
+                or contract.get("rtc", {}).get("max_prefix_actions") != 4
+                or contract.get("native_multirate", {}).get("fast_steps") != 10
+                or contract.get("native_multirate", {}).get("source_bridge") != "immutable_official"
+                or contract.get("execute_horizon") != 4 or contract.get("max_age_actions") != 12):
+            raise ValueError("checkpoint does not match the strict audited MotionKV RTC export")
+        timing = read(args.timing_contract)
+        expected = timing["recommended_continuous_sync_contract"]
+        if (not math.isclose(args.action_interval_s, expected["nominal_action_interval_seconds"], abs_tol=1e-12)
+                or not math.isclose(args.history_frame_period_s, expected["nominal_history_frame_interval_seconds"], abs_tol=1e-12)):
+            raise ValueError("controller timing differs from the frozen audited training clock")
+        timing_sha = sha(args.timing_contract)
+        references, frozen_sha = load_frozen_task(args.replay_from, args.task, args.episodes, args.seed, config_sha)
+        if any(value in args.result_stamp for value in ("/", "\\")):
+            raise ValueError("result stamp must be one directory name")
+        native_dir = args.output_dir.resolve() / "eval_result" / args.task / POLICY_LABEL / benchmark["task_config"] / args.checkpoint.stem / args.result_stamp
+        native_dir.mkdir(parents=True, exist_ok=True)
+    spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else PROTOCOL,
+                task=args.task, episodes=args.episodes, start_seed=args.seed, prepare_only=args.prepare_only,
+                config_sha256=config_sha, source_digest=source["source_digest"], code_root=str(ROOT),
+                checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
+                checkpoint_sha256=checkpoint_sha, timing_contract_sha256=timing_sha,
+                frozen_manifest_sha256=frozen_sha, native_action_limit=native_limit, action_limit=action_limit,
+                probe_action_limit=args.probe_action_limit, native_result_dir=str(native_dir) if native_dir else None,
+                action_interval_s=args.action_interval_s, history_frame_period_s=args.history_frame_period_s,
+                max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s)
+    lock = acquire_lock(output / ".evaluation.lock")
+    started = output / "task_started.json"
+    if started.exists():
+        if not args.resume or read(started) != spec:
+            raise RuntimeError("existing task differs or resume was not explicit")
+    else:
+        save(started, spec)
+    save(output / "source_manifest.json", source)
+    completed, manifests, worker = [], [], None
+    current = dict(task=args.task, episode_index=0, requested_seed=args.seed)
+    try:
+        requested = args.seed
+        for episode in range(args.episodes):
+            directory = output / f"episode_{episode:04d}"
+            current = dict(task=args.task, episode_index=episode, requested_seed=requested)
+            if args.resume and directory.exists():
+                if args.prepare_only and (directory / "prepared.json").exists():
+                    descriptor = read(directory / "manifest.json")
+                    validate_descriptor(descriptor, args.task, episode, requested)
+                    receipt = read(directory / "prepared.json")
+                    if receipt != {"manifest_sha256": sha(directory / "manifest.json"), "motion_sha256": sha(directory / "expert_motion.pkl")}:
+                        raise ValueError("prepared scene changed")
+                    manifests.append(descriptor); completed.append(descriptor); requested = descriptor["seed"] + 1
+                    continue
+                if not args.prepare_only and (directory / "report.json").exists():
+                    report, metric = checked_episode(directory, args.task, episode)
+                    if report["source_digest"] != source["source_digest"] or report["checkpoint_sha256"] != checkpoint_sha:
+                        raise ValueError("completed episode source/checkpoint changed")
+                    descriptor = read(directory / "manifest.json")
+                    validate_descriptor(descriptor, args.task, episode, requested)
+                    manifests.append(descriptor); completed.append(dict(seed=report["seed"], success=report["success"])); requested = report["seed"] + 1
+                    continue
+                archive_file(directory, output / "attempts")
+                if native_dir is not None:
+                    for suffix in (".mp4", "_timestamps.json"):
+                        archive_file(native_dir / f"episode{episode}{suffix}",
+                                     output / "artifact_attempts" / f"episode_{episode:04d}")
+            directory.mkdir(parents=True, exist_ok=False)
+            events, env, session = [], None, None
+            reference = references[episode] if references is not None else None
+            try:
+                env, prepared = prepare_level1_env(domino, task_name=args.task, task_config=benchmark["task_config"],
+                    start_seed=reference[0]["seed"] if reference else requested,
+                    instruction_type=str(benchmark["instruction_type"]),
+                    replay=None if reference is None else dict(seed=reference[0]["seed"], instruction=reference[0]["instruction"], saved_motion=reference[1]["saved_motion"]))
+                if reference:
+                    env._rt_episode_info = reference[1]["episode_info"]
+                    if reference[0]["arm_tag"]:
+                        from envs.utils.action import ArmTag
+                        env.arm_tag = ArmTag(reference[0]["arm_tag"])
+                descriptor = {**current, "seed": int(prepared["seed"]), "instruction": prepared["instruction"],
+                    "velocity_m_per_s": prepared["velocity"], "initial_target_position": np.asarray(env._eval_target_actor.actor.get_pose().p),
+                    "initial_state": env.robot.get_left_arm_jointState() + env.robot.get_right_arm_jointState(),
+                    "stop_on_contact": prepared["stop_on_contact"], "check_z_threshold": prepared["check_z_threshold"],
+                    "arm_tag": str(getattr(env, "arm_tag", "")), "physics_dt_s": float(env.scene.get_timestep()), "native_action_limit": native_limit}
+                validate_descriptor(descriptor, args.task, episode, requested)
+                if not math.isclose(descriptor["physics_dt_s"], .004, abs_tol=1e-8):
+                    raise ValueError("unexpected physics timestep")
+                if int(env.step_lim) != native_limit:
+                    raise ValueError("native action limit changed")
+                if reference:
+                    for key in ("seed", "instruction", "arm_tag", "stop_on_contact", "check_z_threshold", "native_action_limit"):
+                        if descriptor[key] != reference[0][key]:
+                            raise ValueError(f"frozen scene field changed: {key}")
+                    for key in ("initial_target_position", "initial_state", "velocity_m_per_s", "physics_dt_s"):
+                        if not np.allclose(descriptor[key], reference[0][key], atol=1e-8, rtol=0):
+                            raise ValueError(f"frozen scene numeric field changed: {key}")
+                    motion_bytes = reference[2]
+                else:
+                    motion_bytes = pickle.dumps(dict(seed=descriptor["seed"], saved_motion=env._saved_dynamic_motion_info,
+                                                    episode_info=getattr(env, "_rt_episode_info", None)))
+                save(directory / "manifest.json", descriptor)
+                (directory / "expert_motion.pkl").write_bytes(motion_bytes)
+                manifests.append(descriptor); save(output / "accepted_manifest.json", manifests)
+                requested = descriptor["seed"] + 1
+                if args.prepare_only:
+                    save(directory / "prepared.json", {"manifest_sha256": sha(directory / "manifest.json"), "motion_sha256": sha(directory / "expert_motion.pkl")})
+                    completed.append(descriptor)
+                else:
+                    from dynamicwam.runtime.domino_continuous.camera_stream import PhysicalTimeHeadHistory
+                    from dynamicwam.runtime.domino_continuous.continuous_session import ContinuousSyncSession
+                    from dynamicwam.runtime.domino_continuous.continuous_rtc import run_continuous_rtc_episode
+                    from dynamicwam.runtime.domino_continuous.worker import ProcessInferenceWorker
+                    if worker is None:
+                        worker = ProcessInferenceWorker(project_root=str(ROOT), config_path=str(args.config.resolve()),
+                            checkpoint=str(args.checkpoint.resolve()), infer_index=0, policy_mode="motionkv_rtc", native_cuda_graph=True)
+                    instruction_warmup = worker.prepare_instruction(prepared["instruction"])
+                    session = ContinuousSyncSession(env, flow=PhysicalTimeHeadHistory(inference["head_flow"],
+                        frame_period_s=args.history_frame_period_s, endpoint_tolerance_s=args.history_frame_period_s / 2),
+                        action_interval_s=args.action_interval_s, save_video=True, timing_mode="nominal_training_timing",
+                        observation_config=dict(inference["observation"]), stop_on_contact=prepared["stop_on_contact"],
+                        check_z_threshold=prepared["check_z_threshold"], lift_actor=prepared["lift_actor"],
+                        start_z=prepared["start_z"], instruction=prepared["instruction"])
+                    from eval_metrics import EvalMetricsTracker
+                    session.metrics_tracker = EvalMetricsTracker(env, {"use_dynamic": True})
+                    session.metrics_tracker.on_episode_start()
+                    initial_clock = session.physics_time(); env.get_obs()
+                    if session.physics_time() != initial_clock:
+                        raise RuntimeError("camera warmup advanced physics")
+                    report = run_continuous_rtc_episode(session, worker, task=args.task, episode_seed=descriptor["seed"],
+                        action_limit=action_limit, sink=events.append, max_backlog_s=args.max_backlog_s,
+                        infer_clock_tolerance_s=args.infer_clock_tolerance_s, frame_period_s=args.history_frame_period_s,
+                        action_interval_s=args.action_interval_s)
+                    if report.get("protocol") != PROTOCOL or report.get("realtime_valid") is not True:
+                        raise RuntimeError("RTC rollout failed its protocol/clock gates")
+                    report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
+                    report["post_terminal_inference_drain_wall_s"] = drain_finished_episode(worker)
+                    report.update({**descriptor, **source, "checkpoint": str(args.checkpoint.resolve()), "checkpoint_sha256": checkpoint_sha,
+                        "frozen_manifest_sha256": frozen_sha, "video_required": True, "probe_action_limit": args.probe_action_limit,
+                        "worker_startup_metadata": worker.startup_metadata, "instruction_warmup": instruction_warmup,
+                        "timing_contract_sha256": timing_sha,
+                        "native_result_dir": str(native_dir), "action_interval_s": args.action_interval_s,
+                        "history_frame_period_s": args.history_frame_period_s})
+                    video = session.head_video.finalize(native_dir / f"episode{episode}.mp4", episode_end_physics_s=session.physics_time())
+                    report.update(video); report.update(publish_episode_video_links(directory, video))
+                    tracker = session.metrics_tracker
+                    if report["stop_reason"] == "out_of_bounds":
+                        tracker.record_out_of_bounds()
+                    metric = tracker.get_episode_metrics(bool(report["success"]), None if report["stop_reason"] in {"success", "action_budget_exhausted"} else report["stop_reason"], seed=descriptor["seed"])
+                    save(directory / "metrics.json", asdict(metric) if is_dataclass(metric) else vars(metric))
+                    save(directory / "report.json", report)
+                    checked_episode(directory, args.task, episode)
+                    completed.append(dict(seed=descriptor["seed"], success=report["success"]))
+                    publish_native_task_results(output, native_dir, count=len(completed), planned=args.episodes,
+                        stamp=args.result_stamp, instruction_type=str(benchmark["instruction_type"]), checkpoint=args.checkpoint,
+                        generation=source["source_generation"], protocol=PROTOCOL, timing_mode="nominal_training_timing")
+                save(output / "progress.json", dict(planned_episodes=args.episodes, completed_episodes=len(completed), records=completed))
+                print("MOTIONKV_EPISODE " + json.dumps(dict(task=args.task, episode=episode, seed=descriptor["seed"], prepare_only=args.prepare_only)), flush=True)
+            finally:
+                original_error = sys.exc_info()[1]
+                if original_error is not None:
+                    preserve_failed_video(session, directory, episode, original_error)
+                    try:
+                        cleanup_episode(session, env, directory, events)
+                    except BaseException as cleanup_error:
+                        # Preserve the causative failure while recording a
+                        # separate cleanup failure for supervisor diagnosis.
+                        try:
+                            save(directory / "cleanup_error.json", dict(error=f"{type(cleanup_error).__name__}: {cleanup_error}"))
+                        except BaseException:
+                            traceback.print_exc()
+                else:
+                    cleanup_episode(session, env, directory, events)
+        if native_dir is not None and completed:
+            # A crash may have interrupted publication after committing all
+            # episodes. Rebuild only derived native aggregate files on resume.
+            publish_native_task_results(output, native_dir, count=len(completed), planned=args.episodes,
+                stamp=args.result_stamp, instruction_type=str(benchmark["instruction_type"]), checkpoint=args.checkpoint,
+                generation=source["source_generation"], protocol=PROTOCOL, timing_mode="nominal_training_timing")
+        save(output / "completed.json", dict(protocol=spec["protocol"], episodes=len(completed), probe_action_limit=args.probe_action_limit))
+        return 0
+    except BaseException as exc:
+        save(output / "error.json", {**current, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc(),
+             "completed_episodes": len(completed), "remaining_not_replaced": True, "diagnostics": getattr(exc, "diagnostics", None)})
+        traceback.print_exc()
+        return 1
+    finally:
+        # Ignore repeated termination while releasing only this task's owners.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if worker is not None:
+            worker.close()
+        lock.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

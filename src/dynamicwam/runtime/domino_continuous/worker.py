@@ -117,6 +117,8 @@ class ProcessInferenceWorker:
         config_path: str,
         checkpoint: str,
         infer_index: int,
+        policy_mode: str = "native",
+        native_cuda_graph: bool = True,
     ) -> None:
         context = multiprocessing.get_context("spawn")
         self._requests: multiprocessing.Queue = context.Queue()
@@ -129,6 +131,8 @@ class ProcessInferenceWorker:
                 config_path,
                 checkpoint,
                 int(infer_index),
+                policy_mode,
+                native_cuda_graph,
                 self._requests,
                 self._results,
                 self._ready,
@@ -140,6 +144,7 @@ class ProcessInferenceWorker:
         self._next_id = 0
         self.calls = 0
         self.intervals: list[tuple[float, float]] = []
+        self.startup_metadata = {}
         self._process.start()
         status = self._wait_until_ready(900.0)
         if status:
@@ -176,6 +181,9 @@ class ProcessInferenceWorker:
                 continue
             if status is None:
                 return None
+            if isinstance(status, dict) and status.get('ready') is True:
+                self.startup_metadata = status.get('metadata', {})
+                return None
             return str(status)
 
     def poll(self) -> dict[str, Any] | None:
@@ -187,12 +195,25 @@ class ProcessInferenceWorker:
                 raise RuntimeError("inference worker exited while a request was in flight")
             return None
         self._busy = False
-        self.calls += 1
-        self.intervals.append((item["started"], item["finished"]))
+        if not item.get('prepared_instruction'):
+            self.calls += 1
+            self.intervals.append((item["started"], item["finished"]))
         error = item["error"]
         if error:
             raise RuntimeError(error)
         return item
+
+    def prepare_instruction(self, instruction: str, timeout_s: float = 120.0):
+        """Encode language before the episode's physical clock starts."""
+        self.submit({'_prepare_instruction': str(instruction)})
+        deadline = time.monotonic() + timeout_s
+        while True:
+            item = self.poll()
+            if item is not None:
+                return item
+            if time.monotonic() >= deadline:
+                raise TimeoutError('instruction preparation timed out')
+            time.sleep(.01)
 
     def close(self) -> None:
         if self._process.is_alive():
@@ -230,6 +251,8 @@ def _serve_policy(
     config_path: str,
     checkpoint: str,
     infer_index: int,
+    policy_mode: str,
+    native_cuda_graph: bool,
     requests: multiprocessing.Queue,
     results: multiprocessing.Queue,
     ready: multiprocessing.Queue,
@@ -251,17 +274,32 @@ def _serve_policy(
         print(f"inference device cuda:{torch.cuda.current_device()}", flush=True)
         from dynamicwam.runtime.ciwam.wam.policy import DynamicWAMPolicy
 
-        policy = DynamicWAMPolicy(config_path, project_root=str(root))
+        if policy_mode == 'motionkv_rtc':
+            from .motionkv_policy import MotionKVPolicy
+            policy = MotionKVPolicy(config_path, checkpoint, project_root=str(root),
+                native_cuda_graph=native_cuda_graph)
+        elif policy_mode == 'native':
+            policy = DynamicWAMPolicy(config_path, project_root=str(root))
+        else:
+            raise ValueError(f'unknown evaluation policy mode: {policy_mode}')
         # Route1 keeps the existing policy setup and sampler unchanged. Its
         # profile already selects the full checkpoint; reject an inconsistent
         # CLI artifact instead of monkeypatching the model loader.
         from dynamicwam.inference.model_loader import load_deploy_config
         configured = load_deploy_config(config_path)
-        if Path(configured["checkpoint_path"]).resolve() != Path(checkpoint).resolve():
+        if policy_mode == 'native' and Path(configured["checkpoint_path"]).resolve() != Path(checkpoint).resolve():
             raise ValueError("profile checkpoint differs from the verified evaluation checkpoint")
         policy.setup()
 
         def infer(packet: dict[str, Any]) -> np.ndarray:
+            if '_prepare_instruction' in packet:
+                if policy_mode != 'motionkv_rtc':
+                    raise RuntimeError('instruction preparation requires MotionKV RTC policy')
+                policy.prepare_instruction(packet['_prepare_instruction'])
+                torch.cuda.synchronize()
+                return np.empty((0, 14), np.float32)
+            if policy_mode == 'motionkv_rtc':
+                return policy.sample(packet)
             # Opt-in evaluation randomness; existing RTC callers keep their behavior.
             if packet.get("_reset_policy", packet.get("_a2_reset_policy", False)):
                 policy.reset()
@@ -275,10 +313,12 @@ def _serve_policy(
         traceback.print_exc()
         ready.put(f"{type(exc).__name__}: {exc}")
         return
-    ready.put(None)
+    ready.put(dict(ready=True, metadata=getattr(policy, 'warmup_timing', {})))
     while True:
         item = requests.get()
         if item is None:
+            if hasattr(policy, 'close'):
+                policy.close()
             return
         request_id, packet = item
         started = time.perf_counter()
@@ -296,6 +336,8 @@ def _serve_policy(
                 "error": error,
                 "started": started,
                 "finished": time.perf_counter(),
+                "prepared_instruction": '_prepare_instruction' in packet,
+                "policy_timing": dict(getattr(policy, 'last_policy_timing', {})),
             }
         )
 

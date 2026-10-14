@@ -57,6 +57,7 @@ class MultiratePolicy:
         bridge_wait_budget_ms: float = 150.0,
         native_cuda_graph: bool = True,
         allow_zero_prefix_ablation: bool = False,
+        rtc_controller: str | None = None,
     ) -> None:
         if scheduling not in {"controlled_ratio", "independent_worker"}:
             raise ValueError("unknown multirate scheduling mode")
@@ -69,6 +70,7 @@ class MultiratePolicy:
         if type(allow_zero_prefix_ablation) is not bool:
             raise TypeError("allow_zero_prefix_ablation must be an explicit bool")
         self.allow_zero_prefix_ablation = allow_zero_prefix_ablation
+        self.rtc_controller = rtc_controller
         self.fast_graph = None
         self.worker = None
         self._producer_stream = None
@@ -114,7 +116,8 @@ class MultiratePolicy:
         runner = self.base.runner
         payload = load_checkpoint_payload(self.checkpoint_path)
         schedule, self.contract = validate_runtime_contract(payload, self.runtime,
-            allow_zero_prefix_ablation=self.allow_zero_prefix_ablation)
+            allow_zero_prefix_ablation=self.allow_zero_prefix_ablation,
+            rtc_controller=self.rtc_controller)
         validate_native_scheduling(self.contract, self.scheduling)
         spec = payload["modules"]
         compact = spec.get("compact_fast")
@@ -154,12 +157,13 @@ class MultiratePolicy:
         # Slow bridge keeps runner.model (VAE + Video DiT). Action sampling uses
         # a second read-only copy with no world weights.
         self.fast_model = isolated_fast_runtime(payload, device=runner.device, dtype=precision,
-            allow_zero_prefix_ablation=self.allow_zero_prefix_ablation)
+            allow_zero_prefix_ablation=self.allow_zero_prefix_ablation,
+            rtc_controller=self.rtc_controller)
         if self.contract.get('native_multirate'):
             from dynamicwam.inference.native_fast_graph import NativeFastGraph
             self.fast_graph = NativeFastGraph(self.fast_model,
                 enabled=self.native_cuda_graph and torch.device(runner.device).type == 'cuda'
-                    and len(self.fast_model.fast_schedule.action_sigmas) <= 2)
+                    and (self.rtc_controller is not None or len(self.fast_model.fast_schedule.action_sigmas) <= 2))
         if self.contract.get('feedback'):
             if not self.contract['feedback'].get('ready'):
                 raise RuntimeError('dynamics-only checkpoint has no distilled actor; finish policy training')
@@ -214,6 +218,8 @@ class MultiratePolicy:
         packet: dict[str, Any],
         controller: ControlledMultirateController,
     ) -> np.ndarray:
+        if self.rtc_controller is not None:
+            raise RuntimeError('timestamped RTC must use MotionKVPolicy.sample; legacy query drops prefix')
         max_age = int(self.contract["max_age_actions"])
         lead = int(getattr(controller, "bridge_lead_actions", 0) or 0)
         if int(controller.execute_horizon) != int(self.contract["execute_horizon"]):

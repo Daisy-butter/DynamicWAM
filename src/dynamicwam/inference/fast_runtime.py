@@ -31,18 +31,28 @@ def finalize_inference(model, *, device, dtype=torch.float32):
     return model
 
 
-def require_rtc_deployment_mode(payload, *, allow_zero_prefix_ablation=False):
-    """Fail closed until an actual timestamped RTC controller is integrated.
+RTC_TIMESTAMPED_CONTROLLER = 'domino_timestamped_prefix_v1'
 
-    This opt-in only permits explicitly labelled d=0 synchronous ablations and
-    low-level graph contract tests. It does not certify an asynchronous queue
-    or grant the legacy policy permission to silently drop a committed prefix.
+
+def require_rtc_deployment_mode(payload, *, allow_zero_prefix_ablation=False,
+                                rtc_controller=None):
+    """Require an explicit deployment path for trained RTC prefixes.
+
+    Legacy callers remain closed except labelled d=0 ablations. The timestamped
+    DOMINO path validates controller packets and preserves prefixes in its own
+    serving adapter; this selector alone does not certify queue timing.
     """
     from dynamicwam.inference.multirate_model_loader import rtc_prefix_contract
     if type(allow_zero_prefix_ablation) is not bool:
         raise TypeError("allow_zero_prefix_ablation must be an explicit bool")
+    if rtc_controller not in (None, RTC_TIMESTAMPED_CONTROLLER):
+        raise ValueError('unknown RTC controller contract')
+    if rtc_controller is not None and allow_zero_prefix_ablation:
+        raise ValueError('RTC deployment and zero-prefix ablation are exclusive')
     rtc = rtc_prefix_contract(payload)
-    if rtc is not None and not allow_zero_prefix_ablation:
+    if rtc_controller is not None and rtc is None:
+        raise RuntimeError('timestamped RTC deployment requires trained prefix metadata')
+    if rtc is not None and not allow_zero_prefix_ablation and rtc_controller is None:
         raise RuntimeError(
             "RTC-trained checkpoint cannot run through the legacy controller: "
             "a timestamped prefix controller is not integrated. For an explicit "
@@ -52,10 +62,10 @@ def require_rtc_deployment_mode(payload, *, allow_zero_prefix_ablation=False):
 
 
 def build_fast_runtime(payload, *, device='cpu', dtype=torch.float32,
-                       allow_zero_prefix_ablation=False):
+                       allow_zero_prefix_ablation=False, rtc_controller=None):
     from dynamicwam.inference.multirate_model_loader import assert_fast_only_payload, load_fast_only_modules
     rtc = require_rtc_deployment_mode(payload,
-        allow_zero_prefix_ablation=allow_zero_prefix_ablation)
+        allow_zero_prefix_ablation=allow_zero_prefix_ablation, rtc_controller=rtc_controller)
     state = assert_fast_only_payload(payload)
     spec = payload['modules']
     schedule = BridgeSchedule.from_flow_match(**spec['schedule'])
@@ -78,7 +88,8 @@ def build_fast_runtime(payload, *, device='cpu', dtype=torch.float32,
         if native and spec.get('fast_schedule') != model.fast_schedule.to_config():
             raise RuntimeError('native fast schedule differs from serialized solver')
     model.rtc_prefix_max = 0 if rtc is None else int(rtc['max_prefix_actions'])
-    model.rtc_deployment_mode = 'not_trained_for_rtc' if rtc is None else 'zero_prefix_ablation'
+    model.rtc_deployment_mode = ('not_trained_for_rtc' if rtc is None else
+        (rtc_controller or 'zero_prefix_ablation'))
     model.rtc_runtime_contract = rtc
     return finalize_inference(model, device=device, dtype=dtype)
 
@@ -87,7 +98,7 @@ _WORLD_PARAMETER_MARKERS = ("compact_wan", "vae", "text_encoder", ".t5")
 
 
 def isolated_fast_runtime(payload, *, device="cpu", dtype=torch.float32,
-                          allow_zero_prefix_ablation=False):
+                          allow_zero_prefix_ablation=False, rtc_controller=None):
     """Load a second fast copy that does not own WAN, VAE, or T5.
 
     The slow bridge keeps the full world model. This copy is the online action
@@ -97,7 +108,7 @@ def isolated_fast_runtime(payload, *, device="cpu", dtype=torch.float32,
     from dynamicwam.inference.multirate_model_loader import export_fast_only_payload
 
     require_rtc_deployment_mode(payload,
-        allow_zero_prefix_ablation=allow_zero_prefix_ablation)
+        allow_zero_prefix_ablation=allow_zero_prefix_ablation, rtc_controller=rtc_controller)
     modules = payload.get("modules")
     state = payload.get("model")
     if not isinstance(modules, dict) or "schedule" not in modules:
@@ -110,7 +121,7 @@ def isolated_fast_runtime(payload, *, device="cpu", dtype=torch.float32,
         global_step=int(payload.get("global_step", 0)),
     )
     model = build_fast_runtime(fast_payload, device=device, dtype=dtype,
-        allow_zero_prefix_ablation=allow_zero_prefix_ablation)
+        allow_zero_prefix_ablation=allow_zero_prefix_ablation, rtc_controller=rtc_controller)
     if isinstance(model, CompactFastPolicy):
         # Keep the online sampler on MultirateWAM so compact and reference
         # deployments share prepare_fast_memory / sample_fast_actions.
@@ -126,9 +137,10 @@ def isolated_fast_runtime(payload, *, device="cpu", dtype=torch.float32,
     return model
 
 
-def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=False):
+def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=False,
+                              rtc_controller=None):
     require_rtc_deployment_mode(payload,
-        allow_zero_prefix_ablation=allow_zero_prefix_ablation)
+        allow_zero_prefix_ablation=allow_zero_prefix_ablation, rtc_controller=rtc_controller)
     config = payload.get('config', {})
     contract = config.get('runtime_contract')
     if not isinstance(contract, dict) or contract.get('version') != 1:

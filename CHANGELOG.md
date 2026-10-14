@@ -25,3 +25,14 @@ Subsequent exit-health finding: two-GPU cleanup produced three new IOVAS asserti
 Parent: `b5907680bf4d713a2cce87d4c95b92a0561ff2f4`; branch `feat/route1-motion-kv-20261013`. Added action-conditioned, motion-guided bounded world K/V updates, clean-prefix/suffix RTC training, fixed-buffer CUDA Graph support and deployment refusal for unsupported controllers. Simulator and accepted MP4 baseline remain at `route1-continuous-domino-v1-20261013`.
 
 Design, protocol limits, configs, validation gates and artifact paths: [route1_motionkv_20261013.md](docs/route1_motionkv_20261013.md). GPU smoke/training/graph measurements must be recorded separately; pending driver-health resolution is not a passed launch gate. Rollback by using the accepted tag in a separate checkout; do not reset or delete this candidate or prior artifacts.
+
+
+## 2026-10-14 - MotionKV RTC continuous evaluation
+
+Branch `feat/route1-motionkv-rtc-eval-20261014`, parent `7aa9a75a1b97e15f3ca6c86a242ca155709374ce`. Adds a timestamped clean-prefix controller and serving adapter for the completed step-12000 export; preserves the accepted continuous baseline. H4/R4, K10, immutable official slow cache with motion-conditioned updates, CUDA Graph prewarm/replay, fixed 0.16-second nominal action slots calibrated against training simulation timestamps. Native DOMINO reports, MP4/physical-time sidecars and end-to-end latency are retained; failed episode video is separately preserved. Scene preparation freezes expert-feasible seeds before policy rollout.
+
+Checkpoint audit, 140-episode timing audit, CPU contract tests, graph/eager parity, GPU/guard lifecycle receipts and all failed attempts live at `/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/motionkv_rtc_20261014`. Full checkpoint SHA256: `35b2c51f651a7f5fcbf7de9b7c0fef203c8cbb372ba7cc651e7d7968e02d70f6`. Graph gate passed (sampler median 52.66 ms versus eager 209.81 ms); these are not end-to-end latency claims.
+
+Simulator Vulkan enumeration reaches all adapters before CUDA device selection. A single-worker/single-guard prep exposed new IOVAS teardown errors on the seven unguarded adapters (264 -> 285 anomaly lines). Application-only all-adapter temporary descriptor coverage completed the same 2-scene prep with final descriptor closure and no further assertions; failed receipts are preserved. No driver or PCI setting was changed. Actual RTC first episode completed 48 action slots/12 queries with continuous-time gates passing, but its result checker incorrectly compared absolute row times against tick-quantized per-block origins; correct comparison is the fixed global grid, with tick continuity checked separately. All later formal launch claims require fresh passed smoke and clean exit receipts.
+
+Harness v0.8 documents the evaluation contract. Rollback target remains `route1-continuous-domino-v1-20261013`; this candidate does not establish a new performance result until the full evaluation completes.
