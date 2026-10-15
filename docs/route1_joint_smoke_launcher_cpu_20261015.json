@@ -1,0 +1,31 @@
+{
+  "cpu_plan_only": true,
+  "executed": false,
+  "cpu_tests_passed": 8,
+  "stages": [
+    {
+      "phase": "warmup",
+      "training_run": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_warmup_smoke_20261015",
+      "full_export": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_warmup_smoke_20261015/exports/multirate_step_4.pt",
+      "initialization": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/motionkv_rtc_adapt_8gpu_20261014/exports/multirate_step_12000.pt"
+    },
+    {
+      "phase": "joint",
+      "training_run": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_joint_smoke_20261015",
+      "full_export": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_joint_smoke_20261015/exports/multirate_step_4.pt",
+      "initialization": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_warmup_smoke_20261015/exports/multirate_step_4.pt"
+    }
+  ],
+  "gates": [
+    "protected_final_workers_and_all_fds_closed",
+    "fresh_eight_uuid_guard_authorization",
+    "clean_committed_source",
+    "frozen_head_python_source_profiles_harness",
+    "fresh_training_and_supervisor_outputs",
+    "clean_smoke_worker_driver_and_fd_exit",
+    "passed_cpu_export_audit_before_next_phase"
+  ],
+  "default_nccl_allocator": true,
+  "formal_training": false,
+  "torch_imported": false
+}

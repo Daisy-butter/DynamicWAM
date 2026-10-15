@@ -110,7 +110,8 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
 
     optional_pair = {"partition_seed": 0, "validation_fraction": .1, "clock_mode": "required",
                      "samples_per_episode": 10, "stress_probability": 0.0, "sampler_seed": None,
-                     "age_weighting": "schedule_mixture"}
+                     "age_weighting": "schedule_mixture", "cache_age_actions": None,
+                     "joint_supervision": False, "cache_age_jitter": False, "cache_age_seed": 0}
     pair_raw = dict(top["pairing"])
     pair_options = {key: pair_raw.pop(key, default) for key, default in optional_pair.items()}
     if pair_options["sampler_seed"] is None:
@@ -146,6 +147,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         "native_phase": "", "native_fast_steps": 10,
         "native_expert_weight": 1.0, "native_fm_anchor_weight": 0.0,
         "rtc_prefix_max": 0,
+        "native_source_bridge": "immutable_official", "gradient_checkpointing": False, "initialize_joint_interface": False,
     }.items()}
     if extra_training["fast_supervision"] not in {"executed_prefix", "full_chunk"}:
         raise ValueError("invalid fast_supervision")
@@ -182,6 +184,8 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         },
         "multirate training",
     )
+    if pair_options["cache_age_jitter"] and int(training["num_workers"]) > 0 and bool(training["persistent_workers"]):
+        raise ValueError("epoch cache-age jitter requires num_workers=0 or nonpersistent workers")
     training["validation_batches"] = validation_batches
     training.update(extra_training)
     native = top["baseline"] == "world_action_multirate_native_v1"
@@ -196,8 +200,19 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             raise ValueError("RTC endpoint distillation requires a prefix-conditioned teacher; use adaptation first")
         if training["native_phase"] not in {"adapt", "distill"}:
             raise ValueError("native_phase must be adapt or distill")
-        if phase != "fast_warmup" or training["feedback_phase"]:
-            raise ValueError("native phases freeze video and cannot mix with compact feedback")
+        if training["native_source_bridge"] not in {"immutable_official", "student_joint"}:
+            raise ValueError("unsupported native_source_bridge")
+        if training["feedback_phase"]:
+            raise ValueError("native phases cannot mix with compact feedback")
+        if phase != "fast_warmup" and training["native_source_bridge"] != "student_joint":
+            raise ValueError("joint native training requires student_joint bridge")
+        if training["initialize_joint_interface"] and (training["native_source_bridge"] != "student_joint" or phase != "fast_warmup"):
+            raise ValueError("V1 to V2 initialization belongs only to student warmup")
+        if training["native_source_bridge"] == "student_joint":
+            if training["native_phase"] != "adapt":
+                raise ValueError("joint bridge adaptation keeps the native ten-step solver")
+            if not pair_options["joint_supervision"]:
+                raise ValueError("student_joint requires causal source RGB and explicit joint_supervision")
         if int(training["native_fast_steps"]) not in {1, 2, 4, 10}:
             raise ValueError("native fast sampler supports 1, 2, 4 or 10 steps")
         if training["native_phase"] == "adapt" and int(training["native_fast_steps"]) != 10:
@@ -278,6 +293,8 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
     world_options = {k: fast_raw.pop(k, v) for k, v in world_defaults.items()}
     motion_options = {k: fast_raw.pop(k, v) for k, v in {
         "motion_kv": False, "kv_rank": 8, "max_relative_update": .25,
+        "interface_version": 1, "action_dim": 14, "correction_layers": None,
+        "require_source_rgb": True,
     }.items()}
     fast = require_exact_keys(
         fast_raw,
@@ -304,6 +321,13 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         if motion_options["motion_kv"]:
             if int(motion_options["kv_rank"]) < 1 or not 0 < float(motion_options["max_relative_update"]) <= 1:
                 raise ValueError("invalid motion K/V correction bounds")
+            if int(motion_options["interface_version"]) == 1:
+                for name in ("interface_version", "action_dim", "correction_layers", "require_source_rgb"):
+                    motion_options.pop(name)
+            elif int(motion_options["interface_version"]) != 2:
+                raise ValueError("unsupported motion K/V interface version")
+            elif int(motion_options["action_dim"]) != int(action["action_dim"]):
+                raise ValueError("joint interface plan action dimension differs from actor")
             fast.update(motion_options)
     elif world_options["world_aware"] or motion_options["motion_kv"]:
         raise ValueError("world-aware conditioner requires the native baseline")
@@ -353,8 +377,15 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         if phase == 'cross_time_joint' and (float(loss['action_weight']) <= 0 or float(loss['video_weight']) <= 0):
             raise ValueError('joint distillation requires aligned action and video retention losses')
         loss = dict(loss, native_teacher_weight=native_teacher_weight)
-    if native and (not teacher_checkpoint or native_teacher_weight <= 0 or float(loss["action_weight"]) != 0 or float(loss["video_weight"]) != 0):
-        raise ValueError("native training requires an independent fixed teacher and native-only objectives")
+    if native:
+        if not teacher_checkpoint or native_teacher_weight <= 0:
+            raise ValueError("native training requires an independent fixed teacher")
+        if phase == "fast_warmup" and (float(loss["action_weight"]) != 0 or float(loss["video_weight"]) != 0):
+            raise ValueError("native warmup freezes video and uses only fast objectives")
+        if phase == "cross_time_joint" and (float(loss["action_weight"]) <= 0 or float(loss["video_weight"]) <= 0):
+            raise ValueError("joint native training preserves aligned video and action objectives")
+        if training["native_source_bridge"] == "student_joint" and int(fast.get("interface_version", 1)) != 2:
+            raise ValueError("student_joint requires the complete V2 innovation interface")
     if training['feedback_phase'] and (not compact_fast or not compact_fast.get('feedback_enabled')):
         raise ValueError('feedback training requires a feedback-enabled compact model')
     if compact_fast and compact_fast.get('feedback_enabled') and not training['feedback_phase']:

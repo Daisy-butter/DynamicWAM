@@ -33,6 +33,9 @@ class SourceObservation:
     text_embeddings: list[torch.Tensor]
     source_id: int | torch.Tensor
     sim_time: float | torch.Tensor
+    # Causal source image snapshot for innovation features; never future labels.
+    rgb: torch.Tensor | None = None
+    rgb_valid_mask: torch.Tensor | None = None
 
     def as_model_batch(self) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         return {
@@ -68,6 +71,21 @@ class BridgeTensorBundle:
     # the bridge must not sync the producer stream. The pack path is correct for
     # both padded and unpadded rows, so the default stays False.
     all_video_tokens_valid: bool = False
+    # Version 2 metadata describes the conditions that actually produced K/V.
+    # source_action_plan is a clean estimate from the cache-producing forward,
+    # not the expert target or a later fast plan. Sigma exposes its uncertainty.
+    interface_version: int = 1
+    source_action_plan: torch.Tensor | None = None
+    source_action_sigma: torch.Tensor | float | None = None
+    source_motion: torch.Tensor | None = None
+    source_motion_interval_valid_mask: torch.Tensor | None = None
+    source_motion_acceleration_valid_mask: torch.Tensor | None = None
+    source_rgb: torch.Tensor | None = None
+    source_rgb_valid_mask: torch.Tensor | None = None
+    # Explicit inference-only derived source cache. Rebuild on every source
+    # install or weight change; training must always encode attached source RGB.
+    source_visual_tokens: torch.Tensor | None = None
+    source_visual_valid: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if len(self.video_k) != len(self.video_v):
@@ -153,6 +171,14 @@ class CurrentObservation:
     text_embeddings: list[torch.Tensor]
     age: BridgeAge
     rgb_valid_mask: torch.Tensor | None = None
+    # Only actions already committed before this observation; suffix rows must
+    # be ignored. They use the identical normalized action space as Action DiT.
+    committed_prefix: torch.Tensor | None = None
+    committed_prefix_lengths: torch.Tensor | None = None
+    observation_delay_seconds: float | torch.Tensor = 0.0
+    # Planned physical effect times, relative to this observation. Available
+    # queue metadata, not future observations; required by the V2 interface.
+    action_target_offsets: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.rgb.ndim != 5 or int(self.rgb.shape[1]) != 3:

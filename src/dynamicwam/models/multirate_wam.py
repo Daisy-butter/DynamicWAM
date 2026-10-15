@@ -58,6 +58,11 @@ class MultirateWAM(nn.Module):
         self.native_teacher_weight = float(native_teacher_weight)
         self.native_multirate = bool(native_multirate)
         self.native_phase = ""
+        self.native_source_bridge = "immutable_official"
+        self.native_training_phase = "warmup"
+        self.joint_video_weight = 0.0
+        self.joint_action_weight = 0.0
+        self.gradient_checkpointing = False
         self.native_expert_weight = 1.0
         self.native_fm_anchor_weight = 0.0
         # Joint training gets immutable teacher trajectories from the trainer.
@@ -300,19 +305,46 @@ class MultirateWAM(nn.Module):
             raise RuntimeError("native training batch lacks fixed teacher actions")
         if teacher is not None:
             teacher = teacher.detach()
-        # Source context comes from the immutable official model. Rebuilding it
-        # with the student would change its joint-action prefix during training
-        # even if every video parameter remained frozen.
-        self.backbone.eval()
-        source_bridge = batch.get("native_source_bridge")
-        if source_bridge is None:
-            raise RuntimeError("native training requires the immutable official source bridge")
-        if any(t.requires_grad for t in (*source_bridge.video_k, *source_bridge.video_v)):
-            raise RuntimeError("official source bridge must be detached from teacher gradients")
+        # V1 keeps its official frozen cache. V2 publishes the same student
+        # source bridge used at deployment, and joint gradients cross that
+        # interface instead of terminating at detached teacher K/V.
+        self.backbone.eval()  # deterministic backbone; eval does not disable grad
+        if self.native_source_bridge == "immutable_official":
+            source_bridge = batch.get("native_source_bridge")
+            if source_bridge is None:
+                raise RuntimeError("native training requires the immutable official source bridge")
+            if any(t.requires_grad for t in (*source_bridge.video_k, *source_bridge.video_v)):
+                raise RuntimeError("official source bridge must be detached from teacher gradients")
+        elif self.native_source_bridge == "student_joint":
+            if self.native_training_phase == "warmup":
+                with torch.no_grad():
+                    source_bridge = self.bridge(self.backbone, batch["source"],
+                        batch["source_noise"], detach_cache=True)
+            elif self.native_training_phase == "joint":
+                build = lambda: self.bridge(self.backbone, batch["source"],
+                    batch["source_noise"], detach_cache=False)
+                if self.gradient_checkpointing and torch.is_grad_enabled():
+                    from torch.utils.checkpoint import checkpoint
+                    source_bridge = checkpoint(build, use_reentrant=False)
+                else:
+                    source_bridge = build()
+            else:
+                raise ValueError("unknown student bridge training phase")
+        else:
+            raise ValueError("unknown source bridge training contract")
         flag = batch.get("null_bridge", False)
         bridge = replace(source_bridge,
             null_bridge=flag.to(dtype=torch.bool) if torch.is_tensor(flag) else bool(flag))
         current = batch["current"]
+        if getattr(self.fast_conditioner, "interface_version", 1) >= 2:
+            prefix_condition = batch.get("rtc_prefix")
+            if prefix_condition is None:
+                from dynamicwam.models.rtc_prefix import PrefixCondition
+                prefix_condition = PrefixCondition(torch.zeros_like(batch["clean_actions"]),
+                    torch.zeros(batch["clean_actions"].shape[0], dtype=torch.long,
+                                device=batch["clean_actions"].device))
+            current = replace(current, committed_prefix=prefix_condition.actions,
+                committed_prefix_lengths=prefix_condition.lengths)
         memory = self.prepare_fast_memory(current, bridge, batch["fast_text"], batch.get("fast_text_mask"))
         metrics = {}
         outputs = {}
@@ -335,7 +367,14 @@ class MultirateWAM(nn.Module):
                 flow_noise, sigma = batch["teacher_flow_noise"], batch["fast_sigma"]
                 noisy = (1 - sigma) * teacher + sigma * flow_noise
                 teacher_prefix = PrefixCondition(teacher, prefix.lengths) if prefix is not None else None
-                teacher_prediction = self.predict_fast_velocity(noisy, batch["fast_action_t"], current, bridge, memory, prefix=teacher_prefix)
+                teacher_current, teacher_memory = current, memory
+                if teacher_prefix is not None and getattr(self.fast_conditioner, "interface_version", 1) >= 2:
+                    teacher_current = replace(current, committed_prefix=teacher_prefix.actions,
+                        committed_prefix_lengths=teacher_prefix.lengths)
+                    teacher_memory = self.prepare_fast_memory(teacher_current, bridge,
+                        batch["fast_text"], batch.get("fast_text_mask"))
+                teacher_prediction = self.predict_fast_velocity(noisy, batch["fast_action_t"],
+                    teacher_current, bridge, teacher_memory, prefix=teacher_prefix)
                 teacher_target = flow_noise - teacher
                 teacher_loss = loss_fn(teacher_prediction, teacher_target)
                 loss = loss + self.native_teacher_weight * teacher_loss
@@ -359,6 +398,26 @@ class MultirateWAM(nn.Module):
                 anchor_loss = F.mse_loss(prediction.float(), batch["fast_target"].float())
                 loss = loss + self.native_fm_anchor_weight * anchor_loss
                 metrics["loss/fm_anchor"] = anchor_loss.detach()
+        if self.native_source_bridge == "student_joint" and self.native_training_phase == "joint":
+            if self.joint_video_weight > 0 or self.joint_action_weight > 0:
+                def aligned_forward():
+                    return self.backbone._forward_video_action(batch["aligned"],
+                        include_video_prediction=self.joint_video_weight > 0,
+                        build_video_cache=False, detach_cache=False)
+                if self.gradient_checkpointing and torch.is_grad_enabled():
+                    from torch.utils.checkpoint import checkpoint
+                    aligned = checkpoint(aligned_forward, use_reentrant=False)
+                else:
+                    aligned = aligned_forward()
+                if self.joint_video_weight > 0:
+                    video_loss = F.mse_loss(aligned["video_pred"].float(), batch["video_target"].float())
+                    loss = loss + self.joint_video_weight * video_loss
+                    metrics["loss/video_retention"] = video_loss.detach()
+                if self.joint_action_weight > 0:
+                    action_loss = F.mse_loss(aligned["action_pred"].float(), batch["action_target"].float())
+                    loss = loss + self.joint_action_weight * action_loss
+                    metrics["loss/action_retention"] = action_loss.detach()
+        metrics["bridge/student_joint"] = loss.new_tensor(float(self.native_source_bridge == "student_joint"))
         metrics["loss/total"] = loss.detach()
         outputs.update(native_loss=loss, native_metrics=metrics)
         return outputs

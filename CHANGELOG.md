@@ -47,3 +47,10 @@ The 700-scene preparation succeeded, but formal startup stopped on a new NVLink/
 - Open all-adapter temporary device FDs before NVML telemetry; bind launch mode and proc inventory in manifest.
 - Add no-worker telemetry lifecycle gate and 13 CPU launch/cleanup regression tests.
 - Preserve original RTC protocol, scenes, checkpoint and all failed receipts; explicit user-authorized restart still requires fresh clean eight-GPU smoke.
+
+
+## 2026-10-15 - Joint MotionKV v2 candidate (isolated worktree)
+
+Parent `448782a`; branch `feat/route1-joint-motionkv-20261015`, harness v1.4. Added train/deploy-identical student slow bridge, zero-gated visual/motion/plan innovations, physical target-time conditioning, causal age jitter 0..15, and interface warmup -> joint Video/Action/adapter FM optimization. Added source visual caching, complete v2 graph input refresh, strict migration/full-fast loading and a guarded two-stage eight-GPU smoke entrypoint. The existing scaled evaluation main worktree stays frozen.
+
+Ten CPU test programs pass, as do actual step12000 conditioner migration and bounded packed-data checks. No GPU smoke or formal training was started; full Video DiT CUDA memory, capture speed, 1x deadlines and success rate remain unverified. See [design and primary sources](docs/joint_motionkv_design_20261015.md), [recipe](docs/joint_motionkv_training_recipe_20261015.md), and [evidence](docs/route1_joint_motionkv_20261015.json). All artifacts are on SSD. Revert by using the parent in a separate worktree; preserve current and prior runs.

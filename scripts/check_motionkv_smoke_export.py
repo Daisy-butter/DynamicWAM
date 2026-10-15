@@ -133,6 +133,20 @@ def audit(args, result):
     expected = profile.training["model"]["fast_conditioner"]
     conditioner = spec["fast_conditioner"]
     require(conditioner.get("motion_kv") is True, "smoke export is not MotionKV")
+    require(conditioner.get("interface_version", 1) == expected.get("interface_version", 1),
+            "motion interface version differs from the requested smoke")
+    expected_source = profile.training.get("native_source_bridge", "immutable_official")
+    require(contract["native_multirate"].get("source_bridge") == expected_source,
+            "smoke slow bridge provenance differs from the training recipe")
+    if expected_source == "student_joint":
+        require(contract["native_multirate"].get("version") == 2, "joint slow bridge must be v2")
+        require(full["config"].get("phase") == profile.training["phase"], "joint smoke stage differs")
+        require(contract.get("max_age_actions") == 15, "joint smoke lost trained asynchronous age support")
+        require(conditioner.get("correction_layers") == expected.get("correction_layers"),
+                "joint smoke correction placement differs")
+        gate = full["model"].get("fast_conditioner.innovation_gate")
+        require(gate is not None and bool(torch.count_nonzero(gate)), "new innovation gate did not learn")
+        result["joint_interface_and_provenance_verified"] = True
     for field in ("kv_rank", "max_relative_update", "dim", "layers", "world_heads", "world_head_dim", "world_dim"):
         require(conditioner.get(field) == expected.get(field), f"MotionKV {field} differs from smoke profile")
     require(rtc["max_prefix_actions"] == int(profile.training["rtc_prefix_max"]), "RTC prefix limit differs")

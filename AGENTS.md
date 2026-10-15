@@ -74,3 +74,6 @@ Native RGB candidate validation: 45 focused CPU tests (7 native conversion, RTC/
 
 ## Latest explicit user authorization, 2026-10-15
 User permits declared hardware concessions to complete evaluation of step12000; continuous simulation mandatory, maximize train/deploy consistency. Work on feat/route1-scaled-continuous-eval-20261015 from b2ec6d2. Read harness v1.3. New fixed0.25 wall-rate protocol preserves simulator dt/action0.16/H4/R4/K10/refresh16/cache ages and dynamic-object simulated speed; never claim actual1x realtime. Restore all35tasks includingPOB/PCP, same700frozen scenes. Fresh8GPU8x2full smoke then one-shot35x20 pipeline with nativeMP4 and latency. Source/config frozen duringrun, no retries/recovery/recurringpolling. Latestpriorformal06 exit clean, historical driveridentity307; previous286 notes are stale.
+
+## Latest scope: joint MotionKV, 2026-10-15
+User explicitly requests next architecture/recipe/data/inference implementation and smokes while old scaled evaluation continues. Work only in this isolated SSD worktree. Harness v1.4 supersedes historical frozen-model scopes for this branch. Preserve the main repository frozen at 448782a and its running evaluation. New design targets 1x continuous time; GPU smokes wait for free resources and current guarded health clearance. No formal training is requested in this step.

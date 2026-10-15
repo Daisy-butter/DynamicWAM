@@ -19,9 +19,18 @@ from dynamicwam.models.multirate_types import BridgeAge
 from dynamicwam.models.rtc_prefix import PrefixCondition, apply_prefix, validate_prefix_condition
 
 
+_BRIDGE_CONTEXT_TENSORS = (
+    "source_action_plan", "source_action_sigma", "source_motion",
+    "source_motion_interval_valid_mask", "source_motion_acceleration_valid_mask",
+    "source_rgb", "source_rgb_valid_mask", "source_visual_tokens", "source_visual_valid",
+)
+
+
 def _tensor_signature(value):
     if value is None:
         return None
+    if not torch.is_tensor(value):
+        return ("scalar", type(value).__name__)
     return (tuple(value.shape), str(value.dtype), str(value.device))
 
 
@@ -60,9 +69,11 @@ class NativeFastGraph:
         return (tuple(_tensor_signature(v) for v in (current.rgb, current.rgb_valid_mask,
                     current.state, current.motion, current.motion_interval_valid_mask,
                     current.motion_acceleration_valid_mask, current.age.state_delta, text, text_mask, noise,
-                    prefix.actions, prefix.lengths)),
+                    prefix.actions, prefix.lengths, current.committed_prefix,
+                    current.committed_prefix_lengths, current.observation_delay_seconds, current.action_target_offsets)),
                 tuple(_tensor_signature(v) for v in (*bridge.video_k, *bridge.video_v, bridge.seq_lens)),
-                null_signature, bool(bridge.all_video_tokens_valid),
+                tuple(_tensor_signature(getattr(bridge, name)) for name in _BRIDGE_CONTEXT_TENSORS),
+                int(bridge.interface_version), null_signature, bool(bridge.all_video_tokens_valid),
                 tuple(float(v) for v in self.model.fast_schedule.action_sigmas.cpu()),
                 tuple(float(v) for v in self.model.fast_schedule.action_timesteps.cpu()))
 
@@ -81,20 +92,40 @@ class NativeFastGraph:
                          column(current.age.delta_actions, dtype),
                          column(current.age.bridge_valid, torch.bool), current.age.state_delta)
 
+    @staticmethod
+    def _canonical_context(current, bridge, noise, prefix):
+        # Dynamic scalars become device tensors before graph capture. The same
+        # clean prefix is consumed by both the interface and the action solver.
+        def scalar(value):
+            return torch.as_tensor(value, device=noise.device, dtype=torch.float32)
+        current = replace(current, committed_prefix=prefix.actions,
+            committed_prefix_lengths=prefix.lengths,
+            observation_delay_seconds=scalar(current.observation_delay_seconds),
+            action_target_offsets=None if current.action_target_offsets is None else scalar(current.action_target_offsets))
+        if bridge.source_action_sigma is not None:
+            bridge = replace(bridge, source_action_sigma=scalar(bridge.source_action_sigma))
+        return current, bridge
+
     def _allocate(self, current, bridge, text, text_mask, noise, prefix):
+        current, bridge = self._canonical_context(current, bridge, noise, prefix)
         device = noise.device
         def clone(value):
             return None if value is None else value.detach().to(device=device).clone()
         age = self._age_inputs(current, device)
         self.current = replace(current, rgb=clone(current.rgb), rgb_valid_mask=clone(current.rgb_valid_mask),
             state=clone(current.state), motion=clone(current.motion),
+            committed_prefix=clone(current.committed_prefix),
+            committed_prefix_lengths=clone(current.committed_prefix_lengths),
+            observation_delay_seconds=clone(current.observation_delay_seconds),
+            action_target_offsets=clone(current.action_target_offsets),
             motion_interval_valid_mask=clone(current.motion_interval_valid_mask),
             motion_acceleration_valid_mask=clone(current.motion_acceleration_valid_mask),
             age=BridgeAge(clone(age.delta_sim_seconds), clone(age.delta_actions),
                           clone(age.bridge_valid), clone(age.state_delta)))
         self.bridge = replace(bridge, video_k=tuple(clone(t) for t in bridge.video_k),
             video_v=tuple(clone(t) for t in bridge.video_v), seq_lens=clone(bridge.seq_lens),
-            null_bridge=clone(bridge.null_bridge) if torch.is_tensor(bridge.null_bridge) else bool(bridge.null_bridge))
+            null_bridge=clone(bridge.null_bridge) if torch.is_tensor(bridge.null_bridge) else bool(bridge.null_bridge),
+            **{name: clone(getattr(bridge, name)) for name in _BRIDGE_CONTEXT_TENSORS})
         # The router canonicalizes null flags with torch.as_tensor(device=...);
         # pre-materialize that scalar so capture does not copy a host bool. Keep
         # the action core's host bool branch to avoid two attention evaluations.
@@ -113,6 +144,15 @@ class NativeFastGraph:
             self.deltas.append((next_sigma - sigma).to(device=device))
 
     def _copy_inputs(self, current, bridge, text, text_mask, noise, prefix):
+        current, bridge = self._canonical_context(current, bridge, noise, prefix)
+        for name in ("committed_prefix", "committed_prefix_lengths", "observation_delay_seconds"):
+            getattr(self.current, name).copy_(getattr(current, name))
+        if self.current.action_target_offsets is not None:
+            self.current.action_target_offsets.copy_(current.action_target_offsets)
+        for name in _BRIDGE_CONTEXT_TENSORS:
+            target = getattr(self.bridge, name)
+            if target is not None:
+                target.copy_(getattr(bridge, name))
         for name in ("rgb", "state", "motion", "motion_interval_valid_mask", "motion_acceleration_valid_mask"):
             getattr(self.current, name).copy_(getattr(current, name))
         if self.current.rgb_valid_mask is not None:
@@ -190,6 +230,7 @@ class NativeFastGraph:
         # they must never be clipped silently to the trained maximum.
         validate_prefix_condition(prefix,
             max_prefix=int(getattr(self.model, "rtc_prefix_max", 0)), reference=noise)
+        current, bridge = self._canonical_context(current, bridge, noise, prefix)
         use_graph = self.requested_enabled and noise.is_cuda
         self.stats["enabled"] = use_graph
         if not use_graph:

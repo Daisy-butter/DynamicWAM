@@ -1,0 +1,77 @@
+{
+  "created_at": "2026-10-15T13:01:14.269422+00:00",
+  "state": "implemented_cpu_smokes_passed_gpu_pending",
+  "branch": "feat/route1-joint-motionkv-20261015",
+  "parent": "448782a3c97dd307348f304c9a2f88400af68047",
+  "worktree": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/joint-motionkv-20261015",
+  "harness_version": "1.4",
+  "protected_evaluation_source": "448782a3c97dd307348f304c9a2f88400af68047",
+  "protected_evaluation_observed": {
+    "state": "formal_running",
+    "formal_started_at": "2026-10-15T12:39:00.688002+00:00",
+    "status_snapshot_at": "2026-10-15T12:41:30.701206+00:00",
+    "completion_not_claimed": true
+  },
+  "cpu_test_programs": 10,
+  "syntax_files": 25,
+  "actual_step12000_initialization": {
+    "passed": true,
+    "checkpoint": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/motionkv_rtc_adapt_8gpu_20261014/exports/multirate_step_12000.pt",
+    "global_step": 12000,
+    "preserved_conditioner_tensors": 195,
+    "initialized_tensors": [
+      "fast_conditioner.innovation_gate",
+      "fast_conditioner.innovation_kind",
+      "fast_conditioner.motion_innovation.0.bias",
+      "fast_conditioner.motion_innovation.0.weight",
+      "fast_conditioner.motion_innovation.2.bias",
+      "fast_conditioner.motion_innovation.2.weight",
+      "fast_conditioner.plan_innovation.0.bias",
+      "fast_conditioner.plan_innovation.0.weight",
+      "fast_conditioner.plan_innovation.2.bias",
+      "fast_conditioner.plan_innovation.2.weight",
+      "fast_conditioner.visual_innovation.0.bias",
+      "fast_conditioner.visual_innovation.0.weight",
+      "fast_conditioner.visual_innovation.1.bias",
+      "fast_conditioner.visual_innovation.1.weight",
+      "fast_conditioner.visual_innovation.3.bias",
+      "fast_conditioner.visual_innovation.3.weight"
+    ],
+    "dataset_and_holdout_exact": true,
+    "device": "cpu",
+    "checkpoint_load": "mmap",
+    "limitations": "conditioner strict load and full checkpoint metadata; no full Video DiT instantiation or GPU"
+  },
+  "actual_data_manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/manifest.json",
+  "evidence": {
+    "cpu_suite.json": {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/joint_motionkv_20261015/cpu_suite.json",
+      "sha256": "9d96137622c0f36f8190dec0813b6d92bb2c01e1ad7b895a1ad8b92678138ce2"
+    },
+    "training_cpu.json": {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/joint_motionkv_20261015/training_cpu.json",
+      "sha256": "e1801c223b310bc23c7bd52721a507ee447279f30c4adaa754fcd48a44824688"
+    },
+    "actual_checkpoint_init_cpu.json": {
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/joint_motionkv_20261015/actual_checkpoint_init_cpu.json",
+      "sha256": "1343e68c657c861a924a1dc0f9319aa7773db3c60780c38816423b9578002135"
+    }
+  },
+  "fixes_found_during_validation": [
+    "Zero-gated separate innovation attention preserves migrated V1 conditioner outputs despite nonzero trained delta heads.",
+    "Added all physical action endpoint offsets so variable demonstration cadence is visible also for zero-prefix queries.",
+    "Actual-checkpoint diagnostic initially compared file-hash manifest identity to canonical loader identity; corrected test to loader receipt. Canonical dataset and holdout match."
+  ],
+  "gpu_smoke": false,
+  "formal_training_started": false,
+  "gpu_touched": false,
+  "recurring_polling": false,
+  "next_gpu_entrypoint": "scripts/run_joint_motionkv_smokes.py",
+  "limitations": [
+    "CPU joint optimizer smoke uses a tiny differentiable Video DiT substitute and SDPA.",
+    "Actual CUDA graph parity, eight-GPU memory/backward and 1x continuous deadlines remain unverified.",
+    "New architecture has no trained evaluation or performance improvement evidence yet.",
+    "No complete scan of all episode clocks; strict validation runs when samples are loaded.",
+    "Expert/teacher prefix versus on-policy prefix and variable demonstration versus fixed deployment cadence remain distribution differences."
+  ]
+}

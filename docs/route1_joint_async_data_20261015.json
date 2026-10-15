@@ -1,0 +1,82 @@
+{
+  "artifacts": {
+    "actual_cpu_batch": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/actual_cpu_smoke/actual_cpu_batch.pt",
+    "actual_smoke_receipt": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/actual_cpu_smoke/receipt.json",
+    "actual_smoke_sha256": "ab89ba19b515033bca4160e697770a5caa078f6114c0377607e8667752f47c5b",
+    "episode_index": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/episode_index.jsonl",
+    "episode_index_sha256": "e3b5980cdfdfdfb5a11b806955f2a386986d5923332cfef07c958bdef4d0d087",
+    "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/manifest.json",
+    "manifest_sha256": "95f6d188b5716c92560e1ac6cfde1937f9170b1dc0dc7c0e99a3f1ad31e8d1c3",
+    "trainer_prepare_receipt": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/actual_cpu_smoke/trainer_prepare_receipt.json",
+    "trainer_prepare_sha256": "ae6661df4630821c2820a61e217e4cd5a0491d74713d36fe09fe7d417a4b18c6"
+  },
+  "bounds": {
+    "actual_rgb_frame_reads_upper_bound": 20,
+    "actual_rgb_sample_pairs": 10,
+    "full_clock_audit": false,
+    "full_clock_checks": "on sample load",
+    "full_dataset_constructor_not_executed": true,
+    "gpu_calls": 0,
+    "metadata_source_candidates": 1420472,
+    "simulator_imports": 0
+  },
+  "contract": {
+    "base_age_slots": [
+      0,
+      4,
+      8,
+      12
+    ],
+    "cache_ages": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "epoch_jitter": "SHA256(seed,epoch,source_sample_id,slot), only valid same-episode targets",
+    "holdout": "same deterministic episode partition; changed pairing identity explicit",
+    "labels": "joint_targets only; no expert future in source conditioning",
+    "prefix_max": 4,
+    "timestamps": "unaltered exact simulator endpoint times; not command-start times"
+  },
+  "counts": {
+    "episodes": 10500,
+    "materialized_slot_pairs": 4929478,
+    "samples": 1420472,
+    "train_episodes": 9450,
+    "validation_episodes": 1050
+  },
+  "episode_partition_identity": "68dbb5bd94d25999db8c1815ad59f8459e1b748c1d9384d401cb55449e487ba9",
+  "legacy_pairing_identity": "344effddfbcee2de79afc87beaa9b48431743d1aec1116bfc178fe88fe3627ed",
+  "limitations": [
+    "Eight real sample checks from the first packed episode are not full corpus verification.",
+    "Training still models expert prefix or trainer-selected policy prefix; wall-clock latency is not established by data metadata.",
+    "Runtime 0.16-second nominal action period is not substituted for variable demonstration target endpoint intervals."
+  ],
+  "pairing_identity": "3b04a5dfb9112fba877075e7a02a45ce3a0e6ec8c2edd37537f40be8a5154680",
+  "schema_version": 1,
+  "status": "cpu_data_preparation_verified",
+  "tests": {
+    "actual_epochs": [
+      0,
+      1
+    ],
+    "actual_samples": 8,
+    "legacy_verify_paired_data": true,
+    "native_motion_and_normalized_action_equality": true,
+    "new_cpu_unit_tests": 6,
+    "trainer_prepared_actual_batch": 2
+  }
+}

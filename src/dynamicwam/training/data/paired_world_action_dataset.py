@@ -8,9 +8,11 @@ row is shared by the source, the fast path, and that regularizer.
 from __future__ import annotations
 
 import json
+import hashlib
+from array import array
 from collections import Counter, defaultdict, OrderedDict
 from dynamicwam.training.data.multirate_sampling import partition_episodes, pairing_identity
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -23,12 +25,15 @@ from dynamicwam.training.data.packed_dataset import PackedAbsoluteMotionDataset
 from dynamicwam.training.data.paired_index import (
     pair_fits_episode,
     steady_state_offsets,
+    causal_cache_offsets,
+    action_target_times,
+    jittered_cache_age,
 )
 
 CLOCK_KEYS = ("frame_index", "sim_step_index", "sim_time_seconds")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PairRecord:
     episode_index: int
     source_sample_id: int
@@ -274,6 +279,17 @@ def paired_collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
             [float(sample["source_sim_time"]) for sample in batch],
             dtype=torch.float32,
         )
+    if "joint_targets" in batch[0]:
+        collated["source_rgb"] = stack("source_rgb")
+        collated["source_rgb_valid_mask"] = stack("source_rgb_valid_mask")
+        collated["joint_targets"] = {
+            key: torch.stack([sample["joint_targets"][key] for sample in batch])
+            for key in batch[0]["joint_targets"]
+        }
+        for key in ("fast_sim_time",):
+            collated[key] = torch.tensor([sample[key] for sample in batch], dtype=torch.float64)
+        for key in ("source_sample_id", "fast_sample_id", "cache_age_actions"):
+            collated[key] = torch.tensor([sample[key] for sample in batch], dtype=torch.long)
     return collated
 
 
@@ -302,12 +318,23 @@ class PairedWorldActionDataset(Dataset):
         | None = None,
         packed: PackedAbsoluteMotionDataset | None = None,
         episode_partition: dict[int, str] | None = None,
+        cache_age_actions: Iterable[int] | None = None,
+        joint_supervision: bool = False,
+        cache_age_jitter: bool = False,
+        cache_age_seed: int = 0,
     ) -> None:
         self.packed = packed if packed is not None else PackedAbsoluteMotionDataset(
             packed_root,
             max_open_shards=max_open_shards,
         )
         self.source_root = Path(source_root)
+        self.joint_supervision = bool(joint_supervision)
+        self.cache_age_jitter = bool(cache_age_jitter)
+        self.cache_age_seed = int(cache_age_seed)
+        self.epoch = 0
+        self.cache_slot_width = int(execute_horizon)
+        if self.joint_supervision and clock_mode != "required":
+            raise ValueError("joint supervision requires exact simulator timestamps")
         if subset not in {"train", "validation"} or clock_mode not in {"required", "action_only"}:
             raise ValueError("invalid subset or clock_mode")
         self.subset, self.clock_mode = subset, clock_mode
@@ -333,6 +360,10 @@ class PairedWorldActionDataset(Dataset):
             samples, seed=partition_seed, validation_fraction=validation_fraction
         )
         self.episode_partition = assignments
+        # Same holdout identity even when a new recipe expands causal cache ages.
+        self.episode_partition_identity = pairing_identity(samples, assignments,
+            seed=partition_seed, validation_fraction=validation_fraction,
+            clock_mode=clock_mode, offsets=(), stress_offsets=())
         all_samples = samples
         samples = [row for row in samples if assignments[int(row["episode_index"])] == subset]
         total_frames_by_episode = self._total_frames(samples, splits)
@@ -341,9 +372,36 @@ class PairedWorldActionDataset(Dataset):
             every_fast_queries=int(every_fast_queries),
             global_downsample_rate=self.global_downsample_rate,
         )
+        self.legacy_pairing_identity = pairing_identity(all_samples, assignments, seed=partition_seed,
+            validation_fraction=validation_fraction, clock_mode=clock_mode, offsets=offsets,
+            stress_offsets=stress_offsets)
+        if self.cache_age_jitter:
+            support = list(range(int(execute_horizon) * int(every_fast_queries)))
+            if cache_age_actions is not None and sorted(cache_age_actions) != support:
+                raise ValueError("epoch-jitter age support must cover every action in the refresh cycle")
+            # Only one record per slot/source, not one record per possible age.
+            self._sample_ids_by_episode_frame = {}
+            for row in samples:
+                episode, frame = int(row["episode_index"]), int(row["condition_frame_idx"])
+                ids = self._sample_ids_by_episode_frame.setdefault(episode, array("q"))
+                if frame >= len(ids):
+                    ids.extend([-1] * (frame + 1 - len(ids)))
+                if ids[frame] != -1:
+                    raise ValueError("duplicate packed episode/frame in jitter index")
+                ids[frame] = int(row["sample_id"])
+        elif cache_age_actions is not None:
+            offsets = causal_cache_offsets(cache_age_actions=list(cache_age_actions),
+                global_downsample_rate=self.global_downsample_rate)
         self.pairing_identity = pairing_identity(all_samples, assignments, seed=partition_seed,
             validation_fraction=validation_fraction, clock_mode=clock_mode, offsets=offsets,
             stress_offsets=stress_offsets)
+        if self.cache_age_jitter:
+            self.pairing_identity = hashlib.sha256(json.dumps(dict(
+                base_pairing_identity=self.pairing_identity, strategy="causal_slot_epoch_jitter_v1",
+                slot_width=self.cache_slot_width, support=support, seed=self.cache_age_seed,
+            ), sort_keys=True).encode()).hexdigest()
+        self.max_supported_cache_age_actions = (int(execute_horizon) * int(every_fast_queries) - 1
+            if self.cache_age_jitter else max(offsets) // self.global_downsample_rate)
         self.records, self.drop_report = build_pair_records(
             samples,
             offsets=offsets,
@@ -486,8 +544,31 @@ class PairedWorldActionDataset(Dataset):
             self._clocks.popitem(last=False)
         return clock
 
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def set_epoch(self, epoch: int) -> None:
+        # Call before iterating each epoch. Persistent DataLoader workers must
+        # be disabled so their copy receives the new epoch (num_workers=0 also works).
+        if int(epoch) < 0:
+            raise ValueError("dataset epoch must be nonnegative")
+        self.epoch = int(epoch)
+
+    def _record_for_epoch(self, index: int) -> PairRecord:
         record = self.records[int(index)]
+        if not getattr(self, "cache_age_jitter", False) or record.offset_label != "steady_state":
+            return record
+        ids = self._sample_ids_by_episode_frame[record.episode_index]
+        base_age = record.offset // self.global_downsample_rate
+        valid = [age for age in range(base_age, base_age + self.cache_slot_width)
+            if record.source_frame + age * self.global_downsample_rate < len(ids)
+            and ids[record.source_frame + age * self.global_downsample_rate] >= 0]
+        age = jittered_cache_age(source_sample_id=record.source_sample_id,
+            base_age=base_age, slot_width=self.cache_slot_width, valid_ages=valid,
+            seed=self.cache_age_seed, epoch=self.epoch)
+        frame = record.source_frame + age * self.global_downsample_rate
+        return replace(record, fast_frame=frame, fast_sample_id=int(ids[frame]),
+                       offset=age * self.global_downsample_rate)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        record = self._record_for_epoch(int(index))
         source = self.packed[record.source_sample_id]
         fast = self.packed[record.fast_sample_id]
         if int(source["episode_index"]) != record.episode_index:
@@ -550,6 +631,31 @@ class PairedWorldActionDataset(Dataset):
             "state_delta": state_delta,
             "offset_label": record.offset_label,
         }
+        if getattr(self, "joint_supervision", False):
+            source_views, source_masks = (views, masks) if record.offset == 0 else fast_views_from_composite(
+                self._read_frame(replace(record, fast_frame=record.source_frame)))
+            sample["source_rgb"] = torch.from_numpy(source_views)
+            sample["source_rgb_valid_mask"] = torch.from_numpy(source_masks)
+            # Label-only namespace: never unpack this mapping into bridge or
+            # runtime conditioning. No expert future enters the causal cache.
+            frame_indices = clock["frame_index"].reshape(-1).tolist()
+            sim_times = clock["sim_time_seconds"].reshape(-1).tolist()
+            if len(frame_indices) != len(sim_times) or len(set(frame_indices)) != len(frame_indices):
+                raise ValueError("joint targets require unique aligned simulator frame timestamps")
+            frame_times = dict(zip(map(int, frame_indices), map(float, sim_times)))
+            def targets(frame):
+                return torch.tensor(action_target_times(frame_times, frame,
+                    chunk_size=self.chunk_size,
+                    global_downsample_rate=self.global_downsample_rate), dtype=torch.float64)
+            sample["joint_targets"] = {
+                "source_future_latent": source["future_latent"],
+                "source_action_sequence": source["action_sequence"],
+                "source_action_target_times": targets(record.source_frame),
+                "fast_action_target_times": targets(record.fast_frame),
+            }
+            sample.update(fast_sim_time=source_sim_time + delta_seconds,
+                source_sample_id=record.source_sample_id, fast_sample_id=record.fast_sample_id,
+                cache_age_actions=record.offset // self.global_downsample_rate)
         forbidden = {
             "future_latent",
             "action_sequence",

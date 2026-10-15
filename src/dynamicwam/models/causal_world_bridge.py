@@ -62,6 +62,13 @@ class CausalWorldBridge(torch.nn.Module):
             action_dtype=action_dtype, video_dtype=video_dtype,
         )
         cache = outputs["video_cache"]
+        # In flow matching v = noise - clean. Compare future committed clean
+        # actions with this clean estimate, never with the noisy conditioning.
+        action_sigma, _next_sigma, _time = self.schedule.action_step(1)
+        plan = actions - action_sigma.to(actions) * outputs["action_pred"]
+        if detach_cache:
+            plan = plan.detach()
+        own = lambda value: value.detach() if detach_cache and torch.is_tensor(value) else value
         return BridgeTensorBundle(
             video_k=tuple(cache["video_k"]),
             video_v=tuple(cache["video_v"]),
@@ -75,6 +82,13 @@ class CausalWorldBridge(torch.nn.Module):
             else float(source.sim_time),
             null_bridge=False,
             all_video_tokens_valid=cache.get("all_video_tokens_valid", False),
+            interface_version=2,
+            source_action_plan=plan,
+            source_action_sigma=action_sigma.to(actions).detach(),
+            source_motion=own(source.motion),
+            source_motion_interval_valid_mask=source.motion_interval_valid_mask,
+            source_motion_acceleration_valid_mask=source.motion_acceleration_valid_mask,
+            source_rgb=own(source.rgb), source_rgb_valid_mask=source.rgb_valid_mask,
         )
 
     def _joint_step(

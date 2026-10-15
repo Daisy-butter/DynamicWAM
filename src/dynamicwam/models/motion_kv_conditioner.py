@@ -143,9 +143,7 @@ class MotionKVConditioner(nn.Module):
         inputs = torch.cat((normalized, interval[..., None].float(), acceleration[..., None].float()), -1)
         return self.motion_encoder(inputs.to(dtype)) + self.motion_position.to(dtype)
 
-    def prepare_memory(self, current, text, text_mask=None, *, bridge=None):
-        if bridge is None or len(bridge.video_k) != self.layers or len(bridge.video_v) != self.layers:
-            raise ValueError("motion KV requires one frozen world K/V pair per native layer")
+    def _observation_tokens(self, current, text, text_mask=None, *, bridge=None):
         visual, visual_valid = self.encoder(current.rgb, current.rgb_valid_mask)
         dtype, device, batch = visual.dtype, visual.device, visual.shape[0]
         language = self.text_pool(text, text_mask)
@@ -160,10 +158,21 @@ class MotionKVConditioner(nn.Module):
         extra = torch.ones((batch, language.shape[1] + 2 + self.motion_history_count),
                            device=device, dtype=torch.bool)
         observed_valid = torch.cat((visual_valid, extra), 1)
+        return observed, observed_valid
+
+    def _rank_observation(self, seeds, observed, observed_valid, *, current, bridge):
         observed = self.observation_norm(observed)
+        return seeds + self._attention(seeds, self.observation_k(observed),
+                                       self.observation_v(observed), observed_valid)
+
+    def prepare_memory(self, current, text, text_mask=None, *, bridge=None):
+        if bridge is None or len(bridge.video_k) != self.layers or len(bridge.video_v) != self.layers:
+            raise ValueError("motion KV requires one frozen world K/V pair per native layer")
+        observed, observed_valid = self._observation_tokens(current, text, text_mask, bridge=bridge)
+        dtype, device, batch = observed.dtype, observed.device, observed.shape[0]
         seeds = self.rank_queries.to(dtype).expand(batch, -1, -1)
-        rank_observation = seeds + self._attention(seeds, self.observation_k(observed),
-                                                   self.observation_v(observed), observed_valid)
+        rank_observation = self._rank_observation(seeds, observed, observed_valid,
+                                                current=current, bridge=bridge)
         null = torch.as_tensor(bridge.null_bridge, device=device, dtype=torch.bool).reshape(-1)
         if null.numel() == 1:
             null = null.expand(batch)

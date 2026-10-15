@@ -542,6 +542,10 @@ class MultiratePolicy:
             source_id=source_id,
             sim_time=float(packet["sim_time"]),
         )
+        if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) == 2:
+            source_views, source_mask = fast_views_from_composite(packet['fast_frame'])
+            source.rgb = torch.from_numpy(source_views).unsqueeze(0).to(runner.device)
+            source.rgb_valid_mask = torch.from_numpy(source_mask).unsqueeze(0).to(runner.device)
         noise = SourceNoise(future_latent=future, actions=runner._fresh_noisy_actions(generator=generator))
         with torch.inference_mode():
             bridge = wrapper.bridge(
@@ -602,6 +606,15 @@ class MultiratePolicy:
             if self.reuse_action_noise:
                 noise = align_replanning_noise(noise, self._previous_fast_noise,
                     packet['action_index'], self._previous_noise_index)
+            if getattr(wrapper.fast_conditioner, 'interface_version', 1) == 2:
+                # The generic adapter is only reachable for an explicitly
+                # labelled zero-prefix ablation of an RTC-trained checkpoint.
+                current.committed_prefix = torch.zeros_like(noise)
+                current.committed_prefix_lengths = torch.zeros(noise.shape[0], device=noise.device, dtype=torch.long)
+                current.action_target_offsets = (torch.arange(1, noise.shape[1] + 1,
+                    device=noise.device, dtype=noise.dtype)[None].expand(noise.shape[0], -1)
+                    * float(self.runtime.action_interval_seconds))
+                current.observation_delay_seconds = noise.new_zeros(noise.shape[0])
             if self.fast_graph is not None:
                 normalized = self.fast_graph.sample(current, bridge, text_tensor, text_mask, noise)
                 actions = self.runtime.action_normalizer.denormalize(normalized)

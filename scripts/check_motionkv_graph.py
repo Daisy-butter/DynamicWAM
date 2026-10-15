@@ -41,7 +41,7 @@ def main():
     args = parse_args()
     import numpy as np
     import torch
-    from dynamicwam.inference.native_fast_graph import NativeFastGraph
+    from dynamicwam.inference.native_fast_graph import NativeFastGraph, _BRIDGE_CONTEXT_TENSORS
     from dynamicwam.models.multirate_types import BridgeAge, CurrentObservation, pad_text_embeddings
     from dynamicwam.models.rtc_prefix import PrefixCondition, prefix_mask
     from dynamicwam.observations.multiview import fast_views_from_composite
@@ -88,6 +88,11 @@ def main():
         with torch.inference_mode():
             policy._install_bridge(policy._build_bridge_completed(packet))
             world = policy.bridge
+            joint_v2 = getattr(model.fast_conditioner, "interface_version", 1) == 2
+            if joint_v2:
+                # Match MotionKVPolicy._install_bridge source-cache lifecycle.
+                world = model.fast_conditioner.prepare_source_cache(world)
+            report["conditioner_interface_version"] = getattr(model.fast_conditioner, "interface_version", 1)
             if world.null_bridge is not False or not world.all_video_tokens_valid:
                 raise RuntimeError("fixture must produce a non-null dense real world cache")
             views, masks = fast_views_from_composite(packet["fast_frame"])
@@ -99,6 +104,9 @@ def main():
                 motion_acceleration_valid_mask=motion["absolute_motion_acceleration_valid_mask"],
                 text_embeddings=text_rows, rgb_valid_mask=torch.from_numpy(masks).unsqueeze(0).to(device),
                 age=BridgeAge(0., 0, True, (state - policy.bridge_state).reshape(-1)))
+            if joint_v2:
+                current.action_target_offsets = torch.arange(1, policy.runtime.chunk_size + 1,
+                    device=device,dtype=torch.float32)[None] * float(policy.runtime.action_interval_seconds)
             # Match the real serving wrapper's shape-stable masked text layout.
             text, text_mask = pad_rtc_text(text_rows)
             report['serving_text_shape'] = list(text.shape)
@@ -123,11 +131,17 @@ def main():
                 ("prefix_actions", prefix.actions), ("prefix_lengths", prefix.lengths)]
             source_inputs += [(f"k{i}", x) for i, x in enumerate(world.video_k)]
             source_inputs += [(f"v{i}", x) for i, x in enumerate(world.video_v)]
+            if joint_v2:
+                source_inputs.append(("action_target_offsets",current.action_target_offsets))
+            source_inputs += [(name, getattr(world, name)) for name in _BRIDGE_CONTEXT_TENSORS
+                              if torch.is_tensor(getattr(world, name))]
             source_hash = tensor_fingerprint(source_inputs)
 
             def eager(obs, cache, cond):
+                effective = d0 if cond is None else cond
+                obs, cache = graph._canonical_context(obs, cache, noise, effective)
                 memory = model.prepare_fast_memory(obs, cache, text, text_mask)
-                return model.sample_fast_actions(obs, cache, memory, noise, prefix=cond)
+                return model.sample_fast_actions(obs, cache, memory, noise, prefix=effective)
 
             def replay(obs, cache, cond):
                 return graph.sample(obs, cache, text, text_mask, noise, prefix=cond)
@@ -145,6 +159,22 @@ def main():
                 ("combined_values_changed", robot, refreshed, changed_prefix),
                 ("return_to_none_clears_previous_prefix", current, world, None),
                 ("return_to_d0", current, world, d0)]
+            if joint_v2:
+                new_source_rgb = dataclasses.replace(world, source_rgb=world.source_rgb + .05)
+                new_source_rgb = model.fast_conditioner.prepare_source_cache(new_source_rgb)
+                cases += [
+                    ("source_clean_plan_changed", current, dataclasses.replace(world,
+                        source_action_plan=world.source_action_plan + .125), prefix),
+                    ("source_motion_changed", current, dataclasses.replace(world,
+                        source_motion=world.source_motion + .25), prefix),
+                    ("source_rgb_cache_refreshed", current, new_source_rgb, prefix),
+                    ("source_plan_sigma_changed", current, dataclasses.replace(world,
+                        source_action_sigma=torch.as_tensor(.4, device=device)), prefix),
+                    ("observation_delay_changed", dataclasses.replace(current,
+                        observation_delay_seconds=.125), world, prefix),
+                    ("physical_action_target_offsets_changed", dataclasses.replace(current,
+                        action_target_offsets=current.action_target_offsets * 1.25), world, prefix),
+                ]
             for name, obs, cache, cond in cases:
                 expected = eager(obs, cache, cond)
                 actual = replay(obs, cache, cond)
@@ -158,6 +188,15 @@ def main():
                 torch.testing.assert_close(graph.current.motion, obs.motion, atol=0, rtol=0)
                 for src, dst in zip((*cache.video_k, *cache.video_v), (*graph.bridge.video_k, *graph.bridge.video_v), strict=True):
                     torch.testing.assert_close(src, dst, atol=0, rtol=0)
+                if joint_v2:
+                    for field in _BRIDGE_CONTEXT_TENSORS:
+                        source_value = getattr(cache, field)
+                        if source_value is not None:
+                            torch.testing.assert_close(getattr(graph.bridge, field),
+                                torch.as_tensor(source_value, device=device), atol=0, rtol=0)
+                    torch.testing.assert_close(graph.current.committed_prefix, effective.actions, atol=0, rtol=0)
+                    torch.testing.assert_close(graph.current.committed_prefix_lengths, effective.lengths, atol=0, rtol=0)
+                    torch.testing.assert_close(graph.current.action_target_offsets, obs.action_target_offsets, atol=0, rtol=0)
                 mask = prefix_mask(effective).unsqueeze(-1).expand_as(actual)
                 torch.testing.assert_close(actual[mask], effective.actions[mask], atol=0, rtol=0)
                 if not bool(torch.isfinite(actual).all()):

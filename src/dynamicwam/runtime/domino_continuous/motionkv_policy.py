@@ -88,6 +88,14 @@ class MotionKVPolicy(MultiratePolicy):
             raise RuntimeError('MotionKV requires a positive audited physical action interval')
         self._warmup_graph()
 
+    def _install_bridge(self, value):
+        super()._install_bridge(value)
+        conditioner = self.fast_model.fast_conditioner
+        if getattr(conditioner, 'interface_version', 1) == 2:
+            # Read-only inference cache is rebuilt with each source, cleared by
+            # reset, and never reused across weight or episode versions.
+            self.bridge = conditioner.prepare_source_cache(self.bridge)
+
     def reset(self):
         super().reset()
         self._queries = 0
@@ -177,7 +185,9 @@ class MotionKVPolicy(MultiratePolicy):
             refreshed=refreshed, refresh_reason=refresh_reason, cache_age_actions=age,
             cache_age_seconds=float(packet['sim_time'])-self.bridge_sim_time,
             source_action_index=self.bridge_action_index, observation_action_index=origin,
-            prefix_length=length, fast_steps=10, source_bridge='immutable_official',
+            prefix_length=length, fast_steps=10,
+            source_bridge=self.contract['native_multirate']['source_bridge'],
+            motion_interface_version=getattr(self.fast_model.fast_conditioner, 'interface_version', 1),
             rtc_controller=RTC_TIMESTAMPED_CONTROLLER, total_policy_ms=(time.perf_counter()-started)*1000,
             action_interval_seconds=float(self.runtime.action_interval_seconds),
             graph={key: value for key, value in self.fast_graph.stats.items() if key != 'last_signature'},
@@ -210,6 +220,14 @@ class MotionKVPolicy(MultiratePolicy):
             raw = torch.from_numpy(raw_prefix).to(device=device, dtype=noise.dtype).unsqueeze(0)
             prefix_actions[:, :length] = self.runtime.action_normalizer.normalize(raw)
         prefix = PrefixCondition(prefix_actions, torch.tensor([length], dtype=torch.long, device=device))
+        current.committed_prefix = prefix.actions
+        current.committed_prefix_lengths = prefix.lengths
+        # Both train and deploy expose physical endpoint offsets. Training
+        # uses recorded simulation timestamps; deployment uses this controller's
+        # audited fixed action interval. Neither substitutes model wall latency.
+        current.action_target_offsets = (torch.arange(1, noise.shape[1] + 1,
+            device=device, dtype=noise.dtype)[None] * float(packet['_rtc_action_interval_s']))
+        current.observation_delay_seconds = noise.new_tensor([length * float(packet['_rtc_action_interval_s'])])
         torch.cuda.synchronize(device)
         preprocess_ms = (time.perf_counter()-started)*1000
         sampled = time.perf_counter()

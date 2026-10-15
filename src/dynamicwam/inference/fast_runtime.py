@@ -154,7 +154,7 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
     if native:
         if not modules.get('native_multirate') or modules.get('architecture') != 'native':
             raise RuntimeError('native checkpoint architecture contract mismatch')
-        if not modules.get('fast_conditioner', {}).get('world_aware') or native.get('version') != 1:
+        if not modules.get('fast_conditioner', {}).get('world_aware') or native.get('version') not in (1, 2):
             raise RuntimeError('native checkpoint lacks observation-guided world router')
         steps = int(native.get('fast_steps', 0))
         if steps != modules.get('fast_steps') or steps not in (1, 2, 4, 10):
@@ -162,9 +162,20 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
         expected = BridgeSchedule.from_flow_match(**contract['schedule']).with_action_steps(steps)
         if modules.get('fast_schedule') != expected.to_config():
             raise RuntimeError('serialized fast solver differs from trained native schedule')
-        if native.get('source_bridge') != 'immutable_official' or not native.get('teacher', {}).get('sha256'):
-            raise RuntimeError('native slow bridge must identify its immutable official weights')
-        if native.get('world_refresh_actions') != 16 or contract.get('max_age_actions') != 12:
+        source = native.get('source_bridge')
+        if source == 'student_joint':
+            if native.get('version') != 2 or modules['fast_conditioner'].get('interface_version') != 2:
+                raise RuntimeError('joint slow bridge requires the trained v2 motion interface')
+            if contract.get('max_age_actions') != 15:
+                raise RuntimeError('joint slow bridge requires causal age support 0..15')
+        elif source == 'immutable_official':
+            if native.get('version') != 1 or not native.get('teacher', {}).get('sha256'):
+                raise RuntimeError('native slow bridge must identify its immutable official weights')
+            if contract.get('max_age_actions') != 12:
+                raise RuntimeError('legacy native cache age support changed')
+        else:
+            raise RuntimeError('unknown native source bridge provenance')
+        if native.get('world_refresh_actions') != 16:
             raise RuntimeError('native trained world refresh support mismatch')
     if modules.get('action_normalization') != config.get('action_normalization'):
         raise RuntimeError('module and checkpoint normalizers disagree')

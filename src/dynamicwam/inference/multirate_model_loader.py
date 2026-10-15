@@ -23,6 +23,11 @@ from dynamicwam.models.fast_conditioner import FastConditioner
 
 def build_fast_conditioner(spec):
     if spec.get('motion_kv', False):
+        if spec.get('interface_version', 1) == 2:
+            from dynamicwam.models.joint_motion_kv_conditioner import JointMotionKVConditioner
+            return JointMotionKVConditioner(**spec)
+        if spec.get('interface_version', 1) != 1:
+            raise RuntimeError('unknown MotionKV interface version')
         from dynamicwam.models.motion_kv_conditioner import MotionKVConditioner
         return MotionKVConditioner(**spec)
     if spec.get('world_aware', False):
@@ -93,6 +98,11 @@ def install_immutable_source_backbone(backbone, contract, normalization):
     despite frozen video weights, so deployment validates and restores it.
     """
     native = contract['native_multirate']
+    if native.get('source_bridge') == 'student_joint':
+        if native.get('version') != 2:
+            raise RuntimeError('joint source bridge requires version 2 provenance')
+        backbone.eval().requires_grad_(False)
+        return
     if native.get('source_bridge') != 'immutable_official':
         raise RuntimeError('unknown native bridge provenance')
     identity = native['teacher']

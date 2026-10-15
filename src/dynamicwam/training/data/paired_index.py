@@ -83,3 +83,55 @@ def deployment_age_weights(
         int(offset): 1.0 if step == 0 else 2.0
         for step, offset in enumerate(offsets)
     }
+
+
+def causal_cache_offsets(*, cache_age_actions, global_downsample_rate: int) -> list[int]:
+    """Map an explicitly trained cache-age support to demonstration frames.
+
+    Cache age describes old information at the current observation, not a future
+    observation or a claim about fixed demonstration action duration.
+    """
+    ages = list(cache_age_actions)
+    if (global_downsample_rate < 1 or not ages or any(
+        isinstance(age, bool) or not isinstance(age, int) or age < 0 for age in ages
+    ) or len(set(ages)) != len(ages) or 0 not in ages):
+        raise ValueError("cache ages must be unique nonnegative integers including zero")
+    return [age * global_downsample_rate for age in sorted(ages)]
+
+
+def action_target_times(frame_times: dict[int, float], condition_frame: int, *,
+                        chunk_size: int, global_downsample_rate: int) -> list[float]:
+    """Exact simulator endpoint times for packed target joint positions.
+
+    These are TARGET endpoint times, not action command START times. A runtime
+    queue must convert explicitly using its own anchor/interval semantics.
+    """
+    import math
+    indices = [condition_frame] + action_label_indices(condition_frame,
+        chunk_size=chunk_size, global_downsample_rate=global_downsample_rate)
+    try:
+        times = [float(frame_times[i]) for i in indices]
+    except KeyError as exc:
+        raise ValueError(f"missing simulator timestamp for action label frame {exc.args[0]}") from exc
+    if not all(math.isfinite(t) for t in times) or any(b <= a for a, b in zip(times, times[1:])):
+        raise ValueError("action target simulator timestamps must be finite and strictly increasing")
+    return times[1:]
+
+
+def jittered_cache_age(*, source_sample_id: int, base_age: int, slot_width: int,
+                       valid_ages, seed: int, epoch: int) -> int:
+    """A reproducible draw within one causal cache slot; independent of rank.
+
+    Source identity and epoch vary the draw without expanding pair records.
+    The caller supplies only ages with a complete packed action target window.
+    """
+    import hashlib
+    import json
+    valid = sorted(int(age) for age in valid_ages)
+    if slot_width < 1 or epoch < 0 or not valid or any(
+        age < base_age or age >= base_age + slot_width for age in valid
+    ):
+        raise ValueError("jitter ages must fit one nonempty causal cache slot")
+    digest = hashlib.sha256(json.dumps([int(seed), int(epoch), int(source_sample_id),
+        int(base_age)], separators=(",", ":")).encode()).digest()
+    return valid[int.from_bytes(digest[:8], "big") % len(valid)]
