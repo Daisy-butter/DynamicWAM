@@ -22,6 +22,7 @@ except ImportError:
 
 PROTOCOL = "continuous_world_actual_latency_motionkv_rtc_h4r4_v1"
 SCALED_PROTOCOL = "continuous_world_scaled_wall_motionkv_rtc_h4r4_v1"
+JOINT_V3_PROTOCOL = "continuous_world_actual_latency_joint_motionkv_async_v3"
 
 
 def protocol_for_rate(simulation_rate):
@@ -37,6 +38,7 @@ class PrefixReservation:
     actions: np.ndarray
     observation_physics_s: float
     deadline_physics_s: float
+    generation: int
 
 
 class CommittedActionQueue:
@@ -69,17 +71,35 @@ class CommittedActionQueue:
         except KeyError as exc:
             raise RealtimeViolation("RTC queue underrun", diagnostics={"origin": origin, "count": count}) from exc
 
+    def proposal(self, origin):
+        """Snapshot the prior, replaceable proposal on this query's time grid.
+
+        Only a reservation makes rows irrevocable. Invalid tail rows are zero
+        with an explicit mask; never repeat the last prediction beyond coverage.
+        These snapshots cannot alias the live queue.
+        """
+        actions = np.zeros((self.horizon, 14), dtype=np.float64)
+        valid = np.zeros(self.horizon, dtype=bool)
+        for row in range(self.horizon):
+            if origin + row in self.rows:
+                actions[row] = self.rows[origin + row]
+                valid[row] = True
+        return actions, valid
+
     def reserve(self, origin, observation_physics_s, length=4):
         if not isinstance(length, int) or not 0 < length <= self.prefix_max:
             raise ValueError("committed prefix exceeds trained limit; no truncation")
         prefix = self.take(origin, length).copy()
         prefix.setflags(write=False)
         return PrefixReservation(origin, prefix, float(observation_physics_s),
-                                 float(observation_physics_s) + length * self.interval_s)
+                                 float(observation_physics_s) + length * self.interval_s,
+                                 self.generation)
 
     def install(self, actions, reservation, *, ready_physics_s):
         output = self.validate(actions)
         d = len(reservation.actions)
+        if reservation.generation != self.generation:
+            raise RuntimeError("RTC stale reservation: queue generation changed")
         if not math.isfinite(ready_physics_s) or ready_physics_s > reservation.deadline_physics_s + 1e-9:
             raise RealtimeViolation("RTC late suffix: inference exceeded committed prefix",
                 diagnostics={"ready_physics_s": ready_physics_s,
@@ -105,7 +125,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                                execute_horizon=4, prefix_max=4, max_backlog_s=.25,
                                infer_clock_tolerance_s=.02, frame_period_s=.16,
                                request_timeout_s=120., simulation_rate=1., clock=time.perf_counter,
-                               sleep=time.sleep):
+                               sleep=time.sleep, joint_v3=False, replay_recorder=None):
     """Run a strict H4/R4 episode, retaining the native session's video/events.
 
     Session must use fixed training timing; physical v/a retiming would change
@@ -117,6 +137,10 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
     this separate protocol cannot claim actual-1x realtime validity.
     """
     protocol = protocol_for_rate(simulation_rate)
+    if joint_v3:
+        if simulation_rate != 1.:
+            raise ValueError("joint v3 requires the declared 1x continuous clock")
+        protocol = JOINT_V3_PROTOCOL
     simulation_rate = float(simulation_rate)
     if worker.busy:
         raise RuntimeError("inference worker must be drained before an episode")
@@ -137,6 +161,10 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         raise ValueError("trained action interval must contain an integral number of physics ticks")
     wall0, phys0 = clock(), float(session.physics_time())
     object0 = np.asarray(session.object_position()).copy()
+    if replay_recorder is not None:
+        if not joint_v3:
+            raise ValueError("development replay requires the explicit joint-v3 controller")
+        replay_recorder.begin(phys0,session.current_drive_targets())
     queue = CommittedActionQueue(interval_s=action_interval_s)
     captures, requests, blocks, tracking = [], [], [], []
     active = pending = reservation = track = None
@@ -202,10 +230,16 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                 source.update(first_suffix_command_wall_s=wall(), first_suffix_command_physics_s=physical(),
                     observation_to_first_command_wall_s=wall() - source["observation_wall_s"],
                     observation_to_first_command_physics_s=physical() - source["observation_physics_s"])
+            step_start = physical() if replay_recorder is not None else None
             session.step_command(q, dq)
-            tracking.append(np.abs(np.asarray(session.current_qpos()) - q))
+            measured = np.asarray(session.current_qpos())
+            tracking.append(np.abs(measured - q))
+            if replay_recorder is not None:
+                replay_recorder.record_step(step_start,physical(),q,dq,measured)
             overlap_ticks += int(worker.busy)
             while block_rows < len(track.row_times) and physical() + 1e-8 >= track_start + track.row_times[block_rows]:
+                if replay_recorder is not None:
+                    replay_recorder.record_target(completed,track_start+track.row_times[block_rows],q)
                 completed += 1
                 block_rows += 1
                 session.record_target_metrics()
@@ -219,7 +253,10 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                     terminal_reason = "action_budget_exhausted"
         else:
             which = "inference" if worker.busy else "capture"
+            step_start = physical() if replay_recorder is not None else None
             session.step_command(None, None)
+            if replay_recorder is not None:
+                replay_recorder.record_step(step_start,physical(),None,None,session.current_qpos())
         now = clock()
         max_gap = max(max_gap, now - last_tick)
         last_tick = now
@@ -289,6 +326,12 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         if reservation is not None and physical() > reservation.deadline_physics_s + 1e-9:
             fail("RTC query capture exceeded committed prefix deadline")
         prefix = np.empty((0, 14), dtype=np.float64) if reservation is None else reservation.actions.copy()
+        previous_actions, previous_valid = queue.proposal(record["action_origin"])
+        # Endpoints are on the immutable queue grid, relative to actual capture.
+        # Initial source priming is a hypothetical source plan, never executed.
+        target_offsets = np.arange(1, 17, dtype=np.float64) * action_interval_s
+        if grid0 is not None:
+            target_offsets += grid0 + record["action_origin"] * action_interval_s - record["physics_s"]
         # The DOMINO packet is the raw head-over-two-wrists composite; letterbox
         # conversion belongs to the slow policy preprocessor, not this packet.
         if "frame" in packet:
@@ -296,6 +339,11 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         packet["sim_time"] = record["physics_s"]
         packet.update(_sampling_seed=sampling_seed(task, episode_seed, query), _reset_policy=query == 0,
                       _rtc_prefix_actions=prefix, _rtc_prefix_length=len(prefix),
+                      _rtc_previous_actions=previous_actions,
+                      _rtc_previous_valid=previous_valid,
+                      _rtc_queue_generation=queue.generation,
+                      _rtc_action_target_offsets=target_offsets,
+                      _rtc_bootstrap_only=bool(joint_v3 and query == 0),
                       _rtc_observation_action_index=record["action_origin"],
                       _rtc_cache_age_actions=record["action_origin"] % 16,
                       _rtc_observation_physics_s=record["physics_s"],
@@ -312,6 +360,11 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         # separately: the model may finish before post-capture catch-up does.
         dispatch_wall, dispatch_physics = wall(), physical()
         object_at_dispatch = np.asarray(session.object_position()).tolist()
+        if replay_recorder is not None:
+            replay_recorder.record_query(query,packet,dispatch_wall_s=dispatch_wall,
+                dispatch_physics_s=dispatch_physics,
+                previous_publication_physics_s=requests[last_handoff_query]["install_physics_s"] if queue.rows else None,
+                motion_history=session.history_diagnostics())
         request_id = worker.submit(packet)
         before_catch_up = wall()
         early = None
@@ -362,6 +415,12 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                   "simulation_rate": simulation_rate,
                   "action_origin": record["action_origin"], "cache_age_actions": record["action_origin"] % 16,
                   "prefix_actions_sha256": hashlib.sha256(prefix.tobytes()).hexdigest(),
+                  "previous_proposal_sha256": hashlib.sha256(previous_actions.tobytes()).hexdigest(),
+                  "previous_proposal_valid_rows": int(previous_valid.sum()),
+                  "queue_generation_at_dispatch": queue.generation,
+                  "bootstrap_only": bool(joint_v3 and query == 0),
+                  "action_target_offsets": target_offsets.tolist(),
+                  "replacement_semantics": "immutable_prefix_then_atomic_unexecuted_tail",
                   "suffix_not_before_physics_s": None if reservation is None else reservation.deadline_physics_s,
                   "installed": False, "rows_dropped": 0, "guidance": False,
                   "rtc_strategy": "trained_clean_prefix_conditioning", "prefetch": reservation is not None,
@@ -406,6 +465,16 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                      position_guard_clipped_coordinates=int(np.count_nonzero(actions != raw)),
                      policy_diagnostics=result.get("policy_timing", result.get("policy_diagnostics", result.get("metadata", {}))))
             if reservation is None:
+                if joint_v3:
+                    # Prime the source world under continuous hold. Do not
+                    # execute predictions whose assumed times elapsed during
+                    # bootstrap. A fresh observation replans while H4 hold rows
+                    # execute on the now-established physical queue grid.
+                    hold = np.asarray(session.current_qpos(), dtype=np.float64)
+                    if hold.shape != (14,) or not np.isfinite(hold).all():
+                        raise RuntimeError("invalid joint v3 bootstrap hold state")
+                    actions = np.repeat(hold[None], 16, axis=0)
+                    r["bootstrap_actions_executed"] = False
                 queue.bootstrap(actions)
                 # Keep grid unset until the first track has been planned. All
                 # bootstrap/planning wall latency therefore advances under hold.
@@ -430,6 +499,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                      suffix_effective_physics_s=physical() if reservation is None else reservation.deadline_physics_s,
                      observation_to_suffix_effect_s=(physical() if reservation is None else reservation.deadline_physics_s) - r["observation_physics_s"])
             last_handoff_query = r["query_index"]
+        if replay_recorder is not None and not terminal:
+            replay_recorder.record_result(r,raw)
         r["stop_reason"] = stopped() if terminal else None
         requests.append(r)
         sink(r)
@@ -494,14 +565,21 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             finish_capture()
         if stopped() is not None:
             break
-        if track is None and queue.rows:
+        if track is None and queue.rows and not (
+                replay_recorder is not None and grid0 is None and pending is not None):
             start_block()
         if stopped() is not None:
             break
+        # Development-only future-label cameras also observe the continuous
+        # bootstrap hold. Finish an outstanding readback before starting its
+        # first track; this extra acquisition time remains on the real clock.
+        if (replay_recorder is not None and grid0 is None and worker.busy
+                and pending is None and physical() + 1e-8 >= next_head):
+            capture(False)
         # Do not let optional history occupy the next mandatory query exposure.
         # Missed frames stay missing (and carry their actual timestamp/masks).
         if track is not None and physical() + 1e-8 >= next_head:
-            if (pending is None and track_start + track.duration - physical() > 2 * frame_period_s + 1e-8):
+            if (pending is None and track_start + track.duration - physical() > (1 if replay_recorder is not None else 2) * frame_period_s + 1e-8):
                 capture(False)
             else:
                 while next_head <= physical() + 1e-8:
@@ -524,6 +602,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
     feedback = np.asarray(tracking)
     capture_gaps = np.diff([r["physics_s"] for r in captures if r["delivered"]])
     return {"protocol": protocol, "controller": "committed_clean_prefix_rtc_fixed_grid_h4r4",
+            "joint_v3": bool(joint_v3),
+            "bootstrap_mode": "prime_then_hold" if joint_v3 else "legacy_d0_plan",
             "timing_mode": "nominal_training_timing", "limit_retiming": False,
             "clock": "actual_wall_clock" if simulation_rate == 1 else "scaled_wall_clock",
             "simulation_rate": simulation_rate, "initial_physics_s": phys0,

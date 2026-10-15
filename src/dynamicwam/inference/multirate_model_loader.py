@@ -23,7 +23,7 @@ from dynamicwam.models.fast_conditioner import FastConditioner
 
 def build_fast_conditioner(spec):
     if spec.get('motion_kv', False):
-        if spec.get('interface_version', 1) == 2:
+        if spec.get('interface_version', 1) in (2, 3):
             from dynamicwam.models.joint_motion_kv_conditioner import JointMotionKVConditioner
             return JointMotionKVConditioner(**spec)
         if spec.get('interface_version', 1) != 1:
@@ -99,8 +99,8 @@ def install_immutable_source_backbone(backbone, contract, normalization):
     """
     native = contract['native_multirate']
     if native.get('source_bridge') == 'student_joint':
-        if native.get('version') != 2:
-            raise RuntimeError('joint source bridge requires version 2 provenance')
+        if native.get('version') not in (2, 3):
+            raise RuntimeError('joint source bridge requires versioned student provenance')
         backbone.eval().requires_grad_(False)
         return
     if native.get('source_bridge') != 'immutable_official':

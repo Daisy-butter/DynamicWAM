@@ -44,6 +44,22 @@ from dynamicwam.runtime.ciwam.wam.multirate_control import ControlledMultirateCo
 from dynamicwam.runtime.ciwam.wam.policy import DynamicWAMPolicy
 
 
+def normalize_source_rtc_prefix(packet, normalizer, reference):
+    """Use only the immutable source query's already committed raw commands."""
+    length=packet['_rtc_prefix_length']
+    raw=np.asarray(packet['_rtc_prefix_actions'],dtype=np.float32)
+    if type(length) is not int or not 0<=length<=4 or raw.shape!=(length,reference.shape[-1]) or not np.isfinite(raw).all():
+        raise ValueError('source RTC prefix must be finite [d,14] with d in 0..4')
+    if reference.ndim!=3 or reference.shape[0]!=1 or reference.shape[1]!=16:
+        raise ValueError('source RTC serving requires one 16-row action chunk')
+    actions=torch.zeros_like(reference)
+    if length:
+        source_raw=torch.from_numpy(raw.copy()).to(device=reference.device,dtype=reference.dtype)[None]
+        actions[:,:length]=normalizer.normalize(source_raw)
+    lengths=torch.tensor([length],device=reference.device,dtype=torch.long)
+    return actions,lengths
+
+
 class MultiratePolicy:
     def __init__(
         self,
@@ -497,22 +513,35 @@ class MultiratePolicy:
         runner = self.base.runner
         device = torch.device(runner.device)
         stream = None
-        if device.type == "cuda" and self.worker is not None:
+        if device.type == "cuda" and (self.worker is not None or getattr(self, "_async_world", None) is not None):
             if self._producer_stream is None:
                 self._producer_stream = torch.cuda.Stream(device=device)
             stream = self._producer_stream
             # Clones may have been produced on any caller stream, not default.
             for event in packet.get("_cuda_ready_events", ()):
                 stream.wait_event(event)
-        with torch.inference_mode(), (torch.cuda.stream(stream) if stream is not None else nullcontext()):
-            value = self._build_bridge(packet)
-            if stream is not None:
-                done = torch.cuda.Event()
-                done.record(stream)
-        if stream is not None:
-            done.synchronize()  # producer thread only; consumers never see partial K/V
-        if self.worker is None:
+        done = None
+        try:
+            with torch.inference_mode(), (torch.cuda.stream(stream) if stream is not None else nullcontext()):
+                try:
+                    value = self._complete_bridge_value(self._build_bridge(packet))
+                finally:
+                    if stream is not None:
+                        event = torch.cuda.Event()
+                        event.record(stream)
+                        done = event
+        finally:
+            if done is not None:
+                # Also drain already-enqueued work before propagating a Python
+                # producer error. This waits only this owned stream; no device
+                # recovery, global synchronization, or partially-ready publish.
+                done.synchronize()
+        if self.worker is None and getattr(self, "_async_world", None) is None:
             self._synchronous_slow_builds += 1
+        return value
+
+    def _complete_bridge_value(self, value):
+        """Optional producer-side derived context, before the completion event."""
         return value
 
     def _build_bridge(self, packet: dict[str, Any]):
@@ -542,11 +571,17 @@ class MultiratePolicy:
             source_id=source_id,
             sim_time=float(packet["sim_time"]),
         )
-        if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) == 2:
+        if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) >= 2:
             source_views, source_mask = fast_views_from_composite(packet['fast_frame'])
             source.rgb = torch.from_numpy(source_views).unsqueeze(0).to(runner.device)
             source.rgb_valid_mask = torch.from_numpy(source_mask).unsqueeze(0).to(runner.device)
+        if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) == 3:
+            source.action_target_offsets = torch.as_tensor(
+                packet['_rtc_action_target_offsets'],device=runner.device,dtype=torch.float64)[None].clone()
         noise = SourceNoise(future_latent=future, actions=runner._fresh_noisy_actions(generator=generator))
+        if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) == 3:
+            source.committed_prefix,source.committed_prefix_lengths = normalize_source_rtc_prefix(
+                packet,self.runtime.action_normalizer,noise.actions)
         with torch.inference_mode():
             bridge = wrapper.bridge(
                 wrapper.backbone,

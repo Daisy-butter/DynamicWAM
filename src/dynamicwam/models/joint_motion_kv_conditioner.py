@@ -21,8 +21,8 @@ JOINT_MOTIONKV_INTERFACE_VERSION = 2
 class JointMotionKVConditioner(MotionKVConditioner):
     def __init__(self, *, action_dim=14, interface_version=2,
                  correction_layers=None, require_source_rgb=True, **kwargs):
-        if int(interface_version) != JOINT_MOTIONKV_INTERFACE_VERSION:
-            raise ValueError("joint MotionKV requires interface version 2")
+        if int(interface_version) not in (2, 3):
+            raise ValueError("joint MotionKV requires interface version 2 or 3")
         super().__init__(**kwargs)
         self.interface_version = int(interface_version)
         self.action_dim = int(action_dim)
@@ -35,7 +35,15 @@ class JointMotionKVConditioner(MotionKVConditioner):
         d = self.world_dim
         self.visual_innovation = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.SiLU(), nn.Linear(d, d))
         self.motion_innovation = nn.Sequential(nn.Linear(14, d), nn.SiLU(), nn.Linear(d, d))
-        self.plan_innovation = nn.Sequential(nn.Linear(3 * self.action_dim + 6, d), nn.SiLU(), nn.Linear(d, d))
+        plan_width = 3 * self.action_dim + 6 if self.interface_version == 2 else 4 * self.action_dim + 8
+        self.plan_innovation = nn.Sequential(nn.Linear(plan_width, d), nn.SiLU(), nn.Linear(d, d))
+        if self.interface_version == 3:
+            # Tiny forecast in the existing native statistic space. Inputs are
+            # exclusively source world K/V, source motion/masks and elapsed time.
+            self.motion_forecast = nn.Sequential(nn.Linear(self.world_head_dim + 14 * self.motion_history_count + 3, d),
+                nn.SiLU(), nn.Linear(d, 12 * self.motion_history_count))
+            nn.init.zeros_(self.motion_forecast[-1].weight)
+            nn.init.zeros_(self.motion_forecast[-1].bias)
         self.innovation_kind = nn.Parameter(torch.randn(1, 3, d) * .02)
         # New information must not alter the V1 softmax normalizer at migration.
         # Loaded nonzero K/V heads train this gate first, then innovation paths.
@@ -55,7 +63,7 @@ class JointMotionKVConditioner(MotionKVConditioner):
         if self.training or any(p.requires_grad for p in self.parameters()):
             raise RuntimeError("source visual caching requires frozen eval weights")
         if bridge.interface_version != self.interface_version or bridge.source_rgb is None:
-            raise ValueError("source visual caching requires a version 2 RGB snapshot")
+            raise ValueError("source visual caching requires a matching versioned RGB snapshot")
         visual, valid = self.encoder(bridge.source_rgb, bridge.source_rgb_valid_mask)
         return replace(bridge, source_visual_tokens=visual.clone(), source_visual_valid=valid.clone())
 
@@ -68,7 +76,78 @@ class JointMotionKVConditioner(MotionKVConditioner):
             raise ValueError("joint context scalar batch mismatch")
         return value[:, None]
 
+    def _normalize_motion(self, motion, interval, acceleration):
+        valid = torch.cat((interval[..., None].expand(-1, -1, 9),
+                           (acceleration & interval)[..., None].expand(-1, -1, 3)), -1)
+        safe = torch.where(valid, motion.float(), self.motion_mean.float()[None, None])
+        normalized = (safe - self.motion_mean.float()) / self.motion_scale.float()
+        return normalized.sign() * torch.log1p(normalized.abs()), valid
+
+    def predict_current_motion(self, current, bridge):
+        if self.interface_version != 3:
+            raise ValueError("motion forecasting requires interface version 3")
+        source = bridge.source_motion
+        if source is None or bridge.source_motion_interval_valid_mask is None or bridge.source_motion_acceleration_valid_mask is None:
+            raise ValueError("motion forecasting requires source-only motion metadata")
+        normalized, _ = self._normalize_motion(source,
+            bridge.source_motion_interval_valid_mask.bool(), bridge.source_motion_acceleration_valid_mask.bool())
+        masks = torch.stack((bridge.source_motion_interval_valid_mask,
+            bridge.source_motion_acceleration_valid_mask & bridge.source_motion_interval_valid_mask), -1).float()
+        value = bridge.video_v[-1]
+        valid = torch.arange(value.shape[1], device=value.device)[None] < bridge.seq_lens[:, None]
+        null = self._column(bridge.null_bridge, source.shape[0], value.device, torch.bool)
+        valid = valid & ~null
+        world = torch.where(valid[..., None, None], value.float(), torch.zeros_like(value.float())).mean(2)
+        world = world.sum(1) / valid.sum(1).clamp_min(1)[:, None]
+        elapsed = self._column(current.age.delta_sim_seconds, source.shape[0], source.device, torch.float32) / self.sim_scale
+        time = torch.cat((elapsed, elapsed.square(), torch.log1p(elapsed.clamp_min(0))), -1)
+        evidence = torch.cat((world, torch.cat((normalized, masks), -1).flatten(1), time), -1)
+        residual = self.motion_forecast(evidence.to(self.motion_forecast[0].weight.dtype)).reshape_as(normalized)
+        # The source history is a meaningful zero-init baseline. Learned drift
+        # replaces a hand-coded flow extrapolation without requiring dense flow.
+        return normalized + residual.float()
+
+    def motion_prediction_loss(self, current, bridge):
+        prediction = self.predict_current_motion(current, bridge)
+        target, valid = self._normalize_motion(current.motion.detach(),
+            current.motion_interval_valid_mask.bool(), current.motion_acceleration_valid_mask.bool())
+        error = torch.where(valid, prediction - target, torch.zeros_like(prediction))
+        return (error.square().sum((1, 2)) / valid.sum((1, 2)).clamp_min(1)).mean()
+
+    def aligned_source_plan(self, current, bridge):
+        """Align source targets by physical time; arms linear, grippers held."""
+        plan, source_offsets = bridge.source_action_plan, bridge.source_action_target_offsets
+        offsets = current.action_target_offsets
+        if plan is None or source_offsets is None or offsets is None or source_offsets.shape != plan.shape[:2] or offsets.shape != plan.shape[:2]:
+            raise ValueError("V3 source plan requires matching physical endpoint offsets")
+        b, horizon, width = plan.shape
+        source_offsets = source_offsets.to(device=plan.device, dtype=torch.float64)
+        query = offsets.to(device=plan.device, dtype=torch.float64) + self._column(current.age.delta_sim_seconds,b,plan.device,torch.float64)
+        # Tensor-only search is capture-safe and never substitutes integer age.
+        index = (query[..., None] + 1e-9 >= source_offsets[:, None, :]).sum(-1) - 1
+        lower, upper = index.clamp(0,horizon-1), (index+1).clamp(0,horizon-1)
+        lo = plan.gather(1,lower[...,None].expand(-1,-1,width))
+        hi = plan.gather(1,upper[...,None].expand(-1,-1,width))
+        t0, t1 = source_offsets.gather(1,lower), source_offsets.gather(1,upper)
+        weight = ((query-t0)/(t1-t0).clamp_min(1e-12)).clamp(0,1).to(plan.dtype)
+        result = lo + (hi-lo)*weight[...,None]
+        if self.action_dim == 14:
+            index_d = torch.arange(width,device=plan.device)
+            keep = (index_d == 6) | (index_d == 13)
+            result = torch.where(keep[None,None],lo,result)
+        available = (query >= source_offsets[:,:1]-1e-9) & (query <= source_offsets[:,-1:]+1e-9)
+        return torch.where(available[...,None],result,torch.zeros_like(result)), available
+
     def _motion_delta(self, current, bridge, dtype):
+        if self.interface_version == 3:
+            prediction = self.predict_current_motion(current, bridge)
+            target, valid = self._normalize_motion(current.motion,
+                current.motion_interval_valid_mask.bool(), current.motion_acceleration_valid_mask.bool())
+            interval = current.motion_interval_valid_mask.bool()
+            acceleration = current.motion_acceleration_valid_mask.bool() & interval
+            innovation = torch.where(valid, target - prediction, torch.zeros_like(prediction))
+            features = torch.cat((innovation, interval[..., None].float(), acceleration[..., None].float()), -1)
+            return self.motion_innovation(features.to(dtype)) + self.motion_position.to(dtype)
         source = bridge.source_motion
         source_interval = bridge.source_motion_interval_valid_mask
         source_accel = bridge.source_motion_acceleration_valid_mask
@@ -106,6 +185,8 @@ class JointMotionKVConditioner(MotionKVConditioner):
         available = (index >= 0) & (index < chunk)
         old = plan.gather(1, index.clamp(0, chunk - 1)[..., None].expand(-1, -1, self.action_dim))
         old = torch.where(available[..., None], old, torch.zeros_like(old))
+        if self.interface_version == 3:
+            old, available = self.aligned_source_plan(current, bridge)
         length = self._column(lengths, batch, device, torch.long)
         committed = torch.arange(chunk, device=device)[None] < length
         safe_prefix = torch.where(committed[..., None], prefix, torch.zeros_like(prefix))
@@ -116,6 +197,16 @@ class JointMotionKVConditioner(MotionKVConditioner):
         features = torch.cat((old.to(dtype), safe_prefix.to(dtype), difference.to(dtype),
             available[..., None].to(dtype), committed[..., None].to(dtype), position, sigma, delay,
             target_offsets.to(device=device, dtype=dtype)[..., None] / self.sim_scale), -1)
+        if self.interface_version == 3:
+            previous, previous_valid = current.previous_plan, current.previous_plan_valid
+            if previous is None or previous_valid is None or previous.shape != plan.shape or previous_valid.shape != plan.shape[:2]:
+                raise ValueError("V3 requires explicit previous proposal and validity, including empty bootstrap")
+            # Soft queue context decays away from the hard-prefix boundary. No
+            # old suffix target is imposed: only committed prefix is immutable.
+            near = torch.exp(-(target_offsets.to(device=device,dtype=dtype) - delay.squeeze(-1)*self.sim_scale).clamp_min(0)/.64)
+            safe_previous = torch.where(previous_valid[...,None],previous,torch.zeros_like(previous))
+            features = torch.cat((features, .1*near[...,None]*safe_previous.to(dtype),
+                previous_valid[...,None].to(dtype), near[...,None]), -1)
         return self.plan_innovation(features)
 
     def _rank_observation(self, seeds, observed, observed_valid, *, current, bridge):

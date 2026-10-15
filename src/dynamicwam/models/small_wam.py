@@ -412,6 +412,10 @@ class SmallWAMActionModel(ActionCoreOps, nn.Module):
     ) -> Dict[str, torch.Tensor]:
         text_embeddings = batch["text_embeddings"]
         noisy_actions = batch["noisy_actions"]
+        prefix = batch.get("rtc_prefix")
+        if prefix is not None:
+            from dynamicwam.models.rtc_prefix import apply_prefix
+            noisy_actions = apply_prefix(noisy_actions, prefix)
         action_t = batch["action_t"]
         initial_state = batch["initial_state"]
         video_t = batch["video_t"]
@@ -433,6 +437,9 @@ class SmallWAMActionModel(ActionCoreOps, nn.Module):
             noisy_actions,
             initial_state,
         )
+        if prefix is not None:
+            from dynamicwam.models.rtc_prefix import action_token_times
+            action_t = action_token_times(action_t, prefix, action_tokens.shape[1])
         action_head_time_emb, action_adaln_params = self._build_action_time_embeddings(
             action_t,
             action_tokens.shape[1],

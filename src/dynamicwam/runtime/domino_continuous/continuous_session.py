@@ -6,7 +6,7 @@ import numpy as np
 from .domino_session import DominoLevel1Session
 from .camera_stream import SelectiveAsyncCameraCapture, PhysicalTimeHeadHistory
 from .continuous_track_v2 import ContinuousJointTrack
-from ..ciwam.adapters.domino.composite import head_camera_frame
+from ..ciwam.adapters.domino.composite import head_camera_frame, composite_robotwin_frame
 
 # Timing modes keep the continuous world / no-RTC loop identical; only whether
 # MPLIB joint v/a limits may stretch chunk duration changes.
@@ -24,11 +24,12 @@ CONTROLLER_BY_TIMING = {
 
 class ContinuousSyncSession(DominoLevel1Session):
     def __init__(self, *args, action_interval_s=.16, save_video=True,
-                 timing_mode="native_mplib_limits", **kwargs):
+                 timing_mode="native_mplib_limits", replay_recorder=None, **kwargs):
         super().__init__(*args, **kwargs)
         from . import _sapien_color_reader
         self.camera_reader = SelectiveAsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
         self.pending_capture = None
+        self.replay_recorder = replay_recorder
         self._step_profile = {"steps": 0, "commanded_steps": 0,
             "qf_requested": 0, "qf_computed": 0, "qf_reused": 0, "timing_ms": {}}
         self.action_interval_s = float(action_interval_s)
@@ -68,6 +69,11 @@ class ContinuousSyncSession(DominoLevel1Session):
             sources.append({"arm": side, "joint_names": arm_names, "velocity_limits": v.tolist(),
                             "acceleration_limits": a.tolist(), "source": "existing_native_MPLIB_planner"})
         return np.asarray(velocities), np.asarray(accelerations), np.asarray(positions), sources
+
+    def current_drive_targets(self):
+        """Exact native commands retained during a hold, for opt-in replay."""
+        robot = self.env.robot
+        return np.asarray(robot.get_left_arm_jointState()+robot.get_right_arm_jointState(), dtype=np.float64)
 
     def current_qpos(self):
         # The ordinary jointState API returns drive targets, not articulation
@@ -143,7 +149,7 @@ class ContinuousSyncSession(DominoLevel1Session):
     def begin_capture(self, *, for_inference):
         self.capture_for_inference = bool(for_inference)
         self.pending_capture = self.camera_reader.begin(self.env, physics_time_s=self.physics_time(),
-                                                        head_only=not for_inference)
+                                                        head_only=not for_inference and self.replay_recorder is None)
 
     def capture_ready(self):
         return self.camera_reader.ready(self.pending_capture)
@@ -168,6 +174,10 @@ class ContinuousSyncSession(DominoLevel1Session):
         video_done = time.perf_counter()
         self.flow.push(head_camera_frame(captured.observation), simulator_time_seconds=captured.physics_time_s)
         history_done = time.perf_counter()
+        if self.replay_recorder is not None:
+            self.replay_recorder.record_frame(captured.physics_time_s,
+                composite_robotwin_frame(captured.observation,self.observation_config),
+                for_inference=self.capture_for_inference)
         packet = None
         if self.capture_for_inference:
             self.env.now_obs = deepcopy(captured.observation)

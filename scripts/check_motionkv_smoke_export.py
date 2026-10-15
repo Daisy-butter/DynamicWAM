@@ -139,9 +139,28 @@ def audit(args, result):
     require(contract["native_multirate"].get("source_bridge") == expected_source,
             "smoke slow bridge provenance differs from the training recipe")
     if expected_source == "student_joint":
-        require(contract["native_multirate"].get("version") == 2, "joint slow bridge must be v2")
+        version = conditioner.get("interface_version", 1)
+        require(version in (2, 3) and contract["native_multirate"].get("version") == version,
+                "joint slow bridge/interface versions differ")
         require(full["config"].get("phase") == profile.training["phase"], "joint smoke stage differs")
-        require(contract.get("max_age_actions") == 15, "joint smoke lost trained asynchronous age support")
+        require(contract.get("max_age_actions") == (31 if version == 3 else 15),
+                "joint smoke lost trained asynchronous age support")
+        if version == 3:
+            require(contract["native_multirate"].get("slow_schedule") == "asynchronous_latest_completed_v1",
+                    "joint v3 lacks asynchronous slow scheduling")
+            require(contract.get("max_age_seconds") == 4.96,
+                    "joint v3 physical cache age differs")
+            require(contract.get("slow_source_prefix") == "clean_committed_v1",
+                    "v3 slow source must be trained with committed clean prefixes")
+            physical = contract.get("physical_grid_contract", {})
+            require(physical.get("schema_version") == 1
+                    and physical.get("action_interval_seconds") == 0.16
+                    and physical.get("action_horizon") == 16
+                    and physical.get("source_plan_alignment") == "physical_time_linear_arm_previous_hold_gripper",
+                    "joint v3 lacks the exact physical target-grid contract")
+            for identity in (contract.get("physical_grid"), physical.get("latent_manifest_sha256")):
+                require(isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{64}", identity),
+                        "joint v3 data/cache identities must be bound SHA256 values")
         require(conditioner.get("correction_layers") == expected.get("correction_layers"),
                 "joint smoke correction placement differs")
         gate = full["model"].get("fast_conditioner.innovation_gate")

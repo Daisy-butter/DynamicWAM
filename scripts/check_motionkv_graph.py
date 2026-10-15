@@ -83,12 +83,18 @@ def main():
         report.update(gpu=torch.cuda.get_device_name(device), trained_fast_steps=trained_steps,
             tested_fast_steps=len(model.fast_schedule.action_sigmas), trained_prefix_max=trained_prefix_max,
             tested_prefix=args.prefix_length, engine_only_override=args.fast_steps_override is not None)
+        interface_version = getattr(model.fast_conditioner, "interface_version", 1)
+        if interface_version >= 3:
+            packet['_rtc_action_target_offsets'] = np.arange(1, 17, dtype=np.float64) * float(policy.runtime.action_interval_seconds)
+            packet['_rtc_prefix_actions'] = np.zeros((0,14),np.float32)
+            packet['_rtc_prefix_length'] = 0
         text_rows = runner._get_text_embeddings()
         packet.update(action_index=0, _query_index=0, _episode_seed=policy._episode_seed, _text=text_rows)
         with torch.inference_mode():
             policy._install_bridge(policy._build_bridge_completed(packet))
             world = policy.bridge
-            joint_v2 = getattr(model.fast_conditioner, "interface_version", 1) == 2
+            joint_v2 = interface_version >= 2
+            joint_v3 = interface_version >= 3
             if joint_v2:
                 # Match MotionKVPolicy._install_bridge source-cache lifecycle.
                 world = model.fast_conditioner.prepare_source_cache(world)
@@ -106,7 +112,11 @@ def main():
                 age=BridgeAge(0., 0, True, (state - policy.bridge_state).reshape(-1)))
             if joint_v2:
                 current.action_target_offsets = torch.arange(1, policy.runtime.chunk_size + 1,
-                    device=device,dtype=torch.float32)[None] * float(policy.runtime.action_interval_seconds)
+                    device=device,dtype=torch.float64 if joint_v3 else torch.float32)[None] * float(policy.runtime.action_interval_seconds)
+            if joint_v3:
+                current.age.delta_sim_seconds = torch.tensor(0.,device=device,dtype=torch.float64)
+                current.previous_plan = torch.zeros((1, 16, 14),device=device,dtype=state.dtype)
+                current.previous_plan_valid = torch.zeros((1, 16),device=device,dtype=torch.bool)
             # Match the real serving wrapper's shape-stable masked text layout.
             text, text_mask = pad_rtc_text(text_rows)
             report['serving_text_shape'] = list(text.shape)
@@ -133,6 +143,8 @@ def main():
             source_inputs += [(f"v{i}", x) for i, x in enumerate(world.video_v)]
             if joint_v2:
                 source_inputs.append(("action_target_offsets",current.action_target_offsets))
+            if joint_v3:
+                source_inputs += [("previous_plan",current.previous_plan),("previous_plan_valid",current.previous_plan_valid)]
             source_inputs += [(name, getattr(world, name)) for name in _BRIDGE_CONTEXT_TENSORS
                               if torch.is_tensor(getattr(world, name))]
             source_hash = tensor_fingerprint(source_inputs)
@@ -175,6 +187,16 @@ def main():
                     ("physical_action_target_offsets_changed", dataclasses.replace(current,
                         action_target_offsets=current.action_target_offsets * 1.25), world, prefix),
                 ]
+            if joint_v3:
+                cases += [
+                    ("source_physical_offsets_changed", current, dataclasses.replace(world,
+                        source_action_target_offsets=world.source_action_target_offsets + .03), prefix),
+                    ("previous_proposal_changed", dataclasses.replace(current,
+                        previous_plan=current.previous_plan + .1,
+                        previous_plan_valid=torch.ones_like(current.previous_plan_valid)), world, prefix),
+                    ("source_publication_age_changed", dataclasses.replace(current,
+                        age=dataclasses.replace(current.age,delta_sim_seconds=torch.tensor(2.8,device=device,dtype=torch.float64),delta_actions=20)), world, prefix),
+                ]
             for name, obs, cache, cond in cases:
                 expected = eager(obs, cache, cond)
                 actual = replay(obs, cache, cond)
@@ -197,6 +219,9 @@ def main():
                     torch.testing.assert_close(graph.current.committed_prefix, effective.actions, atol=0, rtol=0)
                     torch.testing.assert_close(graph.current.committed_prefix_lengths, effective.lengths, atol=0, rtol=0)
                     torch.testing.assert_close(graph.current.action_target_offsets, obs.action_target_offsets, atol=0, rtol=0)
+                if joint_v3:
+                    torch.testing.assert_close(graph.current.previous_plan,obs.previous_plan,atol=0,rtol=0)
+                    torch.testing.assert_close(graph.current.previous_plan_valid,obs.previous_plan_valid,atol=0,rtol=0)
                 mask = prefix_mask(effective).unsqueeze(-1).expand_as(actual)
                 torch.testing.assert_close(actual[mask], effective.actions[mask], atol=0, rtol=0)
                 if not bool(torch.isfinite(actual).all()):

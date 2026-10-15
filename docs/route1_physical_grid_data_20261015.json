@@ -1,0 +1,92 @@
+{
+  "actual_cpu_fixture": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/actual_cpu_smoke/actual_inputs_labels.pt",
+  "actual_cpu_reads": 10,
+  "actual_cpu_smoke_receipt": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/actual_cpu_smoke/receipt.json",
+  "contract": {
+    "action_chunk": 16,
+    "action_dt": 0.16,
+    "arm_labels": "recorded_drive_targets_piecewise_linear",
+    "cache_age_actions": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+    ],
+    "condition_latents": "original_at_actual_condition_frame_with_native_motion_history",
+    "future_latents": "new_vae_encoding_required_no_legacy_fallback",
+    "grid_anchor": "episode_first_actual_sim_time",
+    "gripper_indices": [
+      6,
+      13
+    ],
+    "gripper_labels": "previous_recorded_command_hold",
+    "max_command_gap_seconds": 0.16,
+    "max_video_lag_seconds": 0.16,
+    "observation_clock": "actual_capture_time_preserved",
+    "on_policy_status": "blocked_missing_real_same_trajectory_replay",
+    "prefix_source": "expert_demonstration",
+    "version": 1,
+    "video_action_ratio": 2,
+    "video_frames": 8,
+    "video_selection": "last_capture_at_or_before_endpoint"
+  },
+  "counts": {
+    "eligible_samples": 1416299,
+    "episodes": 10500,
+    "source_samples": 1420472,
+    "train_episodes": 9450,
+    "validation_episodes": 1050
+  },
+  "cpu_tests": {
+    "passed": 11,
+    "path": "tests/test_physical_grid_data.py"
+  },
+  "drops": {
+    "past_episode_end": 4173
+  },
+  "episode_partition_identity": "68dbb5bd94d25999db8c1815ad59f8459e1b748c1d9384d401cb55449e487ba9",
+  "future_latent_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/future_latents",
+  "gpu_preprocessing": "not_run_old_eval_protected",
+  "limitations": [
+    "Actual VAE GPU encode and model joint GPU smoke not yet executed.",
+    "Future RGB uses earlier captured frame with measured lag; no synthetic exact-time renderer or timestamp relabelling.",
+    "Offline RTC prefix is expert demonstration, not policy rollout; adapter rejects counterfactual expert-observation mixing."
+  ],
+  "manifest_sha256": "a5738cd10f3557fb33873a8e1924bdce5729ecffdd6510ff33fa9089fb1a5fad",
+  "normalization": "same original robotwin qpos action stats; native initial state verified against raw recorded drive target",
+  "on_policy_readiness": "blocked_missing_real_policy_trajectory_replay",
+  "physical_grid_identity": "062b2550d3834b2d2713a90637bb409cf2676aa10ed91f85e9e1827fdc7c0d5d",
+  "physical_grid_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015",
+  "preprocessing": "cv2 aspect-pad384x320 then antialiased torch bilinear192x160; RGB[-1,1]; native Wan2.2 VAE1current+8future -> discardfirstlatent ->48x2x12x10 float32",
+  "rollout_adapter": "scripts/validate_rollout_replay.py",
+  "source_semantics": "external/DOMINO/envs/robot/robot.py get_arm_jointState uses drive target; measured qpos is real_jointState",
+  "training_readiness": "blocked_missing_new_native_VAE_future_cache"
+}

@@ -63,6 +63,7 @@ class MultirateWAM(nn.Module):
         self.joint_video_weight = 0.0
         self.joint_action_weight = 0.0
         self.gradient_checkpointing = False
+        self.motion_prediction_weight = 0.0
         self.native_expert_weight = 1.0
         self.native_fm_anchor_weight = 0.0
         # Joint training gets immutable teacher trajectories from the trainer.
@@ -297,10 +298,12 @@ class MultirateWAM(nn.Module):
 
         if self.native_phase not in {"adapt", "distill"}:
             raise RuntimeError("native training needs native_phase=adapt or distill")
-        if not self.external_native_teacher:
+        teacher_free_v3 = (getattr(self.fast_conditioner,"interface_version",1) >= 3
+            and self.native_source_bridge == "student_joint" and self.native_teacher_weight == 0)
+        if not self.external_native_teacher and not teacher_free_v3:
             raise RuntimeError("native training requires an immutable external teacher")
         teacher = batch.get("native_teacher_actions")
-        skip_teacher = bool(batch.get("skip_native_teacher", False))
+        skip_teacher = bool(batch.get("skip_native_teacher", False)) or self.native_teacher_weight <= 0
         if teacher is None and not skip_teacher:
             raise RuntimeError("native training batch lacks fixed teacher actions")
         if teacher is not None:
@@ -345,6 +348,10 @@ class MultirateWAM(nn.Module):
                                 device=batch["clean_actions"].device))
             current = replace(current, committed_prefix=prefix_condition.actions,
                 committed_prefix_lengths=prefix_condition.lengths)
+        if getattr(self.fast_conditioner, "interface_version", 1) >= 3 and current.previous_plan is None:
+            previous, previous_valid = self.fast_conditioner.aligned_source_plan(current, bridge)
+            # Soft historical context, never falsely labelled an executed action.
+            current = replace(current, previous_plan=previous.detach(), previous_plan_valid=previous_valid)
         memory = self.prepare_fast_memory(current, bridge, batch["fast_text"], batch.get("fast_text_mask"))
         metrics = {}
         outputs = {}
@@ -398,10 +405,17 @@ class MultirateWAM(nn.Module):
                 anchor_loss = F.mse_loss(prediction.float(), batch["fast_target"].float())
                 loss = loss + self.native_fm_anchor_weight * anchor_loss
                 metrics["loss/fm_anchor"] = anchor_loss.detach()
+        if getattr(self.fast_conditioner, "interface_version", 1) >= 3 and self.motion_prediction_weight > 0:
+            motion_loss = self.fast_conditioner.motion_prediction_loss(current, bridge)
+            loss = loss + self.motion_prediction_weight * motion_loss
+            metrics["loss/motion_forecast"] = motion_loss.detach()
+            metrics["motion/valid_intervals"] = current.motion_interval_valid_mask.float().sum().detach()
         if self.native_source_bridge == "student_joint" and self.native_training_phase == "joint":
             if self.joint_video_weight > 0 or self.joint_action_weight > 0:
+                source_retention = getattr(self.fast_conditioner, "interface_version", 1) >= 3
+                aligned_batch = batch["source_aligned"] if source_retention else batch["aligned"]
                 def aligned_forward():
-                    return self.backbone._forward_video_action(batch["aligned"],
+                    return self.backbone._forward_video_action(aligned_batch,
                         include_video_prediction=self.joint_video_weight > 0,
                         build_video_cache=False, detach_cache=False)
                 if self.gradient_checkpointing and torch.is_grad_enabled():
@@ -410,11 +424,19 @@ class MultirateWAM(nn.Module):
                 else:
                     aligned = aligned_forward()
                 if self.joint_video_weight > 0:
-                    video_loss = F.mse_loss(aligned["video_pred"].float(), batch["video_target"].float())
+                    video_loss = F.mse_loss(aligned["video_pred"].float(), batch["source_video_target" if source_retention else "video_target"].float())
                     loss = loss + self.joint_video_weight * video_loss
                     metrics["loss/video_retention"] = video_loss.detach()
                 if self.joint_action_weight > 0:
-                    action_loss = F.mse_loss(aligned["action_pred"].float(), batch["action_target"].float())
+                    if source_retention:
+                        from dynamicwam.models.rtc_prefix import masked_suffix_mse
+                        source_prefix = aligned_batch.get("rtc_prefix")
+                        if source_prefix is None:
+                            raise ValueError("V3 source retention requires its own committed prefix contract")
+                        action_loss = masked_suffix_mse(aligned["action_pred"],batch["source_action_target"],source_prefix)
+                        metrics["rtc/source_prefix_mean"] = source_prefix.lengths.float().mean().detach()
+                    else:
+                        action_loss = F.mse_loss(aligned["action_pred"].float(), batch["action_target"].float())
                     loss = loss + self.joint_action_weight * action_loss
                     metrics["loss/action_retention"] = action_loss.detach()
         metrics["bridge/student_joint"] = loss.new_tensor(float(self.native_source_bridge == "student_joint"))

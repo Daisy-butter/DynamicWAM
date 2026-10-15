@@ -59,7 +59,7 @@ def summarize(output, spec):
                     frozen.append(dict(task=task, episode_index=episode, seed=descriptor["seed"], **expected))
                     entries.append(descriptor)
                 else:
-                    report, metric = checked_episode(directory, task, episode, spec.get("simulation_rate", 1.))
+                    report, metric = checked_episode(directory, task, episode, spec.get("simulation_rate", 1.), expected_protocol=spec["protocol"])
                     if (report["checkpoint_sha256"] != spec["checkpoint_sha256"]
                             or report["source_digest"] != spec["source_digest"]
                             or report["frozen_manifest_sha256"] != spec["frozen_manifest_sha256"]
@@ -130,6 +130,10 @@ def parse():
     p.add_argument("--resume", action="store_true")
     p.add_argument("--probe-action-limit", type=int)
     p.add_argument("--simulation-rate", type=float, default=1.)
+    p.add_argument("--joint-v3", action="store_true")
+    p.add_argument("--development-replay-dir",type=Path)
+    p.add_argument("--development-scene-allowlist",type=Path)
+    p.add_argument("--formal-scene-manifest",type=Path)
     p.add_argument("--max-backlog-s", type=float, default=.25)
     p.add_argument("--infer-clock-tolerance-s", type=float, default=.02)
     p.add_argument("--action-interval-s", type=float, default=.16)
@@ -147,12 +151,20 @@ def parse():
 
 def main():
     args = parse()
-    protocol = evaluation_protocol(args.simulation_rate)
+    protocol = evaluation_protocol(args.simulation_rate, args.joint_v3)
+    replay_scope=None
+    replay_args=(args.development_replay_dir,args.development_scene_allowlist,args.formal_scene_manifest)
+    if any(value is not None for value in replay_args):
+        if not all(value is not None for value in replay_args) or not args.joint_v3 or args.prepare_only:
+            raise ValueError("development replay requires joint-v3 and all explicit scope paths")
+        from dynamicwam.runtime.domino_continuous.development_replay import validate_development_scope
+        replay_scope=validate_development_scope(args.development_scene_allowlist,args.formal_scene_manifest)
     def interrupted(signum, frame):
         raise KeyboardInterrupt(f"received signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
     from harness_preflight import require_ssd
     require_ssd(args.output_dir)
+    if replay_scope is not None:require_ssd(args.development_replay_dir)
     shared_tmp = Path(os.environ.get("TMPDIR", ""))
     if not shared_tmp.is_absolute() or os.environ.get("TMP") != str(shared_tmp) or os.environ.get("TEMP") != str(shared_tmp):
         raise ValueError("all workers require the same explicit absolute TMPDIR/TMP/TEMP for SAPIEN locks")
@@ -181,6 +193,9 @@ def main():
         if read(args.replay_from / "suite_completed.json").get("complete") is not True:
             raise ValueError("scene preparation is incomplete")
         frozen_sha = sha(args.replay_from / "frozen_manifest.json")
+    if replay_scope is not None:
+        from dynamicwam.runtime.domino_continuous.development_replay import validate_requested_development_scenes
+        validate_requested_development_scenes(replay_scope,args.replay_from,tasks,args.episodes)
     inventory = subprocess.check_output(["nvidia-smi", "--query-gpu=index,uuid,pci.bus_id", "--format=csv,noheader"], text=True)
     rows = [tuple(part.strip() for part in row.split(",")) for row in inventory.splitlines()]
     by_selector = {key: row for row in rows for key in row[:2]}
@@ -195,7 +210,7 @@ def main():
     lock = acquire_lock(output / ".suite.lock")
     old_spec = read(output / "suite_started.json") if (output / "suite_started.json").exists() else None
     stamp = args.result_stamp or (old_spec["result_stamp"] if old_spec and args.resume else datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"))
-    source = provenance(args.config, args.simulation_rate)
+    source = provenance(args.config, args.simulation_rate, args.joint_v3)
     from rtc_episode_cohort import MODE as COHORT_MODE, write_abort
     spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else protocol, prepare_only=args.prepare_only,
         tasks=tasks, episodes_per_task=args.episodes, seed=args.seed, result_stamp=stamp, gpus=gpus,
@@ -210,6 +225,9 @@ def main():
         max_cohort_size=args.max_cohort_size or None,
         solo_tasks=sorted(solo_task_set) or None,
         opencv_threads=1)
+    if replay_scope is not None:
+        spec["development_replay"]=dict(root=str(args.development_replay_dir.resolve()),
+            allowlist_sha256=replay_scope["allowlist_sha256"],formal_manifest_sha256=replay_scope["formal_manifest_sha256"])
     if old_spec:
         if not args.resume or old_spec != spec:
             raise ValueError("resume requires the exact frozen suite configuration/source")
@@ -275,6 +293,11 @@ def main():
                     for key in ("checkpoint", "checkpoint_audit", "timing_contract", "replay_from"):
                         command.extend(["--" + key.replace("_", "-"), str(getattr(args, key).resolve())])
                 if args.resume: command.append("--resume")
+                if args.joint_v3: command.append("--joint-v3")
+                if replay_scope is not None:
+                    command.extend(["--development-replay-dir",str(args.development_replay_dir.resolve()),
+                        "--development-scene-allowlist",str(args.development_scene_allowlist.resolve()),
+                        "--formal-scene-manifest",str(args.formal_scene_manifest.resolve())])
                 if args.probe_action_limit: command.extend(["--probe-action-limit", str(args.probe_action_limit)])
                 try:
                     child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)

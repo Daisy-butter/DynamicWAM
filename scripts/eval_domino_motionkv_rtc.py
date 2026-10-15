@@ -23,6 +23,7 @@ import traceback
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = "continuous_world_actual_latency_motionkv_rtc_h4r4_v1"
 SCALED_PROTOCOL = "continuous_world_scaled_wall_motionkv_rtc_h4r4_v1"
+JOINT_V3_PROTOCOL = "continuous_world_actual_latency_joint_motionkv_async_v3"
 PREPARE_PROTOCOL = "domino_level1_policy_independent_scene_manifest_v1"
 POLICY_LABEL = "motionkv_rtc"
 for entry in (ROOT / "external/flash_attn_runtime", ROOT / "src"):
@@ -48,25 +49,30 @@ def read(path):
     return json.loads(Path(path).read_text())
 
 
-def evaluation_protocol(rate=1.):
+def evaluation_protocol(rate=1., joint_v3=False):
     if not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 0 < rate <= 1:
         raise ValueError("simulation rate must be finite in (0,1]")
+    if joint_v3:
+        if rate != 1.:
+            raise ValueError("joint v3 requires 1x continuous evaluation")
+        return JOINT_V3_PROTOCOL
     return PROTOCOL if rate == 1. else SCALED_PROTOCOL
 
 
 def valid_clock_identity(report):
     rate = report.get("simulation_rate", 1.)
-    return (report.get("protocol") == evaluation_protocol(rate)
+    return (report.get("protocol") == evaluation_protocol(rate, report.get("joint_v3", False))
             and (report.get("realtime_valid") is True if rate == 1. else
                  report.get("clock_valid") is True and report.get("continuous_valid") is True
                  and report.get("realtime_valid") is False))
 
 
-def provenance(config, simulation_rate=1.):
-    value = source_provenance(semantics_id=evaluation_protocol(simulation_rate), config_path=config)
+def provenance(config, simulation_rate=1., joint_v3=False):
+    value = source_provenance(semantics_id=evaluation_protocol(simulation_rate, joint_v3), config_path=config)
     for name in ("scripts/eval_domino_motionkv_rtc.py", "scripts/eval_domino_motionkv_rtc_suite.py",
                  "scripts/device_lifetime_guard.py",
                  "src/dynamicwam/runtime/domino_continuous/motionkv_policy.py",
+                 "src/dynamicwam/runtime/domino_continuous/development_replay.py",
                  "src/dynamicwam/runtime/domino_continuous/worker.py"):
         path = ROOT / name
         value["source_sha256"][name] = sha(path)
@@ -149,9 +155,11 @@ def load_frozen_task(run, task, episodes, seed, config_sha):
     return references, sha(run / "frozen_manifest.json")
 
 
-def checked_episode(path, task, episode, simulation_rate=None):
+def checked_episode(path, task, episode, simulation_rate=None, *, expected_protocol=None):
     from video_artifacts import validate_video_artifacts
     report, metric, descriptor = (read(path / name) for name in ("report.json", "metrics.json", "manifest.json"))
+    if expected_protocol is not None and report.get("protocol") != expected_protocol:
+        raise ValueError("episode protocol differs from run")
     if (not valid_clock_identity(report)
             or report.get("task") != task or report.get("episode_index") != episode
             or report.get("video_required") is not True or not validate_video_artifacts(report)):
@@ -172,6 +180,9 @@ def checked_episode(path, task, episode, simulation_rate=None):
 def validate_rtc_report(report):
     """Independently verify saved causal timing, not just a runtime success flag."""
     rate = report.get("simulation_rate", 1.)
+    joint_v3 = report.get("joint_v3", False)
+    if joint_v3 and report.get("bootstrap_mode") != "prime_then_hold":
+        raise ValueError("joint v3 must prime under hold then query a fresh observation")
     if not valid_clock_identity(report):
         raise ValueError("RTC protocol/clock identity mismatch")
     required = {"controller": "committed_clean_prefix_rtc_fixed_grid_h4r4", "clock": "actual_wall_clock" if rate == 1. else "scaled_wall_clock",
@@ -187,6 +198,8 @@ def validate_rtc_report(report):
             or (rate == 1. and not 0 <= report["max_inference_clock_error_s"] <= limits["inference_clock_error_s"] + 1e-8)):
         raise ValueError("RTC report clock limits failed")
     interval = report["action_interval_s"]
+    previous_source = None
+    episode_generation = None
     for index, request in enumerate(report.get("requests", [])):
         if rate != 1.:
             if request.get("simulation_rate") != rate:
@@ -204,8 +217,52 @@ def validate_rtc_report(report):
         expected_prefix = 0 if index == 0 else 4
         if request["query_index"] != index or request["prefix_length"] != expected_prefix:
             raise ValueError("RTC query order/prefix length mismatch")
-        if request["cache_age_actions"] != request["action_origin"] % 16 or request["cache_age_actions"] not in (0, 4, 8, 12):
+        if not joint_v3 and (request["cache_age_actions"] != request["action_origin"] % 16 or request["cache_age_actions"] not in (0, 4, 8, 12)):
             raise ValueError("RTC cache age escaped training support")
+        if joint_v3:
+            import numpy as np
+            if index == 0 and request.get("installed") and request.get("bootstrap_actions_executed") is not False:
+                raise ValueError("joint v3 cannot execute stale bootstrap predictions")
+            if request.get("installed"):
+                info = request.get("policy_diagnostics", {})
+                async_info = info.get("asynchronous_world", {})
+                if (info.get("motion_interface_version") != 3 or info.get("source_bridge") != "student_joint"
+                        or async_info.get("slow_schedule") != "asynchronous_latest_completed_v1"):
+                    raise ValueError("joint v3 lacks the trained asynchronous source contract")
+                source_index = async_info.get("source_action_index")
+                source_time = async_info.get("source_sim_time")
+                if (type(source_index) is not int or source_index < 0
+                        or not isinstance(source_time, (int, float)) or not math.isfinite(source_time)):
+                    raise ValueError("joint v3 source identity is missing")
+                age = request["action_origin"] - source_index
+                age_seconds = request["observation_physics_s"] - source_time
+                if (not 0 <= age <= 31 or not 0 <= age_seconds <= 4.96 + 1e-8
+                        or info.get("cache_age_actions") != age or async_info.get("cache_age_actions") != age
+                        or not math.isclose(info.get("cache_age_seconds", -1), age_seconds, abs_tol=1e-8)
+                        or not math.isclose(async_info.get("cache_age_seconds", -1), age_seconds, abs_tol=1e-8)):
+                    raise ValueError("joint v3 actual source age escaped trained support or causality")
+                times = [async_info.get(key) for key in ("source_submitted_monotonic",
+                    "source_published_monotonic", "source_consumed_monotonic")]
+                if (any(not isinstance(t, (int, float)) or not math.isfinite(t) for t in times)
+                        or not times[0] <= times[1] <= times[2]):
+                    raise ValueError("joint v3 consumed an unpublished source")
+                generation = async_info.get("generation")
+                if type(generation) is not int or generation < 0:
+                    raise ValueError("joint v3 missing episode generation")
+                if episode_generation is not None and generation != episode_generation:
+                    raise ValueError("joint v3 source crossed episode generations")
+                episode_generation = generation
+                if previous_source is not None and (source_index < previous_source[0] or source_time < previous_source[1]):
+                    raise ValueError("joint v3 source publication moved backwards")
+                previous_source = source_index, source_time
+                if index == 0 and (info.get("bootstrap_only") is not True or info.get("fast_sampler_ms") != 0.):
+                    raise ValueError("joint v3 bootstrap must only prime the source")
+            if index > 0:
+                offsets = np.asarray(request.get("action_target_offsets"), dtype=np.float64)
+                expected = report["action_grid_start_physics_s"] + (
+                    request["action_origin"] + np.arange(1, 17)) * interval - request["observation_physics_s"]
+                if offsets.shape != (16,) or not np.isfinite(offsets).all() or (offsets <= 0).any() or not np.allclose(offsets, expected, atol=1e-8, rtol=0):
+                    raise ValueError("joint v3 action endpoints do not match the queue clock")
         if request["submit_physics_s"] + 1e-8 < request["observation_physics_s"]:
             raise ValueError("RTC request predates observation")
         if request.get("installed"):
@@ -213,8 +270,8 @@ def validate_rtc_report(report):
                 raise ValueError("RTC installation predates submission")
             if expected_prefix:
                 deadline = request["observation_physics_s"] + 4 * interval
-                if rate != 1. and report["initial_physics_s"] + rate * request["install_wall_s"] > deadline + 1e-8:
-                    raise ValueError("RTC suffix missed scaled wall deadline")
+                if report["initial_physics_s"] + rate * request["install_wall_s"] > deadline + 1e-8:
+                    raise ValueError("RTC suffix missed actual declared-clock deadline")
                 if (not math.isclose(request["suffix_not_before_physics_s"], deadline, abs_tol=1e-8)
                         or request["install_physics_s"] > deadline + 1e-8
                         or not math.isclose(request["suffix_effective_physics_s"], deadline, abs_tol=1e-8)):
@@ -272,6 +329,12 @@ def parse():
     parser.add_argument("--cohort-dir", type=Path)
     parser.add_argument("--probe-action-limit", type=int)
     parser.add_argument("--simulation-rate", type=float, default=1.)
+    parser.add_argument("--joint-v3", action="store_true",
+                        help="require v3 joint checkpoint, background world and prime-then-hold at 1x")
+    parser.add_argument("--development-replay-dir", type=Path,
+                        help="opt-in raw same-trajectory collection on excluded development scenes only")
+    parser.add_argument("--development-scene-allowlist", type=Path)
+    parser.add_argument("--formal-scene-manifest", type=Path)
     parser.add_argument("--max-backlog-s", type=float, default=.25)
     parser.add_argument("--infer-clock-tolerance-s", type=float, default=.02)
     parser.add_argument("--action-interval-s", type=float, default=.16)
@@ -281,7 +344,15 @@ def parse():
 
 def main():
     args = parse()
-    protocol = evaluation_protocol(args.simulation_rate)
+    protocol = evaluation_protocol(args.simulation_rate, args.joint_v3)
+    replay_scope = None
+    replay_args = (args.development_replay_dir,args.development_scene_allowlist,args.formal_scene_manifest)
+    if any(value is not None for value in replay_args):
+        if not all(value is not None for value in replay_args) or not args.joint_v3 or args.prepare_only:
+            raise ValueError("development replay requires joint-v3 and all three explicit replay scope paths")
+        from dynamicwam.runtime.domino_continuous.development_replay import validate_development_scope,validate_requested_development_scenes
+        replay_scope = validate_development_scope(args.development_scene_allowlist,args.formal_scene_manifest)
+        validate_requested_development_scenes(replay_scope,args.replay_from,[args.task],args.episodes)
     def interrupted(signum, frame):
         raise KeyboardInterrupt(f"received signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
@@ -290,6 +361,7 @@ def main():
     cv2.setNumThreads(1)
     import yaml
     from harness_preflight import require_ssd
+    if replay_scope is not None: require_ssd(args.development_replay_dir)
     from dynamicwam.config.loader import load_profile
     from dynamicwam.runtime.domino_continuous.domino_session import prepare_level1_env
     import sapien  # Native dependency bootstrap before GPU binding.
@@ -328,7 +400,7 @@ def main():
             raise ValueError("cohort episode count differs")
     output = args.output_dir.resolve() / args.task
     output.mkdir(parents=True, exist_ok=True)
-    source = provenance(args.config, args.simulation_rate)
+    source = provenance(args.config, args.simulation_rate, args.joint_v3)
     config_sha = sha(args.config)
     references, frozen_sha = (None, None)
     native_dir = None
@@ -348,9 +420,13 @@ def main():
                 or Path(audit["full"]["path"]).resolve() != args.checkpoint.resolve()
                 or contract.get("rtc", {}).get("max_prefix_actions") != 4
                 or contract.get("native_multirate", {}).get("fast_steps") != 10
-                or contract.get("native_multirate", {}).get("source_bridge") != "immutable_official"
-                or contract.get("execute_horizon") != 4 or contract.get("max_age_actions") != 12):
+                or contract.get("native_multirate", {}).get("source_bridge") != ("student_joint" if args.joint_v3 else "immutable_official")
+                or contract.get("execute_horizon") != 4 or contract.get("max_age_actions") != (31 if args.joint_v3 else 12)):
             raise ValueError("checkpoint does not match the strict audited MotionKV RTC export")
+        if args.joint_v3 and (contract["native_multirate"].get("version") != 3
+                or contract["native_multirate"].get("slow_schedule") != "asynchronous_latest_completed_v1"
+                or contract.get("max_age_seconds") != 4.96):
+            raise ValueError("checkpoint lacks joint v3 asynchronous physical-time contract")
         timing = read(args.timing_contract)
         expected = timing["recommended_continuous_sync_contract"]
         if (not math.isclose(args.action_interval_s, expected["nominal_action_interval_seconds"], abs_tol=1e-12)
@@ -374,6 +450,9 @@ def main():
                 opencv_threads=cv2.getNumThreads(), scheduling_mode=COHORT_MODE if cohort else None,
                 cohort_dir=str(cohort.directory) if cohort else None,
                 cohort_manifest_sha256=sha(cohort.directory / "manifest.json") if cohort else None)
+    if replay_scope is not None:
+        spec["development_replay"] = dict(root=str(args.development_replay_dir.resolve()),
+            allowlist_sha256=replay_scope["allowlist_sha256"],formal_manifest_sha256=replay_scope["formal_manifest_sha256"])
     lock = acquire_lock(output / ".evaluation.lock")
     started = output / "task_started.json"
     if started.exists():
@@ -399,7 +478,7 @@ def main():
                     manifests.append(descriptor); completed.append(descriptor); requested = descriptor["seed"] + 1
                     continue
                 if not args.prepare_only and (directory / "report.json").exists():
-                    report, metric = checked_episode(directory, args.task, episode, args.simulation_rate)
+                    report, metric = checked_episode(directory, args.task, episode, args.simulation_rate, expected_protocol=protocol)
                     if report["source_digest"] != source["source_digest"] or report["checkpoint_sha256"] != checkpoint_sha:
                         raise ValueError("completed episode source/checkpoint changed")
                     descriptor = read(directory / "manifest.json")
@@ -412,7 +491,7 @@ def main():
                         archive_file(native_dir / f"episode{episode}{suffix}",
                                      output / "artifact_attempts" / f"episode_{episode:04d}")
             directory.mkdir(parents=True, exist_ok=False)
-            events, env, session = [], None, None
+            events, env, session, replay_recorder = [], None, None, None
             reference = references[episode] if references is not None else None
             try:
                 env, prepared = prepare_level1_env(domino, task_name=args.task, task_config=benchmark["task_config"],
@@ -457,6 +536,17 @@ def main():
                     from dynamicwam.runtime.domino_continuous.continuous_session import ContinuousSyncSession
                     from dynamicwam.runtime.domino_continuous.continuous_rtc import run_continuous_rtc_episode
                     from dynamicwam.runtime.domino_continuous.worker import ProcessInferenceWorker
+                    if replay_scope is not None:
+                        from dynamicwam.runtime.domino_continuous.development_replay import DevelopmentReplayRecorder,select_development_scene
+                        frozen_scene = args.replay_from / args.task / f"episode_{episode:04d}"
+                        selected = select_development_scene(replay_scope,task=args.task,seed=descriptor["seed"],
+                            manifest_sha256=sha(frozen_scene / "manifest.json"),motion_sha256=sha(frozen_scene / "expert_motion.pkl"))
+                        replay_recorder = DevelopmentReplayRecorder(
+                            args.development_replay_dir.resolve() / args.task / f"episode_{episode:04d}",
+                            scope=replay_scope,scene=selected,
+                            trajectory_id=hashlib.sha256(str(directory.resolve()).encode()).hexdigest(),
+                            episode_id=f"{args.task}:{descriptor['seed']}",
+                            policy_checkpoint_sha256=checkpoint_sha,policy_source_sha256=source["source_digest"])
                     if worker is None:
                         worker = ProcessInferenceWorker(project_root=str(ROOT), config_path=str(args.config.resolve()),
                             checkpoint=str(args.checkpoint.resolve()), infer_index=0, policy_mode="motionkv_rtc", native_cuda_graph=True)
@@ -464,6 +554,7 @@ def main():
                     session = ContinuousSyncSession(env, flow=PhysicalTimeHeadHistory(inference["head_flow"],
                         frame_period_s=args.history_frame_period_s, endpoint_tolerance_s=args.history_frame_period_s / 2),
                         action_interval_s=args.action_interval_s, save_video=True, timing_mode="nominal_training_timing",
+                        replay_recorder=replay_recorder,
                         observation_config=dict(inference["observation"]), stop_on_contact=prepared["stop_on_contact"],
                         check_z_threshold=prepared["check_z_threshold"], lift_actor=prepared["lift_actor"],
                         start_z=prepared["start_z"], instruction=prepared["instruction"])
@@ -495,7 +586,8 @@ def main():
                     report = run_continuous_rtc_episode(session, worker, task=args.task, episode_seed=descriptor["seed"],
                         action_limit=action_limit, sink=events.append, max_backlog_s=args.max_backlog_s,
                         infer_clock_tolerance_s=args.infer_clock_tolerance_s, frame_period_s=args.history_frame_period_s,
-                        action_interval_s=args.action_interval_s, simulation_rate=args.simulation_rate)
+                        action_interval_s=args.action_interval_s, simulation_rate=args.simulation_rate,
+                        joint_v3=args.joint_v3,replay_recorder=replay_recorder)
                     if report.get("protocol") != protocol or not valid_clock_identity(report):
                         raise RuntimeError("RTC rollout failed its protocol/clock gates")
                     report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
@@ -521,7 +613,11 @@ def main():
                     metric = tracker.get_episode_metrics(bool(report["success"]), None if report["stop_reason"] in {"success", "action_budget_exhausted"} else report["stop_reason"], seed=descriptor["seed"])
                     save(directory / "metrics.json", asdict(metric) if is_dataclass(metric) else vars(metric))
                     save(directory / "report.json", report)
-                    checked_episode(directory, args.task, episode, args.simulation_rate)
+                    checked_episode(directory, args.task, episode, args.simulation_rate, expected_protocol=protocol)
+                    if replay_recorder is not None:
+                        replay_recorder.finalize(success=report["success"],complete=True)
+                        report["development_replay_manifest"] = str(replay_recorder.directory / "manifest.json")
+                        save(directory / "report.json",report)
                     completed.append(dict(seed=descriptor["seed"], success=report["success"]))
                     publish_native_task_results(output, native_dir, count=len(completed), planned=args.episodes,
                         stamp=args.result_stamp, instruction_type=str(benchmark["instruction_type"]), checkpoint=args.checkpoint,
@@ -530,6 +626,12 @@ def main():
                 print("MOTIONKV_EPISODE " + json.dumps(dict(task=args.task, episode=episode, seed=descriptor["seed"], prepare_only=args.prepare_only)), flush=True)
             finally:
                 original_error = sys.exc_info()[1]
+                if replay_recorder is not None and not replay_recorder.closed:
+                    try:
+                        replay_recorder.finalize(success=False,complete=False,
+                            error=None if original_error is None else f"{type(original_error).__name__}: {original_error}")
+                    except BaseException:
+                        traceback.print_exc()
                 if original_error is not None:
                     if cohort is not None:
                         cohort.abort(f"{args.task} episode {episode}: {type(original_error).__name__}: {original_error}")

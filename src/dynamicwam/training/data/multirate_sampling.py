@@ -62,8 +62,13 @@ class BalancedPairSampler(Sampler):
         if rank < 0 or world_size < 1 or rank >= world_size:
             raise ValueError("sampler rank is outside the process group")
         self.groups = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-        for i, r in enumerate(records):
-            self.groups[r.task_name][r.episode_index][(r.offset_label, r.offset)].append(i)
+        if hasattr(records, "sampling_groups"):
+            # Physical-time data expose compact ranges: do not materialize a
+            # Python integer/object for every causal age/source pair.
+            self.groups = records.sampling_groups
+        else:
+            for i, r in enumerate(records):
+                self.groups[r.task_name][r.episode_index][(r.offset_label, r.offset)].append(i)
         # Ordinary dicts are picklable by spawn-based DataLoader processes.
         self.groups = {t:{e:dict(ages) for e,ages in eps.items()} for t,eps in self.groups.items()}
         self.episodes = [

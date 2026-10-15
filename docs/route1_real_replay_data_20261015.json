@@ -1,0 +1,27 @@
+{
+  "actual_replay_status": "missing_not_collected_no_GPU",
+  "bootstrap": "eager real same-trajectory source/current capture with delta_actions=0, elapsed_seconds>0, actual continuous hold tick commands and H4 prefix; exact recorded source/current endpoint origins retained",
+  "fixture_status": "synthetic_schema_only_not_training_ready",
+  "formal_inventory": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/formal700_exclusion.json",
+  "formal_inventory_sha256": "bb9eff88ac6568cb223f094a11414ea3b3ed9176da88d2aa19a61b0d73271f58",
+  "gaps": [
+    "Actual guarded VAE encoding and GPU model smoke not run.",
+    "No actual successful development replay or actual bootstrap trace exists yet.",
+    "Corrective replay consumption supported by strict artifact interface; automatic expert relabel generation is not implemented."
+  ],
+  "language": "exact actual instruction matched to canonical packed group and language_index; unknown requires actual-instruction T5 cache; no first-row fallback",
+  "language_catalog_audit": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/replay_cpu_smoke/language_catalog_audit.json",
+  "normalization": "raw14 drive states/actions/prefix/prior queue normalized using current packed action statistics",
+  "provenance": "formal700 exclusion, dev allowlist, raw file table hashes, VAE and encoder identities, exact replay partition identity distinct from parent offline holdout",
+  "publication": "monotonic publish<=consume<=receive verified; physical lower/upper bounds only, time_is_exact=false; no fitted exact publication latency",
+  "raw_converter": "scripts/prepare_real_rollout_replay.py",
+  "source_prefix": "source query own committed prefix only, independently retained from current query; source prime d0, current H4 in roundtrip",
+  "stage": "optional_real_rollout_refinement",
+  "synthetic_fixture": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/replay_cpu_smoke/synthetic_fixture.pt",
+  "targets": "successful actual controller command trajectory self-imitation; failed traces rejected unless separate hash-bound same-observation expert corrective artifacts",
+  "tests": {
+    "tests/test_physical_grid_data.py": 12,
+    "tests/test_real_rollout_dataset.py": 9
+  },
+  "training_consumer": "dynamicwam.training.data.rollout_replay.RealRolloutReplayDataset"
+}

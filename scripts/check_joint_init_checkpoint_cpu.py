@@ -1,17 +1,20 @@
 """Read the actual step12000 payload lazily and verify V2 initialization schema."""
 from pathlib import Path
 import json
+import argparse
 import sys
 import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from dynamicwam.config.multirate import load_multirate_profile
 from dynamicwam.inference.multirate_model_loader import build_fast_conditioner
-from dynamicwam.training.train.multirate_trainer import _JOINT_NEW_STATE_PREFIXES
+from dynamicwam.training.train.multirate_trainer import _JOINT_NEW_STATE_PREFIXES,migrate_joint_interface_initialization
 
 def main():
     root = Path(__file__).resolve().parents[1]
     torch.set_num_threads(2)
-    cfg = load_multirate_profile(root / 'configs/multirate/joint_motionkv_warmup_smoke.yaml').training
+    parser=argparse.ArgumentParser();parser.add_argument('--v3',action='store_true');args=parser.parse_args()
+    profile='joint_motionkv_v3_warmup_smoke.yaml' if args.v3 else 'joint_motionkv_warmup_smoke.yaml'
+    cfg = load_multirate_profile(root / 'configs/multirate' / profile).training
     path = Path(cfg['model']['initial_checkpoint'])
     payload = torch.load(path, weights_only=True, map_location='cpu', mmap=True)
     manifest = json.loads(Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_async_20261015/manifest.json').read_text())
@@ -23,6 +26,7 @@ def main():
     spec = dict(cfg['model']['fast_conditioner'])
     motion = payload['modules']['motion']
     spec.update(motion_mean=motion['mean'], motion_scale=motion['scale'])
+    torch.manual_seed(int(cfg["initialization_seed"]))
     model = build_fast_conditioner(spec)
     current = {'fast_conditioner.' + k: v for k, v in model.state_dict().items()}
     old = {k: v for k, v in payload['model'].items() if k.startswith('fast_conditioner.')}
@@ -32,10 +36,28 @@ def main():
     assert all(v.shape == current[k].shape for k, v in old.items())
     state = {k.removeprefix('fast_conditioner.'): v for k, v in {**current, **old}.items()}
     model.load_state_dict(state, strict=True)
+    backbone={k:v for k,v in payload['model'].items() if k.startswith('backbone.')}
+    assert backbone and all(torch.is_tensor(v) for v in backbone.values())
+    class InterfaceSchemaTarget:
+        fast_conditioner=model
+        def state_dict(self): return {**backbone,**{'fast_conditioner.'+k:v for k,v in model.state_dict().items()}}
+    filled,actual_missing=migrate_joint_interface_initialization(InterfaceSchemaTarget(),payload)
+    assert set(actual_missing)==missing
+    assert all(filled['model'][k] is value for k,value in backbone.items())
+    assert payload['config']['action_normalization']==payload['modules']['action_normalization']
+    assert float(model.innovation_gate)==0.
+    assert any(torch.count_nonzero(value).item()>0 for key,value in old.items() if '.delta_v.' in key)
+    if args.v3:
+        assert torch.count_nonzero(model.motion_forecast[-1].weight)==0
+        assert torch.count_nonzero(model.motion_forecast[-1].bias)==0
     result = dict(passed=True, checkpoint=str(path), global_step=payload['global_step'],
-        preserved_conditioner_tensors=len(old), initialized_tensors=sorted(missing),
+        preserved_conditioner_tensors=len(old), preserved_backbone_tensors=len(backbone),
+        initialized_tensors=sorted(missing),interface_version=3 if args.v3 else 2,
+        backbone_tensor_aliases_preserved_by_actual_migration=True,
+        action_normalizer_identical=True,old_nonzero_delta_heads_verified=True,
+        new_gate_zero=True,initialization_seed=int(cfg["initialization_seed"]),
         dataset_and_holdout_exact=True, device='cpu', checkpoint_load='mmap',
-        limitations='conditioner strict load and full checkpoint metadata; no full Video DiT instantiation or GPU')
+        limitations='conditioner strict load and actual full-state migration schema, original backbone tensors aliased unchanged; no full Video DiT instantiation or GPU; fixed-grid latent readiness checked separately')
     print(json.dumps(result))
 
 if __name__ == '__main__':

@@ -30,12 +30,16 @@ def training_environment(inherited=None):
     return env, nccl
 
 
-def commands(ids, authorization, out, inherited=None):
+def commands(ids, authorization, out, inherited=None, recipe='v2'):
+    if recipe not in ('v2', 'v3', 'v3-replay'):
+        raise ValueError('unknown joint recipe')
     python = str(ROOT / '.venv/bin/python')
     inherited = dict(os.environ if inherited is None else inherited)
     result = []
-    for phase in ('warmup', 'joint'):
-        config = ROOT / f'configs/multirate/joint_motionkv_{phase}_smoke.yaml'
+    phases = ('replay',) if recipe == 'v3-replay' else ('warmup', 'joint')
+    for phase in phases:
+        stem = 'joint_motionkv_v3' if recipe.startswith('v3') else 'joint_motionkv'
+        config = ROOT / f'configs/multirate/{stem}_{phase}_smoke.yaml'
         profile = yaml.safe_load(config.read_text())
         if profile['training']['max_steps'] != 4 or profile['training'].get('resume_from'):
             raise ValueError('this launcher only accepts fresh four-step smoke profiles')
@@ -63,7 +67,7 @@ def commands(ids, authorization, out, inherited=None):
             config=str(config), training_run=str(training_run),
             initialization=profile['paths']['init_checkpoint'],
             full_export=str(exports / 'multirate_step_4.pt')))
-    if Path(result[1]['initialization']).resolve() != Path(result[0]['full_export']).resolve():
+    if len(result) == 2 and Path(result[1]['initialization']).resolve() != Path(result[0]['full_export']).resolve():
         raise ValueError('joint smoke must initialize exactly the newly audited warmup export')
     return result
 
@@ -112,12 +116,35 @@ def require_fresh_outputs(plan, out):
     if not Path(plan[0]['initialization']).is_file():
         raise FileNotFoundError('warmup initialization checkpoint is missing')
 
+
+def require_recipe_data(plan, recipe):
+    if not recipe.startswith('v3'):
+        return None
+    sys.path.insert(0, str(ROOT / 'src'))
+    from dynamicwam.training.data.physical_grid_dataset import validate_physical_grid_readiness
+    profiles = [yaml.safe_load(Path(stage['config']).read_text()) for stage in plan]
+    pairing = profiles[0]['pairing']
+    roots = (pairing['physical_grid_root'], pairing['future_latent_root'])
+    for profile in profiles[1:]:
+        if (profile['pairing']['physical_grid_root'], profile['pairing']['future_latent_root']) != roots:
+            raise ValueError('warmup/joint must use the same audited physical-time dataset')
+    # A complete manifest, all shard identities and coverage are verified here;
+    # a readiness boolean or a synthetic cached sample cannot release GPU smoke.
+    result = dict(physical=validate_physical_grid_readiness(*roots, verify_hashes=True, require_full=True))
+    if recipe == 'v3-replay':
+        from dynamicwam.training.data.real_rollout_dataset import validate_replay_manifest
+        _, _, replay = validate_replay_manifest(pairing['replay_root'], roots[0],
+            profiles[0]['paths']['packed_dataset'], strict_provenance=True)
+        result['real_replay'] = replay
+    return result
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gpu-uuids', required=True)
     parser.add_argument('--authorization', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--recipe', choices=('v2', 'v3', 'v3-replay'), default='v2')
     args = parser.parse_args()
     ids = args.gpu_uuids.split(',')
     if len(ids) != 8 or len(set(ids)) != 8 or any(not x.startswith('GPU-') for x in ids):
@@ -126,7 +153,7 @@ def main():
     if not out.is_relative_to(SSD.resolve()):
         raise ValueError('smoke outputs must be on verified project SSD')
     env, nccl = training_environment()
-    plan = commands(args.gpu_uuids, args.authorization.resolve(), out, env)
+    plan = commands(args.gpu_uuids, args.authorization.resolve(), out, env, args.recipe)
     if not args.execute:
         print(json.dumps(dict(executed=False, stages=plan, nccl_environment=nccl,
             formal_training=False, protected_release_receipt=str(PROTECTED)), indent=2))
@@ -136,10 +163,12 @@ def main():
     require_release(PROTECTED, require_success=False, label='protected evaluation')
     authorization_sha = require_fresh_authorization(args.authorization, ids)
     identity = frozen_identity(plan)
+    data_receipt = require_recipe_data(plan, args.recipe)
     require_fresh_outputs(plan, out)
     out.mkdir(parents=True, exist_ok=False)
     receipt = dict(state='running', stages=plan, completed=[], retry_policy='none', formal_training=False,
-        frozen_source=identity, authorization_sha256=authorization_sha, nccl_environment=nccl)
+        frozen_source=identity, authorization_sha256=authorization_sha, nccl_environment=nccl,
+        recipe=args.recipe, data_readiness=data_receipt)
     status = out / 'status.json'
     try:
         for stage in plan:

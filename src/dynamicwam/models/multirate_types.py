@@ -36,9 +36,12 @@ class SourceObservation:
     # Causal source image snapshot for innovation features; never future labels.
     rgb: torch.Tensor | None = None
     rgb_valid_mask: torch.Tensor | None = None
+    action_target_offsets: torch.Tensor | None = None
+    committed_prefix: torch.Tensor | None = None
+    committed_prefix_lengths: torch.Tensor | None = None
 
-    def as_model_batch(self) -> dict[str, torch.Tensor | list[torch.Tensor]]:
-        return {
+    def as_model_batch(self) -> dict[str, object]:
+        batch = {
             "condition_latent": self.condition_latent,
             "initial_state": self.state,
             "absolute_motion_features": self.motion,
@@ -48,6 +51,12 @@ class SourceObservation:
             ),
             "text_embeddings": self.text_embeddings,
         }
+        if self.committed_prefix is not None or self.committed_prefix_lengths is not None:
+            if self.committed_prefix is None or self.committed_prefix_lengths is None:
+                raise ValueError("source committed prefix requires actions and lengths together")
+            from dynamicwam.models.rtc_prefix import PrefixCondition
+            batch["rtc_prefix"] = PrefixCondition(self.committed_prefix, self.committed_prefix_lengths)
+        return batch
 
 
 @dataclass
@@ -77,6 +86,7 @@ class BridgeTensorBundle:
     interface_version: int = 1
     source_action_plan: torch.Tensor | None = None
     source_action_sigma: torch.Tensor | float | None = None
+    source_action_target_offsets: torch.Tensor | None = None
     source_motion: torch.Tensor | None = None
     source_motion_interval_valid_mask: torch.Tensor | None = None
     source_motion_acceleration_valid_mask: torch.Tensor | None = None
@@ -176,6 +186,8 @@ class CurrentObservation:
     committed_prefix: torch.Tensor | None = None
     committed_prefix_lengths: torch.Tensor | None = None
     observation_delay_seconds: float | torch.Tensor = 0.0
+    previous_plan: torch.Tensor | None = None
+    previous_plan_valid: torch.Tensor | None = None
     # Planned physical effect times, relative to this observation. Available
     # queue metadata, not future observations; required by the V2 interface.
     action_target_offsets: torch.Tensor | None = None

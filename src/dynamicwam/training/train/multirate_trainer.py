@@ -76,6 +76,7 @@ _JOINT_NEW_STATE_PREFIXES = (
     "fast_conditioner.plan_innovation.",
     "fast_conditioner.innovation_kind",
     "fast_conditioner.innovation_gate",
+    "fast_conditioner.motion_forecast.",
 )
 
 
@@ -86,8 +87,8 @@ def migrate_joint_interface_initialization(model, payload):
     previous = payload.get("config", {}).get("model", {}).get("fast_conditioner", {})
     if int(previous.get("interface_version", 1)) != 1 or not previous.get("motion_kv"):
         raise ValueError("joint interface migration requires MotionKV V1 weights")
-    if getattr(model.fast_conditioner, "interface_version", 1) != 2:
-        raise ValueError("joint interface migration target must be V2")
+    if getattr(model.fast_conditioner, "interface_version", 1) not in (2, 3):
+        raise ValueError("joint interface migration target must be V2 or V3")
     current, incoming = model.state_dict(), payload["model"]
     missing, extra = set(current) - set(incoming), set(incoming) - set(current)
     if extra or not missing or any(not key.startswith(_JOINT_NEW_STATE_PREFIXES) for key in missing):
@@ -103,7 +104,9 @@ def configure_multirate_trainable(model: MultirateWAM, phase: str) -> str:
     for parameter in model.parameters():
         parameter.requires_grad_(False)
     if getattr(model, "native_multirate", False):
-        if not model.external_native_teacher:
+        teacher_free_v3 = (getattr(model.fast_conditioner,"interface_version",1) >= 3
+            and model.native_source_bridge == "student_joint" and model.native_teacher_weight == 0)
+        if not model.external_native_teacher and not teacher_free_v3:
             raise ValueError("native action adaptation requires an independent fixed teacher")
         for module in (model.backbone.action_expert, model.backbone.absolute_motion_tokens,
                        model.fast_conditioner):
@@ -254,6 +257,7 @@ def prepare_multirate_batch(
     generator: torch.Generator | None = None,
     native_teacher: bool = False,
     native_multirate: bool = False,
+    joint_interface_version: int = 2,
 ) -> dict[str, Any]:
     """Build one training step. The bridge noise is fresh, not a GT mixture."""
 
@@ -275,12 +279,27 @@ def prepare_multirate_batch(
         ),
         text_embeddings=text,
         source_id=_batch_identity(sample.get("source_id", 0), device=device, dtype=torch.long),
-        sim_time=_batch_identity(sample.get("source_sim_time", 0.0), device=device, dtype=torch.float32),
+        sim_time=_batch_identity(sample.get("source_sim_time", 0.0), device=device,
+            dtype=torch.float64 if joint_interface_version >= 3 else torch.float32),
     )
     if "source_rgb" in sample:
         source = replace(source,
             rgb=sample["source_rgb"].to(device=device, dtype=torch.float32),
             rgb_valid_mask=sample["source_rgb_valid_mask"].to(device=device, dtype=torch.bool))
+    if joint_interface_version >= 3:
+        if "joint_targets" not in sample or "async_timing" not in sample or int(sample.get("physical_grid_version",0)) != 1:
+            raise ValueError("V3 requires physically aligned cached video/action samples")
+        source_offsets = sample["joint_targets"]["source_action_target_times"].to(device=device, dtype=torch.float64) - sample["source_sim_time"].to(device=device, dtype=torch.float64).reshape(-1,1)
+        source = replace(source, action_target_offsets=source_offsets)
+        if "source_rtc_prefix_actions" not in sample or "source_rtc_prefix_lengths" not in sample:
+            raise ValueError("V3 requires source-query committed prefix metadata, including explicit zero bootstrap")
+        from dynamicwam.models.rtc_prefix import PrefixCondition, validate_prefix_condition, apply_prefix
+        source_prefix = PrefixCondition(sample["source_rtc_prefix_actions"].to(device=device,dtype=dtype),
+            sample["source_rtc_prefix_lengths"].to(device=device,dtype=torch.long))
+        validate_prefix_condition(source_prefix,max_prefix=4,
+            reference=sample["fast_action_sequence"].to(device=device,dtype=dtype))
+        source = replace(source,committed_prefix=source_prefix.actions,committed_prefix_lengths=source_prefix.lengths)
+
     reject_leaky_source_fields(source.as_model_batch())
     noise_shape = tuple(sample["bridge_noise_shape_latent"].shape)
     action_shape = tuple(sample["fast_action_sequence"].shape)
@@ -316,7 +335,8 @@ def prepare_multirate_batch(
             device=device,
         )
     age = BridgeAge(
-        delta_sim_seconds=sample["delta_sim_seconds"].to(device=device, dtype=dtype),
+        delta_sim_seconds=sample["delta_sim_seconds"].to(device=device,
+            dtype=torch.float64 if joint_interface_version >= 3 else dtype),
         delta_actions=sample["delta_actions"].to(device=device, dtype=dtype),
         bridge_valid=~null_mask,
         state_delta=state_delta,
@@ -376,6 +396,33 @@ def prepare_multirate_batch(
         if not bool(torch.isfinite(offsets).all()) or bool((offsets <= 0).any()) or bool((offsets[:, 1:] <= offsets[:, :-1]).any()):
             raise ValueError("joint action target times must be finite, future and increasing")
         prepared["current"] = replace(prepared["current"], action_target_offsets=offsets)
+    if joint_interface_version >= 3:
+        source_labels = sample["joint_targets"]
+        source_future = source_labels["source_future_latent"].to(device=device, dtype=dtype)
+        source_actions = source_labels["source_action_sequence"].to(device=device, dtype=dtype)
+        source_future_noisy, source_video_t, source_video_target, _ = _flow_pair(source_future,timesteps,sigmas,generator=generator)
+        source_action_noisy, source_action_t, source_action_target, _ = _flow_pair(source_actions,timesteps,sigmas,generator=generator)
+        prepared["source_aligned"] = dict(source.as_model_batch(), future_latent=source_future_noisy,
+            noisy_actions=apply_prefix(source_action_noisy,source_prefix), action_t=source_action_t, video_t=source_video_t)
+        prepared["source_video_target"] = source_video_target
+        prepared["source_action_target"] = source_action_target
+        prepared["source_rtc_prefix"] = source_prefix
+        prepared["async_timing"] = {key: value.to(device=device) if torch.is_tensor(value) else value
+            for key, value in sample["async_timing"].items()}
+        prepared["rtc_sample_prefix_actions"] = sample["rtc_prefix_actions"].to(device=device,dtype=dtype)
+        if "previous_plan" in sample or "previous_plan_valid_mask" in sample:
+            if "previous_plan" not in sample or "previous_plan_valid_mask" not in sample:
+                raise ValueError("real previous proposal requires both normalized actions and validity")
+            previous = sample["previous_plan"].to(device=device,dtype=dtype)
+            previous_valid = sample["previous_plan_valid_mask"].to(device=device,dtype=torch.bool)
+            if previous.shape != fast_actions.shape or previous_valid.shape != fast_actions.shape[:2]:
+                raise ValueError("real previous proposal must share the current physical endpoint grid")
+            if not bool(torch.isfinite(torch.where(previous_valid[...,None],previous,torch.zeros_like(previous))).all()):
+                raise ValueError("real previous proposal contains nonfinite valid actions")
+            prepared["current"] = replace(prepared["current"], previous_plan=previous,
+                previous_plan_valid=previous_valid)
+        if "replay_identity" in sample:
+            prepared["replay_identity"] = sample["replay_identity"]
     if native_teacher:
         prepared['fast_sigma'] = fast_sigma
         # Independent of the teacher's initial sampling noise; otherwise the
@@ -462,9 +509,27 @@ class MultirateTrainer:
             native_teacher_weight=float(loss_cfg.get('native_teacher_weight', 0.0)),
         )
         dataset_cfg = config["dataset"]
-        self.dataset = PairedWorldActionDataset(
+        dataset_class, collate_function = PairedWorldActionDataset, paired_collate_fn
+        physical_kwargs = {}
+        if int(config["model"]["fast_conditioner"].get("interface_version",1)) >= 3:
+            from dynamicwam.training.data.physical_grid_dataset import PhysicalGridPairedWorldActionDataset, physical_grid_collate_fn
+            dataset_class, collate_function = PhysicalGridPairedWorldActionDataset, physical_grid_collate_fn
+            physical_kwargs = dict(physical_grid_root=dataset_cfg["physical_grid_root"],
+                future_latent_root=dataset_cfg["future_latent_root"],
+                max_cache_age_actions=31, async_seed=int(dataset_cfg.get("async_seed",20261015)),
+                slow_budget_seconds=2.56, rtc_prefix_max=int(config["rtc_prefix_max"]),
+                strict_future_latents=True)
+        if dataset_cfg.get("kind", "physical_grid") == "real_rollout":
+            if int(config["model"]["fast_conditioner"].get("interface_version",1)) != 3:
+                raise ValueError("real rollout refinement requires the complete V3 interface")
+            from dynamicwam.training.data.rollout_replay import RealRolloutReplayDataset
+            def dataset_class(packed_root, source_root, **kwargs):
+                return RealRolloutReplayDataset(dataset_cfg["replay_root"], packed_root=packed_root,
+                    source_root=source_root, strict_provenance=True, **kwargs)
+        self.dataset = dataset_class(
             dataset_cfg["root"],
             dataset_cfg["source_root"],
+            **physical_kwargs,
             splits=dataset_cfg["splits"],
             execute_horizon=int(dataset_cfg["execute_horizon"]),
             every_fast_queries=int(dataset_cfg["every_fast_queries"]),
@@ -512,13 +577,14 @@ class MultirateTrainer:
             self.dataset,
             batch_size=batch_size,
             sampler=self.pair_sampler,
-            collate_fn=paired_collate_fn,
+            collate_fn=collate_function,
             generator=torch.Generator().manual_seed(int(dataset_cfg["partition_seed"])),
             **loader_kwargs,
         )
-        self.val_dataset = PairedWorldActionDataset(
+        self.val_dataset = dataset_class(
             dataset_cfg["root"],
             dataset_cfg["source_root"],
+            **physical_kwargs,
             splits=dataset_cfg["splits"],
             execute_horizon=int(dataset_cfg["execute_horizon"]),
             every_fast_queries=int(dataset_cfg["every_fast_queries"]),
@@ -558,7 +624,7 @@ class MultirateTrainer:
                 self.val_dataset,
                 batch_size=batch_size,
                 sampler=self.val_sampler,
-                collate_fn=paired_collate_fn,
+                collate_fn=collate_function,
                 generator=torch.Generator().manual_seed(int(dataset_cfg["partition_seed"]) + 1),
                 **loader_kwargs,
             )
@@ -578,6 +644,7 @@ class MultirateTrainer:
         self.model.gradient_checkpointing = bool(config.get("gradient_checkpointing", False))
         self.model.joint_video_weight = float(loss_cfg["video_weight"])
         self.model.joint_action_weight = float(loss_cfg["action_weight"])
+        self.model.motion_prediction_weight = float(config.get("motion_prediction_weight", 0.0))
         self._load_initialization()
         self._build_native_teacher()
         self.model.max_bridge_age_seconds = config.get("max_bridge_age_seconds")
@@ -794,8 +861,15 @@ class MultirateTrainer:
         if maximum:
             from dynamicwam.models.rtc_prefix import PrefixCondition
             clean = prepared["clean_actions"]
-            lengths = torch.randint(0, maximum + 1, (clean.shape[0],), device=clean.device, generator=generator)
-            prepared["rtc_prefix"] = PrefixCondition(clean.detach(), lengths)
+            if "async_timing" in prepared:
+                lengths = prepared["async_timing"]["rtc_prefix_lengths"].to(device=clean.device,dtype=torch.long)
+                actions = prepared["rtc_sample_prefix_actions"].detach()
+                from dynamicwam.models.rtc_prefix import validate_prefix_condition
+                validate_prefix_condition(PrefixCondition(actions,lengths),max_prefix=maximum,reference=clean)
+            else:
+                lengths = torch.randint(0, maximum + 1, (clean.shape[0],), device=clean.device, generator=generator)
+                actions = clean.detach()
+            prepared["rtc_prefix"] = PrefixCondition(actions, lengths)
             if "action_target_times" in prepared:
                 offsets = prepared["current"].action_target_offsets
                 if offsets is None:
@@ -850,6 +924,16 @@ class MultirateTrainer:
             if not transfer or payload.get("format") != "dynamicwam_absolute_motion_checkpoint":
                 raise RuntimeError(f"checkpoint dataset identity differs from paired data: {path}")
             self._check_transfer_compatibility(payload)
+        saved_runtime = config.get("runtime_contract", {})
+        replay_transition = False
+        if self.config["dataset"].get("kind") == "real_rollout":
+            replay_transition = (
+                int(config.get("model",{}).get("fast_conditioner",{}).get("interface_version",1)) == 3
+                and saved_runtime.get("physical_grid") == self.dataset.physical_grid_identity
+                and saved_runtime.get("episode_partition_identity") == self.dataset.parent_episode_partition_identity
+                and bool(getattr(self.dataset,"replay_identity",None)))
+            if saved_runtime.get("pairing_identity") != self.dataset.pairing_identity and not replay_transition:
+                raise RuntimeError("replay refinement initialization lacks matching V3 physical-grid and parent holdout provenance")
         saved_pairing = config.get("runtime_contract", {}).get("pairing_identity")
         if saved_pairing is not None and saved_pairing != self.dataset.pairing_identity:
             # Old exports lack the age-independent partition hash. Recompute
@@ -860,14 +944,14 @@ class MultirateTrainer:
             migration = (self.config.get("initialize_joint_interface", False)
                 and int(old_fast.get("interface_version", 1)) == 1
                 and old_fast.get("motion_kv") and saved_pairing == legacy)
-            if not migration:
+            if not migration and not replay_transition:
                 raise RuntimeError("initial multirate checkpoint used a different episode holdout/pairing")
             self.pairing_migration = {"previous": saved_pairing,
                 "current": self.dataset.pairing_identity,
                 "episode_partition_identity": self.dataset.episode_partition_identity,
-                "reason": "explicit causal cache age enrichment, unchanged episodes"}
+                "reason": "explicit verified real-rollout refinement on new dev episodes" if replay_transition else "explicit causal cache age enrichment, unchanged episodes"}
         saved_partition = config.get("runtime_contract", {}).get("episode_partition_identity")
-        if saved_partition is not None and saved_partition != self.dataset.episode_partition_identity:
+        if saved_partition is not None and saved_partition != self.dataset.episode_partition_identity and not replay_transition:
             raise RuntimeError("initial multirate checkpoint episode holdout changed")
         model_cfg = config.get("model")
         if not isinstance(model_cfg, dict) or "absolute_motion" not in model_cfg:
@@ -897,6 +981,7 @@ class MultirateTrainer:
                 phase=self.phase,
                 native_teacher=float(self.config.get('loss', {}).get('native_teacher_weight', 0.0)) > 0,
                 native_multirate=bool(self.config.get("native_phase")),
+                joint_interface_version=int(fast_cfg.get("interface_version", 2)),
                 null_bridge_probability=float(self.config["null_bridge_probability"]),
                 sim_scale=float(fast_cfg["sim_scale"]),
                 action_scale=float(fast_cfg["action_scale"]),
@@ -965,7 +1050,8 @@ class MultirateTrainer:
         return {"training": {**{k: self.config[k] for k in keys}, "rtc_prefix_max": int(self.config.get("rtc_prefix_max", 0)), "fast_supervision": self.config.get("fast_supervision", "executed_prefix") + "_v1",
                                      "max_bridge_age_seconds": self.config.get("max_bridge_age_seconds"),
                                      **({"native_source_bridge": "student_joint",
-                                         "gradient_checkpointing": bool(self.config.get("gradient_checkpointing", False))}
+                                         "gradient_checkpointing": bool(self.config.get("gradient_checkpointing", False)),
+                                         "motion_prediction_weight": float(self.config.get("motion_prediction_weight",0.0))}
                                         if self.config.get("native_source_bridge") == "student_joint" else {}),
                                      **({"feedback_phase": self.config["feedback_phase"],
                                         "feedback_world_refresh_actions": self.config.get("feedback_world_refresh_actions",16)} if self.config.get("feedback_phase") else {}),
@@ -977,7 +1063,13 @@ class MultirateTrainer:
                              **({"cache_age_actions": self.config["dataset"].get("cache_age_actions"),
                                  "joint_supervision": True,
                                  "cache_age_jitter": bool(self.config["dataset"].get("cache_age_jitter", False)),
-                                 "cache_age_seed": int(self.config["dataset"].get("cache_age_seed", 0))}
+                                 "cache_age_seed": int(self.config["dataset"].get("cache_age_seed", 0)),
+                                 **({"physical_grid_identity": self.dataset.physical_grid_identity,
+                                     "async_seed": int(self.config["dataset"].get("async_seed",20261015)),
+                                      "dataset_kind": self.config["dataset"].get("kind","physical_grid"),
+                                      "replay_identity": getattr(self.dataset,"replay_identity",None),
+                                      "replay_target_policy": self.config["dataset"].get("replay_target_policy")}
+                                    if hasattr(self.dataset,"physical_grid_identity") else {})}
                                 if self.config["dataset"].get("joint_supervision") else {})},
                 "batches_per_epoch": len(self.train_loader), "pair_count": len(self.dataset)}
 
@@ -1027,10 +1119,12 @@ class MultirateTrainer:
                     "scope": "all_layer_native_joint_attention_kv", "motion": "causal_native_optical_flow_statistics_with_masks",
                     "localization": "current_visual_spatial_tokens; no ground-truth object mask"}}
                     if self.config["model"]["fast_conditioner"].get("motion_kv") else {}),
-                **({"native_multirate": {"version": 2 if self.config.get("native_source_bridge") == "student_joint" else 1, "phase": self.config["native_phase"],
+                **({"native_multirate": {"version": int(self.config["model"]["fast_conditioner"].get("interface_version", 2)) if self.config.get("native_source_bridge") == "student_joint" else 1, "phase": self.config["native_phase"],
                     "fast_steps": int(self.config["native_fast_steps"]), "world_aware": True,
                     "source_bridge": self.config.get("native_source_bridge", "immutable_official"),
                     "world_refresh_actions": int(self.config["dataset"]["execute_horizon"]) * int(self.config["dataset"]["every_fast_queries"]),
+                    **({"slow_schedule": "asynchronous_latest_completed_v1"}
+                       if int(self.config["model"]["fast_conditioner"].get("interface_version",1)) >= 3 else {}),
                     "teacher": self.native_teacher_identity}}
                     if self.config.get("native_phase") else {}),
                 **({'feedback': {'ready':self.config.get('feedback_phase')=='policy',
@@ -1040,6 +1134,19 @@ class MultirateTrainer:
                 "preprocess": "three_view_160_imagenet_mask_v1",
                 "clock_mode": self.config["dataset"]["clock_mode"],
                 "max_age_actions": self.dataset.max_supported_cache_age_actions,
+                **({"max_age_seconds": 4.96,
+                    "physical_grid": getattr(self.dataset,"physical_grid_identity",None),
+                    "physical_grid_contract": {"schema_version": 1, "action_interval_seconds": .16,
+                        "action_horizon": 16, "source_plan_alignment": "physical_time_linear_arm_previous_hold_gripper",
+                        "latent_manifest_sha256": self.dataset.readiness["latent_manifest_sha256"]},
+                    "source_retention": "fixed_grid_source_video_action_fm",
+                    "slow_source_prefix": "clean_committed_v1",
+                    "motion_forecast": "source_kv_native_motion_elapsed_to_current_stats",
+                    "previous_plan": "soft_context_only; hard_prefix_is_irrevocable",
+                    "training_data_kind": self.config["dataset"].get("kind","physical_grid"),
+                    "replay_identity": getattr(self.dataset,"replay_identity",None),
+                    "prefix_training_source": "on_policy_executed" if self.config["dataset"].get("kind") == "real_rollout" else "expert_demonstration"}
+                   if int(self.config["model"]["fast_conditioner"].get("interface_version",1)) >= 3 else {}),
                 "pairing_identity": self.dataset.pairing_identity,
                 "episode_partition_identity": self.dataset.episode_partition_identity,
                 "execute_horizon": int(self.config["dataset"]["execute_horizon"]),
@@ -1409,7 +1516,8 @@ class MultirateTrainer:
                 with torch.no_grad():
                     prepared = prepare_multirate_batch(batch, timesteps=self._timesteps,
                         sigmas=self._sigmas, device=self.device, dtype=self._timesteps.dtype,
-                        phase=self.phase, native_teacher=True, native_multirate=True, null_bridge_probability=0.,
+                        phase=self.phase, native_teacher=True, native_multirate=True,
+                        joint_interface_version=int(self.config["model"]["fast_conditioner"].get("interface_version", 2)), null_bridge_probability=0.,
                         null_bridge=False, sim_scale=1., action_scale=16., generator=generator)
                     self._attach_rtc_prefix(prepared, generator)
                     self._attach_native_teacher(prepared)
@@ -1427,7 +1535,8 @@ class MultirateTrainer:
                     else:
                         prediction, dropped = outputs["fast_pred"], null_outputs["fast_pred"]
                         target = prepared["fast_target"]
-                        teacher_error = (outputs["teacher_pred"].float() - outputs["teacher_target"].float()).square().flatten(1).mean(1)
+                        teacher_error = ((outputs["teacher_pred"].float() - outputs["teacher_target"].float()).square().flatten(1).mean(1)
+                            if "teacher_pred" in outputs else torch.zeros(prediction.shape[0],device=prediction.device))
                     errors = (prediction.float() - target.float()).square()
                     null_errors = (dropped.float() - target.float()).square()
                     if prepared.get("rtc_prefix") is not None:
@@ -1438,8 +1547,9 @@ class MultirateTrainer:
                         full = (errors.mean(-1) * suffix).sum(-1) / suffix.sum(-1)
                         prefix = (errors.mean(-1) * executable).sum(-1) / executable.sum(-1)
                         null_prefix = (null_errors.mean(-1) * executable).sum(-1) / executable.sum(-1)
-                        teacher_errors = (outputs["teacher_pred"].float() - outputs["teacher_target"].float()).square().mean(-1)
-                        teacher_error = (teacher_errors * suffix).sum(-1) / suffix.sum(-1)
+                        if "teacher_pred" in outputs:
+                            teacher_errors = (outputs["teacher_pred"].float() - outputs["teacher_target"].float()).square().mean(-1)
+                            teacher_error = (teacher_errors * suffix).sum(-1) / suffix.sum(-1)
                     else:
                         full = errors.flatten(1).mean(1)
                         prefix = errors[:, :horizon].flatten(1).mean(1)
@@ -1460,6 +1570,7 @@ class MultirateTrainer:
                         metrics[f"val/age_{int(age)}/{name}"] = float(subset[:, i].mean())
                     metrics[f"val/age_{int(age)}/bridge_prefix_gain"] = float((subset[:, 4] - subset[:, 2]).mean())
                     metrics[f"val/age_{int(age)}/samples"] = int(subset.shape[0])
+                metrics["val/native_teacher_enabled"] = float(self.config["loss"].get("native_teacher_weight",0)>0)
                 self.accelerator.log(metrics, step=self.global_step)
                 logger.info("Native multirate validation: %s", json.dumps(metrics, sort_keys=True))
         finally:

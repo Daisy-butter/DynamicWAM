@@ -20,7 +20,7 @@ from dynamicwam.models.rtc_prefix import PrefixCondition, apply_prefix, validate
 
 
 _BRIDGE_CONTEXT_TENSORS = (
-    "source_action_plan", "source_action_sigma", "source_motion",
+    "source_action_plan", "source_action_sigma", "source_action_target_offsets", "source_motion",
     "source_motion_interval_valid_mask", "source_motion_acceleration_valid_mask",
     "source_rgb", "source_rgb_valid_mask", "source_visual_tokens", "source_visual_valid",
 )
@@ -44,6 +44,7 @@ class NativeFastGraph:
         self.requested_enabled = bool(enabled)
         self.warmup = int(warmup)
         self.graph = None
+        self.allow_recapture = True
         self.signature = None
         self.stats = dict(enabled=False, captures=0, replays=0, eager_calls=0,
                           last_capture_ms=None, last_signature=None)
@@ -70,7 +71,8 @@ class NativeFastGraph:
                     current.state, current.motion, current.motion_interval_valid_mask,
                     current.motion_acceleration_valid_mask, current.age.state_delta, text, text_mask, noise,
                     prefix.actions, prefix.lengths, current.committed_prefix,
-                    current.committed_prefix_lengths, current.observation_delay_seconds, current.action_target_offsets)),
+                    current.committed_prefix_lengths, current.observation_delay_seconds, current.action_target_offsets,
+                    current.previous_plan, current.previous_plan_valid, current.age.delta_sim_seconds)),
                 tuple(_tensor_signature(v) for v in (*bridge.video_k, *bridge.video_v, bridge.seq_lens)),
                 tuple(_tensor_signature(getattr(bridge, name)) for name in _BRIDGE_CONTEXT_TENSORS),
                 int(bridge.interface_version), null_signature, bool(bridge.all_video_tokens_valid),
@@ -88,7 +90,8 @@ class NativeFastGraph:
             if tensor.numel() != batch:
                 raise ValueError("native graph age batch mismatch")
             return tensor
-        return BridgeAge(column(current.age.delta_sim_seconds, dtype),
+        sim_dtype = current.age.delta_sim_seconds.dtype if torch.is_tensor(current.age.delta_sim_seconds) else dtype
+        return BridgeAge(column(current.age.delta_sim_seconds, sim_dtype),
                          column(current.age.delta_actions, dtype),
                          column(current.age.bridge_valid, torch.bool), current.age.state_delta)
 
@@ -96,12 +99,13 @@ class NativeFastGraph:
     def _canonical_context(current, bridge, noise, prefix):
         # Dynamic scalars become device tensors before graph capture. The same
         # clean prefix is consumed by both the interface and the action solver.
-        def scalar(value):
-            return torch.as_tensor(value, device=noise.device, dtype=torch.float32)
+        def scalar(value, *, physical_time=False):
+            dtype = torch.float64 if physical_time and bridge.interface_version >= 3 else torch.float32
+            return torch.as_tensor(value, device=noise.device, dtype=dtype)
         current = replace(current, committed_prefix=prefix.actions,
             committed_prefix_lengths=prefix.lengths,
-            observation_delay_seconds=scalar(current.observation_delay_seconds),
-            action_target_offsets=None if current.action_target_offsets is None else scalar(current.action_target_offsets))
+            observation_delay_seconds=scalar(current.observation_delay_seconds,physical_time=True),
+            action_target_offsets=None if current.action_target_offsets is None else scalar(current.action_target_offsets,physical_time=True))
         if bridge.source_action_sigma is not None:
             bridge = replace(bridge, source_action_sigma=scalar(bridge.source_action_sigma))
         return current, bridge
@@ -118,6 +122,8 @@ class NativeFastGraph:
             committed_prefix_lengths=clone(current.committed_prefix_lengths),
             observation_delay_seconds=clone(current.observation_delay_seconds),
             action_target_offsets=clone(current.action_target_offsets),
+            previous_plan=clone(current.previous_plan),
+            previous_plan_valid=clone(current.previous_plan_valid),
             motion_interval_valid_mask=clone(current.motion_interval_valid_mask),
             motion_acceleration_valid_mask=clone(current.motion_acceleration_valid_mask),
             age=BridgeAge(clone(age.delta_sim_seconds), clone(age.delta_actions),
@@ -149,6 +155,10 @@ class NativeFastGraph:
             getattr(self.current, name).copy_(getattr(current, name))
         if self.current.action_target_offsets is not None:
             self.current.action_target_offsets.copy_(current.action_target_offsets)
+        for name in ("previous_plan", "previous_plan_valid"):
+            target = getattr(self.current, name)
+            if target is not None:
+                target.copy_(getattr(current, name))
         for name in _BRIDGE_CONTEXT_TENSORS:
             target = getattr(self.bridge, name)
             if target is not None:
@@ -248,6 +258,8 @@ class NativeFastGraph:
         signature = self._signature(current, bridge, text, text_mask, noise, prefix)
         try:
             if signature != self.signature:
+                if not self.allow_recapture:
+                    raise RuntimeError("live asynchronous policy cannot capture or recapture CUDA graph")
                 self.invalidate()
                 self._allocate(current, bridge, text, text_mask, noise, prefix)
                 self._capture()

@@ -111,7 +111,11 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
     optional_pair = {"partition_seed": 0, "validation_fraction": .1, "clock_mode": "required",
                      "samples_per_episode": 10, "stress_probability": 0.0, "sampler_seed": None,
                      "age_weighting": "schedule_mixture", "cache_age_actions": None,
-                     "joint_supervision": False, "cache_age_jitter": False, "cache_age_seed": 0}
+                     "joint_supervision": False, "cache_age_jitter": False, "cache_age_seed": 0,
+                     "physical_grid_root": "", "future_latent_root": "", "async_seed": 20261015,
+                     "max_cache_age_actions": 31, "action_interval_seconds": .16,
+                     "kind": "physical_grid", "replay_root": "",
+                     "replay_target_policy": "successful_self_imitation_or_expert_corrective"}
     pair_raw = dict(top["pairing"])
     pair_options = {key: pair_raw.pop(key, default) for key, default in optional_pair.items()}
     if pair_options["sampler_seed"] is None:
@@ -147,7 +151,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         "native_phase": "", "native_fast_steps": 10,
         "native_expert_weight": 1.0, "native_fm_anchor_weight": 0.0,
         "rtc_prefix_max": 0,
-        "native_source_bridge": "immutable_official", "gradient_checkpointing": False, "initialize_joint_interface": False,
+        "native_source_bridge": "immutable_official", "gradient_checkpointing": False, "initialize_joint_interface": False, "motion_prediction_weight": 0.0,
     }.items()}
     if extra_training["fast_supervision"] not in {"executed_prefix", "full_chunk"}:
         raise ValueError("invalid fast_supervision")
@@ -324,7 +328,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             if int(motion_options["interface_version"]) == 1:
                 for name in ("interface_version", "action_dim", "correction_layers", "require_source_rgb"):
                     motion_options.pop(name)
-            elif int(motion_options["interface_version"]) != 2:
+            elif int(motion_options["interface_version"]) not in (2, 3):
                 raise ValueError("unsupported motion K/V interface version")
             elif int(motion_options["action_dim"]) != int(action["action_dim"]):
                 raise ValueError("joint interface plan action dimension differs from actor")
@@ -378,14 +382,37 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             raise ValueError('joint distillation requires aligned action and video retention losses')
         loss = dict(loss, native_teacher_weight=native_teacher_weight)
     if native:
-        if not teacher_checkpoint or native_teacher_weight <= 0:
+        v3 = int(fast.get("interface_version",1)) == 3
+        if not v3 and (not teacher_checkpoint or native_teacher_weight <= 0):
             raise ValueError("native training requires an independent fixed teacher")
+        if v3:
+            if training["native_source_bridge"] != "student_joint" or not pair_options["joint_supervision"]:
+                raise ValueError("V3 requires student_joint with explicit physical-grid source supervision")
+            if pair_options["kind"] not in ("physical_grid", "real_rollout"):
+                raise ValueError("V3 dataset kind must be physical_grid or real_rollout")
+            if pair_options["kind"] == "real_rollout":
+                if phase != "cross_time_joint" or training["initialize_joint_interface"]:
+                    raise ValueError("real rollout refinement requires a previously trained V3 joint checkpoint")
+                if pair_options["replay_target_policy"] != "successful_self_imitation_or_expert_corrective":
+                    raise ValueError("unsupported replay target provenance")
+                pair_options["replay_root"] = _resolve(pair_options["replay_root"],base=project_root,label="pairing.replay_root")
+            if native_teacher_weight != 0:
+                raise ValueError("V3 disables old-cadence teacher; a calibrated physical-grid teacher needs a separate recipe")
+            if pair_options["action_interval_seconds"] != .16 or int(pair_options["max_cache_age_actions"]) != 31:
+                raise ValueError("V3 requires the explicit .16-second grid and async cache age 31")
+            if not pair_options["physical_grid_root"] or not pair_options["future_latent_root"]:
+                raise ValueError("V3 requires explicit physical-grid index and newly encoded future latent cache")
+            if float(training["motion_prediction_weight"]) < 0:
+                raise ValueError("motion_prediction_weight must be nonnegative")
+            for name in ("physical_grid_root","future_latent_root"):
+                pair_options[name] = _resolve(pair_options[name],base=project_root,label="pairing."+name)
         if phase == "fast_warmup" and (float(loss["action_weight"]) != 0 or float(loss["video_weight"]) != 0):
             raise ValueError("native warmup freezes video and uses only fast objectives")
         if phase == "cross_time_joint" and (float(loss["action_weight"]) <= 0 or float(loss["video_weight"]) <= 0):
             raise ValueError("joint native training preserves aligned video and action objectives")
-        if training["native_source_bridge"] == "student_joint" and int(fast.get("interface_version", 1)) != 2:
+        if training["native_source_bridge"] == "student_joint" and int(fast.get("interface_version", 1)) not in (2, 3):
             raise ValueError("student_joint requires the complete V2 innovation interface")
+    loss = dict(loss, native_teacher_weight=native_teacher_weight)
     if training['feedback_phase'] and (not compact_fast or not compact_fast.get('feedback_enabled')):
         raise ValueError('feedback training requires a feedback-enabled compact model')
     if compact_fast and compact_fast.get('feedback_enabled') and not training['feedback_phase']:

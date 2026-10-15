@@ -12,6 +12,7 @@ from typing import Any
 import torch
 
 from dynamicwam.models.flow_schedule import BridgeSchedule, euler_update
+from dynamicwam.models.rtc_prefix import PrefixCondition, apply_prefix, validate_prefix_condition
 from dynamicwam.models.native_wam_teacher import native_sampler_dtypes
 from dynamicwam.models.multirate_types import (
     BridgeTensorBundle,
@@ -38,6 +39,12 @@ class CausalWorldBridge(torch.nn.Module):
         batch = source.as_model_batch()
         future = noise.future_latent
         actions = noise.actions
+        prefix = batch.get("rtc_prefix")
+        if prefix is not None:
+            prefix = PrefixCondition(prefix.actions.to(actions), prefix.lengths.to(device=actions.device))
+            validate_prefix_condition(prefix, max_prefix=4, reference=actions)
+            batch["rtc_prefix"] = prefix
+            actions = apply_prefix(actions, prefix)
         action_dtype, video_dtype = native_sampler_dtypes(model, noise)
         if future.shape[0] != actions.shape[0]:
             raise ValueError("source noise batch sizes differ")
@@ -66,6 +73,8 @@ class CausalWorldBridge(torch.nn.Module):
         # actions with this clean estimate, never with the noisy conditioning.
         action_sigma, _next_sigma, _time = self.schedule.action_step(1)
         plan = actions - action_sigma.to(actions) * outputs["action_pred"]
+        if prefix is not None:
+            plan = apply_prefix(plan, prefix)
         if detach_cache:
             plan = plan.detach()
         own = lambda value: value.detach() if detach_cache and torch.is_tensor(value) else value
@@ -82,9 +91,10 @@ class CausalWorldBridge(torch.nn.Module):
             else float(source.sim_time),
             null_bridge=False,
             all_video_tokens_valid=cache.get("all_video_tokens_valid", False),
-            interface_version=2,
+            interface_version=3 if source.action_target_offsets is not None else 2,
             source_action_plan=plan,
             source_action_sigma=action_sigma.to(actions).detach(),
+            source_action_target_offsets=own(source.action_target_offsets),
             source_motion=own(source.motion),
             source_motion_interval_valid_mask=source.motion_interval_valid_mask,
             source_motion_acceleration_valid_mask=source.motion_acceleration_valid_mask,
@@ -108,6 +118,9 @@ class CausalWorldBridge(torch.nn.Module):
         action_sigma, action_sigma_next, action_t = self.schedule.action_step(index)
         step_batch = dict(batch)
         step_batch["future_latent"] = future
+        prefix = batch.get("rtc_prefix")
+        if prefix is not None:
+            actions = apply_prefix(actions, prefix)
         step_batch["noisy_actions"] = actions
         step_batch["video_t"] = _expand_time(video_t, future, video_dtype)
         step_batch["action_t"] = _expand_time(action_t, actions, action_dtype)
@@ -125,6 +138,8 @@ class CausalWorldBridge(torch.nn.Module):
             next_actions = euler_update(
                 actions, outputs["action_pred"], action_sigma, action_sigma_next
             )
+            if prefix is not None:
+                next_actions = apply_prefix(next_actions, prefix)
             return next_future, next_actions, outputs
         return future, actions, outputs
 

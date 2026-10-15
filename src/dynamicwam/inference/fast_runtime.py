@@ -154,7 +154,7 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
     if native:
         if not modules.get('native_multirate') or modules.get('architecture') != 'native':
             raise RuntimeError('native checkpoint architecture contract mismatch')
-        if not modules.get('fast_conditioner', {}).get('world_aware') or native.get('version') not in (1, 2):
+        if not modules.get('fast_conditioner', {}).get('world_aware') or native.get('version') not in (1, 2, 3):
             raise RuntimeError('native checkpoint lacks observation-guided world router')
         steps = int(native.get('fast_steps', 0))
         if steps != modules.get('fast_steps') or steps not in (1, 2, 4, 10):
@@ -164,10 +164,29 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
             raise RuntimeError('serialized fast solver differs from trained native schedule')
         source = native.get('source_bridge')
         if source == 'student_joint':
-            if native.get('version') != 2 or modules['fast_conditioner'].get('interface_version') != 2:
-                raise RuntimeError('joint slow bridge requires the trained v2 motion interface')
-            if contract.get('max_age_actions') != 15:
-                raise RuntimeError('joint slow bridge requires causal age support 0..15')
+            version = native.get('version')
+            if version not in (2, 3) or modules['fast_conditioner'].get('interface_version') != version:
+                raise RuntimeError('joint slow bridge and trained motion interface versions disagree')
+            if version == 2 and contract.get('max_age_actions') != 15:
+                raise RuntimeError('v2 slow bridge requires causal age support 0..15')
+            if version == 3:
+                if (contract.get('max_age_actions') != 31 or contract.get('max_age_seconds') != 4.96 or
+                    native.get('slow_schedule') != 'asynchronous_latest_completed_v1'):
+                    raise RuntimeError('v3 requires asynchronous publication with trained 31-action/4.96-second cache bounds')
+                physical = contract.get('physical_grid_contract', {})
+                def valid_sha256(value):
+                    return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+                if (not valid_sha256(contract.get('physical_grid'))
+                        or not valid_sha256(physical.get('latent_manifest_sha256'))
+                        or physical.get('schema_version') != 1
+                        or physical.get('action_interval_seconds') != .16
+                        or physical.get('action_horizon') != 16
+                        or physical.get('source_plan_alignment') != 'physical_time_linear_arm_previous_hold_gripper'
+                        or getattr(runtime, 'action_interval_seconds', None) != .16
+                        or contract.get('previous_plan') != 'soft_context_only; hard_prefix_is_irrevocable'
+                        or contract.get('source_retention') != 'fixed_grid_source_video_action_fm'
+                        or contract.get('slow_source_prefix') != 'clean_committed_v1'):
+                    raise RuntimeError('v3 physical grid, latent provenance or proposal semantics mismatch')
         elif source == 'immutable_official':
             if native.get('version') != 1 or not native.get('teacher', {}).get('sha256'):
                 raise RuntimeError('native slow bridge must identify its immutable official weights')
