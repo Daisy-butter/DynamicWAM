@@ -1,11 +1,14 @@
 """CPU behavioural tests: actual elapsed time controls worker completion."""
 from __future__ import annotations
 
+import copy
+from pathlib import Path
+import sys
 import unittest
 import numpy as np
 
 from dynamicwam.runtime.domino_continuous.continuous_rtc import (
-    CommittedActionQueue, PROTOCOL, RealtimeViolation, run_continuous_rtc_episode,
+    CommittedActionQueue, PROTOCOL, SCALED_PROTOCOL, protocol_for_rate, RealtimeViolation, run_continuous_rtc_episode,
 )
 from dynamicwam.runtime.domino_continuous.continuous_track_v2 import ContinuousJointTrack
 
@@ -118,14 +121,14 @@ class QueueTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
-    def run_case(self, *, actions=20, durations=(.05,), session_args=None, worker_args=None):
+    def run_case(self, *, actions=20, durations=(.05,), session_args=None, worker_args=None, controller_args=None):
         clock = Clock()
         session = Session(clock, **(session_args or {}))
         worker = Worker(clock, durations, **(worker_args or {}))
         records = []
         report = run_continuous_rtc_episode(session, worker, task="test", episode_seed=123,
             action_limit=actions, clock=clock, sleep=clock.sleep, sink=records.append,
-            action_interval_s=session.action_interval_s, frame_period_s=session.action_interval_s)
+            action_interval_s=session.action_interval_s, frame_period_s=session.action_interval_s, **(controller_args or {}))
         self.assertEqual(records, report["requests"])
         return session, worker, report
     def test_continuous_world_and_h4_prefix_overlap(self):
@@ -225,6 +228,100 @@ class ControllerTests(unittest.TestCase):
         for capture in inference[1:]:
             self.assertLess(capture["physics_ticks_during_capture"], 5,
                             msg=f"capture still starved: {capture}")
+
+
+    def test_declared_rate_validation(self):
+        self.assertEqual(protocol_for_rate(1), PROTOCOL)
+        self.assertEqual(protocol_for_rate(.25), SCALED_PROTOCOL)
+        for invalid in (0, -.25, 1.01, float("inf"), float("nan")):
+            with self.assertRaises(ValueError): protocol_for_rate(invalid)
+
+    def test_default_strict_mode_equals_explicit_rate_one(self):
+        default = self.run_case(actions=8)[2]
+        explicit = self.run_case(actions=8, controller_args={"simulation_rate": 1.})[2]
+        self.assertEqual(default, explicit)
+        self.assertTrue(default["realtime_valid"])
+
+    def test_scaled_wall_paces_world_without_retiming_actions(self):
+        session, worker, report = self.run_case(actions=24, durations=(.12, .5),
+            session_args={"interval_s": .16}, controller_args={"simulation_rate": .25})
+        self.assertEqual(report["protocol"], SCALED_PROTOCOL)
+        self.assertEqual(report["clock"], "scaled_wall_clock")
+        self.assertFalse(report["realtime_valid"])
+        self.assertTrue(report["continuous_valid"] and report["clock_valid"])
+        self.assertFalse(report["virtual_delay"])
+        self.assertAlmostEqual(report["realtime_factor"], .25)
+        self.assertEqual(report["completed_targets"], 24)
+        self.assertEqual([p["_rtc_cache_age_actions"] for p in worker.calls], [0, 0, 4, 8, 12, 0])
+        for block in report["blocks"]:
+            self.assertAlmostEqual(block["end_physics_s"] - block["start_physics_s"], block["count"] * .16)
+            self.assertAlmostEqual(block["end_wall_s"] - block["start_wall_s"], block["count"] * .16 / .25)
+        for request in report["requests"]:
+            self.assertGreater(request["dispatch_to_receive_physics_s"], 0)
+            self.assertGreater(request["object_displacement_while_inference"][0], 0)
+            self.assertAlmostEqual(request["object_displacement_dispatch_to_receive"][0], request["dispatch_to_receive_physics_s"])
+            self.assertGreaterEqual(request["receive_wall_s"] + 1e-8, request["model_finished_wall_s"])
+        for request in report["requests"][1:]:
+            self.assertAlmostEqual(request["observation_to_suffix_effect_s"], .64)
+            self.assertGreaterEqual(request["observation_to_first_command_wall_s"] + 1e-8, .64 / .25)
+            self.assertLessEqual(.25 * request["install_wall_s"] + report["initial_physics_s"],
+                                 request["suffix_not_before_physics_s"] + 1e-8)
+
+    def test_scaled_wall_accepts_compute_latency_only_within_fixed_h4(self):
+        with self.assertRaisesRegex(RealtimeViolation, "late"):
+            self.run_case(actions=8, durations=(.05, .7))
+        _, _, report = self.run_case(actions=8, durations=(.05, .7), controller_args={"simulation_rate": .25})
+        self.assertEqual(report["completed_targets"], 8)
+        self.assertGreater(report["requests"][1]["inference_wall_elapsed_s"], .4)
+        with self.assertRaisesRegex(RealtimeViolation, "late"):
+            self.run_case(actions=8, durations=(.05, 1.7), controller_args={"simulation_rate": .25})
+
+    def test_scaled_deadline_cannot_backdate_poll_delay(self):
+        with self.assertRaisesRegex(RealtimeViolation, "late"):
+            self.run_case(actions=8, durations=(.05, 1.3), worker_args={"poll_stall": .4},
+                          controller_args={"simulation_rate": .25})
+
+    def test_declared_slow_rate_handles_physics_load_but_still_bounds_overload(self):
+        _, _, report = self.run_case(actions=8, durations=(.1,), session_args={"step_cost": .03},
+                                      controller_args={"simulation_rate": .25})
+        self.assertEqual(report["completed_targets"], 8)
+        self.assertLessEqual(report["max_backlog_s"], .25)
+        with self.assertRaisesRegex(RealtimeViolation, "backlog"):
+            self.run_case(session_args={"step_cost": .08}, durations=(.5,), controller_args={"simulation_rate": .25})
+
+    def test_real_dispatch_latency_includes_post_capture_catch_up(self):
+        clock = Clock()
+        class LaggySession(Session):
+            def begin_capture(self, *, for_inference):
+                super().begin_capture(for_inference=for_inference)
+                self.clock.sleep(.15)
+        session = LaggySession(clock, capture_duration=.01, step_cost=.005)
+        worker = Worker(clock, (.05,))
+        report = run_continuous_rtc_episode(session, worker, task="x", episode_seed=1,
+            action_limit=8, clock=clock, sleep=clock.sleep, simulation_rate=.25,
+            action_interval_s=.1, frame_period_s=.1)
+        self.assertTrue(any(r["dispatch_wall_s"] < r["submit_wall_s"] for r in report["requests"]))
+        for request in report["requests"]:
+            self.assertEqual(request["submit_timestamp_semantics"], "legacy_post_capture_catch_up")
+            self.assertAlmostEqual(request["dispatch_to_receive_wall_s"], request["receive_wall_s"] - request["dispatch_wall_s"])
+            self.assertGreaterEqual(request["dispatch_to_receive_wall_s"], request["inference_wall_elapsed_s"])
+            self.assertGreaterEqual(request["model_started_wall_s"] + 1e-8, request["dispatch_wall_s"])
+
+
+    def test_scaled_report_passes_evaluator_and_rejects_clock_tampering(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from eval_domino_motionkv_rtc import validate_rtc_report
+        session, _, report = self.run_case(actions=24, durations=(.12, .5),
+            session_args={"interval_s": .16}, controller_args={"simulation_rate": .25})
+        report["physics_dt_s"] = session.timestep()  # Added by the real evaluator wrapper.
+        validate_rtc_report(report)
+        mismatch = copy.deepcopy(report)
+        mismatch["simulation_rate"] = 1.
+        with self.assertRaises(ValueError): validate_rtc_report(mismatch)
+        late = copy.deepcopy(report)
+        request = late["requests"][1]
+        request["install_wall_s"] = (request["suffix_not_before_physics_s"] - late["initial_physics_s"]) / .25 + .1
+        with self.assertRaises(ValueError): validate_rtc_report(late)
 
 
 if __name__ == "__main__":

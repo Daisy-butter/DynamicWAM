@@ -22,6 +22,7 @@ import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = "continuous_world_actual_latency_motionkv_rtc_h4r4_v1"
+SCALED_PROTOCOL = "continuous_world_scaled_wall_motionkv_rtc_h4r4_v1"
 PREPARE_PROTOCOL = "domino_level1_policy_independent_scene_manifest_v1"
 POLICY_LABEL = "motionkv_rtc"
 for entry in (ROOT / "external/flash_attn_runtime", ROOT / "src"):
@@ -47,8 +48,22 @@ def read(path):
     return json.loads(Path(path).read_text())
 
 
-def provenance(config):
-    value = source_provenance(semantics_id=PROTOCOL, config_path=config)
+def evaluation_protocol(rate=1.):
+    if not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 0 < rate <= 1:
+        raise ValueError("simulation rate must be finite in (0,1]")
+    return PROTOCOL if rate == 1. else SCALED_PROTOCOL
+
+
+def valid_clock_identity(report):
+    rate = report.get("simulation_rate", 1.)
+    return (report.get("protocol") == evaluation_protocol(rate)
+            and (report.get("realtime_valid") is True if rate == 1. else
+                 report.get("clock_valid") is True and report.get("continuous_valid") is True
+                 and report.get("realtime_valid") is False))
+
+
+def provenance(config, simulation_rate=1.):
+    value = source_provenance(semantics_id=evaluation_protocol(simulation_rate), config_path=config)
     for name in ("scripts/eval_domino_motionkv_rtc.py", "scripts/eval_domino_motionkv_rtc_suite.py",
                  "scripts/device_lifetime_guard.py",
                  "src/dynamicwam/runtime/domino_continuous/motionkv_policy.py",
@@ -134,10 +149,10 @@ def load_frozen_task(run, task, episodes, seed, config_sha):
     return references, sha(run / "frozen_manifest.json")
 
 
-def checked_episode(path, task, episode):
+def checked_episode(path, task, episode, simulation_rate=None):
     from video_artifacts import validate_video_artifacts
     report, metric, descriptor = (read(path / name) for name in ("report.json", "metrics.json", "manifest.json"))
-    if (report.get("protocol") != PROTOCOL or report.get("realtime_valid") is not True
+    if (not valid_clock_identity(report)
             or report.get("task") != task or report.get("episode_index") != episode
             or report.get("video_required") is not True or not validate_video_artifacts(report)):
         raise ValueError("episode protocol/video validation failed")
@@ -148,13 +163,18 @@ def checked_episode(path, task, episode):
     if (not math.isfinite(score) or not 0 <= score <= 100 or metric["seed"] != report["seed"]
             or bool(metric["success"]) != bool(report["success"])):
         raise ValueError("episode metric mismatch")
+    if simulation_rate is not None and report.get("simulation_rate", 1.) != simulation_rate:
+        raise ValueError("episode simulation rate differs from run")
     validate_rtc_report(report)
     return report, metric
 
 
 def validate_rtc_report(report):
     """Independently verify saved causal timing, not just a runtime success flag."""
-    required = {"controller": "committed_clean_prefix_rtc_fixed_grid_h4r4", "clock": "actual_wall_clock",
+    rate = report.get("simulation_rate", 1.)
+    if not valid_clock_identity(report):
+        raise ValueError("RTC protocol/clock identity mismatch")
+    required = {"controller": "committed_clean_prefix_rtc_fixed_grid_h4r4", "clock": "actual_wall_clock" if rate == 1. else "scaled_wall_clock",
         "virtual_delay": False, "startup_delay_excluded": False, "rtc_strategy": "trained_clean_prefix_conditioning",
         "rtc_prefix_max": 4, "execute_horizon": 4, "slow_refresh_actions": 16, "limit_retiming": False,
         "rows_dropped": 0, "guided_requests": 0, "asynchronous_camera_readback": True}
@@ -164,10 +184,23 @@ def validate_rtc_report(report):
     limits = report["clock_limits"]
     if (not 0 < limits["max_backlog_s"] <= .25 or not 0 < limits["inference_clock_error_s"] <= .02
             or not 0 <= report["max_backlog_s"] <= limits["max_backlog_s"] + 1e-8
-            or not 0 <= report["max_inference_clock_error_s"] <= limits["inference_clock_error_s"] + 1e-8):
+            or (rate == 1. and not 0 <= report["max_inference_clock_error_s"] <= limits["inference_clock_error_s"] + 1e-8)):
         raise ValueError("RTC report clock limits failed")
     interval = report["action_interval_s"]
     for index, request in enumerate(report.get("requests", [])):
+        if rate != 1.:
+            if request.get("simulation_rate") != rate:
+                raise ValueError("RTC request rate differs from episode")
+            dispatch, received = request["dispatch_wall_s"], request["receive_wall_s"]
+            if not (request["observation_wall_s"] <= dispatch <= received):
+                raise ValueError("RTC dispatch causal order failed")
+            if not math.isclose(received - dispatch, request["dispatch_to_receive_wall_s"], abs_tol=1e-8):
+                raise ValueError("RTC actual dispatch latency mismatch")
+            global_error = rate * received - (request["receive_physics_s"] - report["initial_physics_s"])
+            if not math.isclose(global_error, request["global_scaled_clock_error_s"], abs_tol=1e-8):
+                raise ValueError("RTC scaled clock receipt mismatch")
+            if not request.get("terminal_before_result") and abs(global_error) > limits["max_backlog_s"] + 1e-8:
+                raise ValueError("RTC scaled clock global bound failed")
         expected_prefix = 0 if index == 0 else 4
         if request["query_index"] != index or request["prefix_length"] != expected_prefix:
             raise ValueError("RTC query order/prefix length mismatch")
@@ -180,11 +213,13 @@ def validate_rtc_report(report):
                 raise ValueError("RTC installation predates submission")
             if expected_prefix:
                 deadline = request["observation_physics_s"] + 4 * interval
+                if rate != 1. and report["initial_physics_s"] + rate * request["install_wall_s"] > deadline + 1e-8:
+                    raise ValueError("RTC suffix missed scaled wall deadline")
                 if (not math.isclose(request["suffix_not_before_physics_s"], deadline, abs_tol=1e-8)
                         or request["install_physics_s"] > deadline + 1e-8
                         or not math.isclose(request["suffix_effective_physics_s"], deadline, abs_tol=1e-8)):
                     raise ValueError("RTC suffix was late or moved off its committed action clock")
-        if request.get("inference_clock_check") == "complete_interval" and abs(request["inference_clock_error_s"]) > limits["inference_clock_error_s"] + 1e-8:
+        if rate == 1. and request.get("inference_clock_check") == "complete_interval" and abs(request["inference_clock_error_s"]) > limits["inference_clock_error_s"] + 1e-8:
             raise ValueError("RTC inference interval clock failed")
     previous_end = None
     grid0 = report.get("action_grid_start_physics_s")
@@ -236,6 +271,7 @@ def parse():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cohort-dir", type=Path)
     parser.add_argument("--probe-action-limit", type=int)
+    parser.add_argument("--simulation-rate", type=float, default=1.)
     parser.add_argument("--max-backlog-s", type=float, default=.25)
     parser.add_argument("--infer-clock-tolerance-s", type=float, default=.02)
     parser.add_argument("--action-interval-s", type=float, default=.16)
@@ -245,6 +281,7 @@ def parse():
 
 def main():
     args = parse()
+    protocol = evaluation_protocol(args.simulation_rate)
     def interrupted(signum, frame):
         raise KeyboardInterrupt(f"received signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
@@ -291,7 +328,7 @@ def main():
             raise ValueError("cohort episode count differs")
     output = args.output_dir.resolve() / args.task
     output.mkdir(parents=True, exist_ok=True)
-    source = provenance(args.config)
+    source = provenance(args.config, args.simulation_rate)
     config_sha = sha(args.config)
     references, frozen_sha = (None, None)
     native_dir = None
@@ -325,7 +362,7 @@ def main():
             raise ValueError("result stamp must be one directory name")
         native_dir = args.output_dir.resolve() / "eval_result" / args.task / POLICY_LABEL / benchmark["task_config"] / args.checkpoint.stem / args.result_stamp
         native_dir.mkdir(parents=True, exist_ok=True)
-    spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else PROTOCOL,
+    spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else protocol,
                 task=args.task, episodes=args.episodes, start_seed=args.seed, prepare_only=args.prepare_only,
                 config_sha256=config_sha, source_digest=source["source_digest"], code_root=str(ROOT),
                 checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
@@ -333,7 +370,7 @@ def main():
                 frozen_manifest_sha256=frozen_sha, native_action_limit=native_limit, action_limit=action_limit,
                 probe_action_limit=args.probe_action_limit, native_result_dir=str(native_dir) if native_dir else None,
                 action_interval_s=args.action_interval_s, history_frame_period_s=args.history_frame_period_s,
-                max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
+                simulation_rate=args.simulation_rate, max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
                 opencv_threads=cv2.getNumThreads(), scheduling_mode=COHORT_MODE if cohort else None,
                 cohort_dir=str(cohort.directory) if cohort else None,
                 cohort_manifest_sha256=sha(cohort.directory / "manifest.json") if cohort else None)
@@ -362,7 +399,7 @@ def main():
                     manifests.append(descriptor); completed.append(descriptor); requested = descriptor["seed"] + 1
                     continue
                 if not args.prepare_only and (directory / "report.json").exists():
-                    report, metric = checked_episode(directory, args.task, episode)
+                    report, metric = checked_episode(directory, args.task, episode, args.simulation_rate)
                     if report["source_digest"] != source["source_digest"] or report["checkpoint_sha256"] != checkpoint_sha:
                         raise ValueError("completed episode source/checkpoint changed")
                     descriptor = read(directory / "manifest.json")
@@ -449,7 +486,7 @@ def main():
                     # wall0/phys0; RTC H/K/R/refresh period and physics unchanged.
                     members = list(cohort.members)
                     live_start_stagger_index = members.index(args.task)
-                    refresh_period_s = float(args.action_interval_s) * 16
+                    refresh_period_s = float(args.action_interval_s) * 16 / args.simulation_rate
                     live_start_stagger_s = (
                         live_start_stagger_index * (refresh_period_s / max(1, len(members)))
                     )
@@ -458,8 +495,8 @@ def main():
                     report = run_continuous_rtc_episode(session, worker, task=args.task, episode_seed=descriptor["seed"],
                         action_limit=action_limit, sink=events.append, max_backlog_s=args.max_backlog_s,
                         infer_clock_tolerance_s=args.infer_clock_tolerance_s, frame_period_s=args.history_frame_period_s,
-                        action_interval_s=args.action_interval_s)
-                    if report.get("protocol") != PROTOCOL or report.get("realtime_valid") is not True:
+                        action_interval_s=args.action_interval_s, simulation_rate=args.simulation_rate)
+                    if report.get("protocol") != protocol or not valid_clock_identity(report):
                         raise RuntimeError("RTC rollout failed its protocol/clock gates")
                     report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
                     report["post_terminal_inference_drain_wall_s"] = drain_finished_episode(worker)
@@ -469,7 +506,7 @@ def main():
                         manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads(),
                         live_start_stagger_s=live_start_stagger_s, live_start_stagger_index=live_start_stagger_index,
                         live_start_refresh_period_s=refresh_period_s, live_start_cohort_size=len(members),
-                        live_start_stagger_policy="cohort_task_index * (16*action_interval_s)/N_members  # desync refresh@16")
+                        live_start_stagger_policy="cohort_task_index * (16*action_interval_s/simulation_rate)/N_members  # desync refresh@16")
                     report.update({**descriptor, **source, "checkpoint": str(args.checkpoint.resolve()), "checkpoint_sha256": checkpoint_sha,
                         "frozen_manifest_sha256": frozen_sha, "video_required": True, "probe_action_limit": args.probe_action_limit,
                         "worker_startup_metadata": worker.startup_metadata, "instruction_warmup": instruction_warmup,
@@ -484,11 +521,11 @@ def main():
                     metric = tracker.get_episode_metrics(bool(report["success"]), None if report["stop_reason"] in {"success", "action_budget_exhausted"} else report["stop_reason"], seed=descriptor["seed"])
                     save(directory / "metrics.json", asdict(metric) if is_dataclass(metric) else vars(metric))
                     save(directory / "report.json", report)
-                    checked_episode(directory, args.task, episode)
+                    checked_episode(directory, args.task, episode, args.simulation_rate)
                     completed.append(dict(seed=descriptor["seed"], success=report["success"]))
                     publish_native_task_results(output, native_dir, count=len(completed), planned=args.episodes,
                         stamp=args.result_stamp, instruction_type=str(benchmark["instruction_type"]), checkpoint=args.checkpoint,
-                        generation=source["source_generation"], protocol=PROTOCOL, timing_mode="nominal_training_timing")
+                        generation=source["source_generation"], protocol=protocol, timing_mode="nominal_training_timing")
                 save(output / "progress.json", dict(planned_episodes=args.episodes, completed_episodes=len(completed), records=completed))
                 print("MOTIONKV_EPISODE " + json.dumps(dict(task=args.task, episode=episode, seed=descriptor["seed"], prepare_only=args.prepare_only)), flush=True)
             finally:
@@ -513,7 +550,7 @@ def main():
             # episodes. Rebuild only derived native aggregate files on resume.
             publish_native_task_results(output, native_dir, count=len(completed), planned=args.episodes,
                 stamp=args.result_stamp, instruction_type=str(benchmark["instruction_type"]), checkpoint=args.checkpoint,
-                generation=source["source_generation"], protocol=PROTOCOL, timing_mode="nominal_training_timing")
+                generation=source["source_generation"], protocol=protocol, timing_mode="nominal_training_timing")
         save(output / "completed.json", dict(protocol=spec["protocol"], episodes=len(completed), probe_action_limit=args.probe_action_limit))
         return 0
     except BaseException as exc:

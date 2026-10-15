@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from eval_domino_motionkv_rtc import (ROOT, PROTOCOL, PREPARE_PROTOCOL, acquire_lock,
-    archive_file, checked_episode, provenance, read, save, sha, validate_descriptor)
+    archive_file, checked_episode, provenance, read, save, sha, validate_descriptor, evaluation_protocol)
 
 
 def distribution(values):
@@ -59,7 +59,7 @@ def summarize(output, spec):
                     frozen.append(dict(task=task, episode_index=episode, seed=descriptor["seed"], **expected))
                     entries.append(descriptor)
                 else:
-                    report, metric = checked_episode(directory, task, episode)
+                    report, metric = checked_episode(directory, task, episode, spec.get("simulation_rate", 1.))
                     if (report["checkpoint_sha256"] != spec["checkpoint_sha256"]
                             or report["source_digest"] != spec["source_digest"]
                             or report["frozen_manifest_sha256"] != spec["frozen_manifest_sha256"]
@@ -71,14 +71,14 @@ def summarize(output, spec):
                         raise ValueError("RTC result lacks actual-wall-clock evidence")
                     entries.append(dict(seed=report["seed"], success=bool(report["success"]), manipulation_score=float(metric["manipulation_score"])))
                     reasons[report["stop_reason"]] += 1
-                    for key in ("physics_time_s", "wall_time_s", "max_backlog_s", "max_tick_gap_wall_s",
+                    for key in ("physics_time_s", "wall_time_s", "realtime_factor", "max_backlog_s", "max_tick_gap_wall_s",
                                 "max_inference_clock_error_s", "execution_inference_overlap_s", "realtime_factor",
                                 "capture_gap_physics_mean_s", "capture_gap_physics_max_s",
                                 "post_terminal_camera_drain_wall_s", "post_terminal_inference_drain_wall_s"):
                         latencies.setdefault("episode." + key, []).append(report.get(key))
                     for request in report.get("requests", []):
                         for key in ("capture_wall_s", "inference_wall_elapsed_s", "inference_physics_advance_s",
-                                    "inference_clock_error_s", "model_compute_wall_s", "observation_to_suffix_effect_s",
+                                    "inference_clock_error_s", "model_compute_wall_s", "dispatch_to_receive_wall_s", "dispatch_to_receive_physics_s", "observation_to_suffix_effect_s",
                                     "observation_to_first_command_wall_s"):
                             latencies.setdefault("request." + key, []).append(request.get(key))
                         for key, value in request.get("policy_diagnostics", {}).items():
@@ -99,7 +99,7 @@ def summarize(output, spec):
             all_successes.extend(entry["success"] for entry in entries); all_scores.extend(scores)
         results.append(row)
     complete = all(row["completion_marker_valid"] and not row["errors"] and row["valid_completed"] == spec["episodes_per_task"] for row in results)
-    summary = dict(protocol=spec["protocol"], complete=complete, planned_total=len(spec["tasks"]) * spec["episodes_per_task"],
+    summary = dict(protocol=spec["protocol"], simulation_rate=spec.get("simulation_rate", 1.), realtime_claim=spec.get("simulation_rate", 1.) == 1., complete=complete, planned_total=len(spec["tasks"]) * spec["episodes_per_task"],
                    valid_completed=sum(row["valid_completed"] for row in results), tasks=results)
     if spec["prepare_only"]:
         save(output / "frozen_manifest.json", dict(protocol=PREPARE_PROTOCOL, complete=complete,
@@ -129,6 +129,7 @@ def parse():
     p.add_argument("--result-stamp")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--probe-action-limit", type=int)
+    p.add_argument("--simulation-rate", type=float, default=1.)
     p.add_argument("--max-backlog-s", type=float, default=.25)
     p.add_argument("--infer-clock-tolerance-s", type=float, default=.02)
     p.add_argument("--action-interval-s", type=float, default=.16)
@@ -146,6 +147,7 @@ def parse():
 
 def main():
     args = parse()
+    protocol = evaluation_protocol(args.simulation_rate)
     def interrupted(signum, frame):
         raise KeyboardInterrupt(f"received signal {signum}")
     signal.signal(signal.SIGTERM, interrupted)
@@ -193,16 +195,16 @@ def main():
     lock = acquire_lock(output / ".suite.lock")
     old_spec = read(output / "suite_started.json") if (output / "suite_started.json").exists() else None
     stamp = args.result_stamp or (old_spec["result_stamp"] if old_spec and args.resume else datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"))
-    source = provenance(args.config)
+    source = provenance(args.config, args.simulation_rate)
     from rtc_episode_cohort import MODE as COHORT_MODE, write_abort
-    spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else PROTOCOL, prepare_only=args.prepare_only,
+    spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else protocol, prepare_only=args.prepare_only,
         tasks=tasks, episodes_per_task=args.episodes, seed=args.seed, result_stamp=stamp, gpus=gpus,
         gpu_pci={uuid: by_uuid[uuid][2] for uuid in gpus}, config=str(args.config.resolve()), config_sha256=sha(args.config),
         source_digest=source["source_digest"], checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
         checkpoint_sha256=checkpoint_sha, frozen_manifest_sha256=frozen_sha, replay_from=str(args.replay_from.resolve()) if args.replay_from else None,
         timing_contract_sha256=sha(args.timing_contract) if args.timing_contract else None,
         action_interval_s=args.action_interval_s, history_frame_period_s=args.history_frame_period_s,
-        max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
+        simulation_rate=args.simulation_rate, max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
         probe_action_limit=args.probe_action_limit, shared_tmpdir=str(shared_tmp), virtual_delay=False,
         scheduling_mode=None if args.prepare_only else COHORT_MODE, cohort_timeout_s=args.cohort_timeout_s,
         max_cohort_size=args.max_cohort_size or None,
@@ -245,7 +247,7 @@ def main():
                     episodes=args.episodes, barrier_timeout_s=args.cohort_timeout_s,
                     max_cohort_size=args.max_cohort_size or None, cohort_cap=len(members),
                     solo_tasks=sorted(solo_task_set) or None,
-                    source_digest=source["source_digest"], protocol=PROTOCOL))
+                    source_digest=source["source_digest"], protocol=protocol, simulation_rate=args.simulation_rate))
                 cohort_tasks = set(members)
                 cohort_number += 1
             while pending and free and not failed and (args.prepare_only or pending[0] in cohort_tasks):
@@ -263,7 +265,7 @@ def main():
                 command = ["xvfb-run", "-a", str(ROOT / "external/robotwin/bin/python"),
                     str(ROOT / "scripts/eval_domino_motionkv_rtc.py"), "--config", str(args.config.resolve()),
                     "--output-dir", str(output), "--task", task, "--episodes", str(args.episodes), "--seed", str(args.seed),
-                    "--result-stamp", stamp, "--max-backlog-s", str(args.max_backlog_s),
+                    "--result-stamp", stamp, "--simulation-rate", str(args.simulation_rate), "--max-backlog-s", str(args.max_backlog_s),
                     "--infer-clock-tolerance-s", str(args.infer_clock_tolerance_s),
                     "--action-interval-s", str(args.action_interval_s), "--history-frame-period-s", str(args.history_frame_period_s)]
                 if args.prepare_only:
