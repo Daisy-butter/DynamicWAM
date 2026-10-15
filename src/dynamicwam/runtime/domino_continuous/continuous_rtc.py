@@ -223,11 +223,19 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             current_lag = lag()
             growing = growing + 1 if current_lag >= previous_lag - 1e-9 else 0
             if growing >= 8 and current_lag > max_backlog_s:
+                # Outstanding async capture: unpaced physics contends with GPU
+                # readback, so lag can grow even though the stall is recoverable.
+                # Yield to the main loop (finish_capture / camera timeout).
+                # True infra death with no pending IO still hard-fails.
+                if pending is not None:
+                    break
                 fail("RTC physical backlog grows during catch-up", max_backlog_s=max_backlog_s)
             previous_lag = current_lag
             if count > 10000:
                 fail("RTC physical clock cannot catch up")
-        if lag() > max_backlog_s and not (pending is not None and session.capture_ready()):
+        # Pending capture (ready or not) owns temporary backlog; camera timeout
+        # still bounds a wedged readback. Only fail when nothing is in flight.
+        if lag() > max_backlog_s and pending is None:
             fail("RTC wall/physics backlog exceeds declared limit", max_backlog_s=max_backlog_s)
 
     def capture(for_inference):
