@@ -286,9 +286,36 @@ def main():
             def replay(obs, cache, cond):
                 return graph.sample(obs, cache, text, text_mask, noise, prefix=cond)
 
+            # Observe the actual deployment SDPA backend's empty-mask behavior.
+            # Zero-confidence bootstrap and expired source plans both exercise
+            # this case; never depend on a backend-specific all-masked result.
+            q = model.fast_conditioner.rank_queries.detach()
+            empty = torch.zeros((q.shape[0], 16, q.shape[-1]), device=q.device, dtype=q.dtype)
+            invalid = torch.zeros((q.shape[0], 16), device=q.device, dtype=torch.bool)
+            heads = model.fast_conditioner.heads
+            head_width = q.shape[-1] // heads
+            q_heads = q.reshape(q.shape[0], -1, heads, head_width).transpose(1, 2)
+            empty_heads = empty.reshape(q.shape[0], -1, heads, head_width).transpose(1, 2)
+            raw_empty = torch.nn.functional.scaled_dot_product_attention(
+                q_heads, empty_heads, empty_heads, attn_mask=invalid[:, None, None])
+            report['empty_mask_backend_probe'] = dict(torch_version=torch.__version__,
+                dtype=str(q.dtype), raw_sdpa_finite=bool(torch.isfinite(raw_empty).all()),
+                raw_sdpa_nonfinite_count=int((~torch.isfinite(raw_empty)).sum()))
+            safe_empty = model.fast_conditioner._attention(q, empty, empty, invalid)
+            report['empty_mask_backend_probe']['conditioner_finite'] = bool(torch.isfinite(safe_empty).all())
+            report['empty_mask_backend_probe']['conditioner_zero'] = bool((safe_empty == 0).all())
+            if not report['empty_mask_backend_probe']['conditioner_finite'] or not report['empty_mask_backend_probe']['conditioner_zero']:
+                raise AssertionError('empty proposal/source context must yield finite zero attention')
+            initial_eager = eager(current, world, None)
+            report['initial_eager_finite'] = bool(torch.isfinite(initial_eager).all())
+            if not report['initial_eager_finite']:
+                raise AssertionError('eager bootstrap produced nonfinite actions before CUDA capture')
             first = replay(current, world, None)
+            report['initial_graph_finite'] = bool(torch.isfinite(first).all())
+            if not report['initial_graph_finite']:
+                raise AssertionError('CUDA graph bootstrap produced nonfinite actions while eager was finite')
             first_snapshot = first.clone()
-            torch.testing.assert_close(first, eager(current, world, None), atol=args.atol, rtol=args.rtol)
+            torch.testing.assert_close(first, initial_eager, atol=args.atol, rtol=args.rtol)
             captures = graph.stats["captures"]
             cases = [("none_to_d0", current, world, d0),
                 ("committed_prefix", current, world, prefix),
