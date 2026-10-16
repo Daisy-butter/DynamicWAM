@@ -75,6 +75,20 @@ class JointSmokeLauncherTest(unittest.TestCase):
             self.assertIn('--expected-steps', stage['audit'])
             self.assertTrue(stage['full_export'].endswith('multirate_step_4.pt'))
 
+    def test_original_stage2_subset_recipe_preserves_init_and_two_phase_chain(self):
+        plan = launcher.commands(','.join(self.ids), self.root / 'auth.json', self.root / 'run', recipe='v33-stage2-subset')
+        self.assertEqual([x['phase'] for x in plan], ['warmup', 'joint'])
+        self.assertTrue(plan[0]['config'].endswith('joint_motionkv_v33_stage2_subset_warmup_smoke.yaml'))
+        self.assertTrue(plan[0]['initialization'].endswith('/outputs/checkpoint_init/absolute_motion_init.pt'))
+        self.assertEqual(plan[1]['initialization'], plan[0]['full_export'])
+        self.assertNotIn('step_12000', plan[0]['initialization'])
+        for stage in plan:
+            self.assertIn('--nproc_per_node=8', stage['command'])
+            profile = launcher.yaml.safe_load(Path(stage['config']).read_text())
+            self.assertEqual(profile['training']['gradient_accumulation_steps'], 2)
+            self.assertFalse(profile['training']['initialize_joint_interface'])
+            self.assertTrue(profile['pairing']['smoke_subset'])
+
     def test_source_change_or_prior_training_outputs_block(self):
         with patch.object(launcher, 'frozen_identity', return_value={'head': 'new'}):
             with self.assertRaises(RuntimeError):
