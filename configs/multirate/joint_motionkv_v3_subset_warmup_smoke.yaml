@@ -106,7 +106,7 @@ training:
   motion_prediction_weight: 0.1
 loss:
   fast_weight: 1.0
-  action_weight: 0.0
+  action_weight: 0.1
   native_teacher_weight: 0.0
   video_weight: 0.0
 flow_matching:
@@ -207,6 +207,7 @@ model:
     - 11
     require_source_rgb: true
     proposal_feedback: true
+    complete_source_plan: true
 distributed:
   zero_stage: 0
   bf16: true

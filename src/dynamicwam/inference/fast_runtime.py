@@ -177,6 +177,10 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
                 expected_feedback = 'sigma_conditioned_physical_plan_v1' if feedback else 'disabled'
                 if contract.get('proposal_feedback', 'disabled') != expected_feedback:
                     raise RuntimeError('proposal feedback architecture and trained runtime contract disagree')
+                completed = bool(modules['fast_conditioner'].get('complete_source_plan', False))
+                expected_completed = 'same_noise_native_K10_tail_stopgrad_v1' if completed else 'disabled'
+                if contract.get('source_plan_completion', 'disabled') != expected_completed:
+                    raise RuntimeError('completed source plan architecture and trained contract disagree')
                 physical = contract.get('physical_grid_contract', {})
                 def valid_sha256(value):
                     return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)

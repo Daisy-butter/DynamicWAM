@@ -20,7 +20,7 @@ from dynamicwam.models.rtc_prefix import PrefixCondition, apply_prefix, validate
 
 
 _BRIDGE_CONTEXT_TENSORS = (
-    "source_action_plan", "source_action_sigma", "source_action_target_offsets", "source_motion",
+    "source_action_plan", "source_completed_plan", "source_action_sigma", "source_action_target_offsets", "source_motion",
     "source_motion_interval_valid_mask", "source_motion_acceleration_valid_mask",
     "source_rgb", "source_rgb_valid_mask", "source_visual_tokens", "source_visual_valid",
 )

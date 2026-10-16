@@ -223,3 +223,5 @@ v3 的验收分 CPU 算法/真实数据、完整 GPU 训练/捕获/并发、1x �
 v1.6（2026-10-16）：旧 0.25x 评测已完成 700/700 并干净释放，SR=182/700、MS=41.8594；这是旧 step12000 的结果，不是 v3 联合架构结果。用户授权继续完善动作条件接口并做 GPU smoke，不启动正式训练。新 proposal_feedback_v1 在每个去噪步骤读取当前带噪动作、按物理时间对齐的源计划、当前队列和硬前缀，使用噪声可信度修正快路有效 K/V，不原地改写共享源缓存，不将新规划动作声称为已执行动作。该开关及运行契约须进入权重、严格加载和训推共同路径；旧 v3 无开关保持旧行为。
 
 允许显式 bounded_real_grid_v1 真实数据子集用于最多四步、八卡 warmup/joint smoke；必须验证原数据索引、时间、标签、训练验证划分和重新编码的完整子集 latent，记录 full_scope=false / formal_training_ready=false。该子集不能用于正式训练，子集权重不能静默成为正式初始化。正式数据门禁保持全量覆盖要求。GPU smoke 仍须新鲜现场证据、全部八卡临时 guard 先于遥测、干净退出；失败保留并定位后才能进行有明确修改的下一次试验。不得将模型反传或 CUDA Graph smoke 作为 1x 连续闭环或收益证明。
+
+v1.6 补充（本轮历史能力审计）：可选 source_plan_completion=same_noise_native_K10_tail_stopgrad_v1 必须沿已有两次联合采样的同一噪声轨迹完成剩余八次 Action 采样，不再运行 Video、不重置动作噪声。源 K/V 条件的早期 clean estimate 与最终 source_completed_plan 是不同字段；最终计划不是执行标签，超过原物理预测窗口必须屏蔽。训练和推理均采用同样的 stop-gradient 计划自条件，源 K/V 与 source FM 保留联合梯度。warmup 增加源缓存下的原生 Action FM（权重0.1），防止共享 Action 专家只适配快路而缺乏慢路监督；Video 仍冻结。此计算恢复不等于恢复 official 权重行为，step12000 初始化与 official 初始化的效果差异仍需同协议开发对照。

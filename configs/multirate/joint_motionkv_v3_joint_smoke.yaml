@@ -206,6 +206,7 @@ model:
     - 11
     require_source_rgb: true
     proposal_feedback: true
+    complete_source_plan: true
 distributed:
   zero_stage: 0
   bf16: true

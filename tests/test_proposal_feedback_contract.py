@@ -23,6 +23,18 @@ class ProposalContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'proposal feedback'):
             validate_runtime_contract(payload,runtime,rtc_controller=RTC_TIMESTAMPED_CONTROLLER)
 
+    def test_completed_plan_requires_distinct_runtime_provenance(self):
+        _,payload,runtime=contract_fixture(3)
+        payload['modules']['fast_conditioner'].update(proposal_feedback=True,complete_source_plan=True)
+        payload['config']['runtime_contract']['proposal_feedback']='sigma_conditioned_physical_plan_v1'
+        with self.assertRaisesRegex(RuntimeError,'completed source plan'):
+            validate_runtime_contract(payload,runtime,rtc_controller=RTC_TIMESTAMPED_CONTROLLER)
+        payload['config']['runtime_contract']['source_plan_completion']='same_noise_native_K10_tail_stopgrad_v1'
+        validate_runtime_contract(payload,runtime,rtc_controller=RTC_TIMESTAMPED_CONTROLLER)
+        payload['modules']['fast_conditioner']['complete_source_plan']=False
+        with self.assertRaisesRegex(RuntimeError,'completed source plan'):
+            validate_runtime_contract(payload,runtime,rtc_controller=RTC_TIMESTAMPED_CONTROLLER)
+
     def test_original_v3_without_feedback_field_keeps_original_semantics(self):
         _,payload,runtime=contract_fixture(3)
         payload['modules']['fast_conditioner'].pop('proposal_feedback',None)

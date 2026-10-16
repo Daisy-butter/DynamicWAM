@@ -1,0 +1,25 @@
+# Route1 v3.2: restore the completed source action proposal
+
+Historical audit found that the original full WAM continued the same action trajectory through two joint Video/Action steps and eight native action-only steps. The asynchronous bridge kept only the second joint step's K/V and clean action estimate. Fresh fast generation therefore lacked the final slow action proposal. This is a plausible information-loss mechanism, not a proven explanation of an unpaired benchmark difference.
+
+## Exact recovery
+
+`complete_source_plan: true` retains `source_action_plan`/`source_action_sigma` as the early clean estimate of the actual cache-producing condition. It adds a distinct `source_completed_plan`: apply the second joint Euler update once, then continue indices2..9 of the original K10 schedule, with the same noise state, same immutable Video K/V, native motion tokens and source RTC prefix. All updates use the original `euler_update` rounding and native timestep precision. Clamp the committed source prefix after every update. No extra Video forward, no noise restart, no hard freeze of uncommitted grippers.
+
+The completed proposal is source-timestamped, not publication-timestamped; both proposals share exact source target offsets. It is produced before atomic asynchronous publication. All added time is included in the existing slow-build latency. It does not extend the source action horizon beyond2.56seconds. High-age queries still mask expired targets.
+
+## Consumption and gradients
+
+A separate small zero-gated completed-plan encoder supplies a clean static soft prior to rank context, including at the pure-noise first fast step. Per-step proposal feedback additionally encodes the discrepancy from this final plan with the same sigma confidence; the original early-conditioning discrepancy remains separate. Native action/motion attention and fresh fast action generation remain active. Expired and null-cache final-plan references are masked. Neither final proposal nor old queue is an immutable suffix target.
+
+The eight-step completion is explicitly **stop-gradient self-conditioning from the current live model**, computed identically during training and inference. It is not an expert label or independent frozen teacher. Original source K/V and early clean estimate remain differentiable. Fast suffix FM still trains Video through cache; source Video/Action FM retention and fast FM train the backbone; completed-plan encoder/gate and proposal updater receive gradients. Avoiding backward through eight additional action steps bounds activation cost, but omits that indirect gradient route; differentiable completion remains a separate measured ablation. Warmup freezes Video and adds source Action FM weight0.1 on the already computed detached source Video K/V, without the fast adapter or another Video pass. This anchors the native bare-KV source actor, which otherwise shares weights with the changing fast actor without source supervision. Joint/refinement keep source Video/Action FM weight0.1 and optimize Video/Action/motion/interface. VAE/T5 and dataset semantics do not change.
+
+## Cost and compatibility
+
+Per source refresh, add eight native Action forwards and zero Video forwards. At refresh16 and fastquery4/K10, this is8additional versus40fast Action forwards per16actions (20% more Action calls, not a measured latency estimate). Background publication delay, fast contention and p99 must be measured before claiming acceleration. The cache cannot be published early with an incomplete proposal under this mode.
+
+Legacy v3/v3.1 default the new flag off and load their original tensor shapes strictly. New configured profiles bind `source_plan_completion=same_noise_native_K10_tail_stopgrad_v1` in export/runtime metadata; flag/contract mismatches reject. New training initializes the existing step12000 checkpoint with explicit new-interface migration, not a partially trained smoke checkpoint. The previous v3.1 commit remains the feature-off control.
+
+CPU tests use real native joint/Action code and two tiny native Wan blocks, with compact projection/identity Video RoPE and CPU attention substitutes. They prove exact zero-prefix agreement with the native same-noise K10 sampler; two joint/eight tail counts; all10-step clean-prefix/motion timestep semantics; unchanged K/V/early estimate; final-plan output sensitivity only on valid times; null/expired masking; joint gradients/checkpoint parity; legacy/new strict loading; and graph-body tensor ownership/parity. They do not prove full GPU fit, CUDA concurrency, actual1x latency, or improved task success.
+
+The step12000 actor was adapted for the fast corrected-KV path while its old slow source used official weights. Starting the shared v3 slow actor from step12000 therefore changes its prior as well as its solver. Source completion restores the trajectory interface, not the exact official prior. An official-full versus step12000 initialization pilot is still needed before final recipe selection; no improvement is claimed from architectural inspection.

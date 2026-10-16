@@ -87,7 +87,8 @@ class MultirateWAM(nn.Module):
         elif int(fast_steps) != 10:
             raise ValueError("independent fast_steps requires native_multirate")
         self.fast_schedule = self.schedule.with_action_steps(fast_steps) if self.native_multirate else self.schedule
-        self.bridge = CausalWorldBridge(self.schedule)
+        self.bridge = CausalWorldBridge(self.schedule,
+            complete_source_plan=bool(getattr(conditioner, "complete_source_plan", False)))
 
     def prepare_fast_memory(self, current, bridge, text, text_mask=None):
         if self.fast_policy is not None:
@@ -413,11 +414,20 @@ class MultirateWAM(nn.Module):
             loss = loss + self.motion_prediction_weight * motion_loss
             metrics["loss/motion_forecast"] = motion_loss.detach()
             metrics["motion/valid_intervals"] = current.motion_interval_valid_mask.float().sum().detach()
-        if self.native_source_bridge == "student_joint" and self.native_training_phase == "joint":
+        source_warmup_anchor = (self.native_training_phase == "warmup"
+            and getattr(self.fast_conditioner, "interface_version", 1) >= 3
+            and self.joint_action_weight > 0)
+        if self.native_source_bridge == "student_joint" and (self.native_training_phase == "joint" or source_warmup_anchor):
             if self.joint_video_weight > 0 or self.joint_action_weight > 0:
                 source_retention = getattr(self.fast_conditioner, "interface_version", 1) >= 3
                 aligned_batch = batch["source_aligned"] if source_retention else batch["aligned"]
                 def aligned_forward():
+                    if source_warmup_anchor:
+                        # Anchor the bare-KV native source actor, not the new
+                        # fast adapter. Reuse its detached source world cache;
+                        # no extra Video forward and no Video weight updates.
+                        return self.backbone.forward_action_with_video_cache(
+                            dict(aligned_batch, video_cache=source_bridge.as_video_cache()))
                     return self.backbone._forward_video_action(aligned_batch,
                         include_video_prediction=self.joint_video_weight > 0,
                         build_video_cache=False, detach_cache=False)
@@ -442,6 +452,7 @@ class MultirateWAM(nn.Module):
                         action_loss = F.mse_loss(aligned["action_pred"].float(), batch["action_target"].float())
                     loss = loss + self.joint_action_weight * action_loss
                     metrics["loss/action_retention"] = action_loss.detach()
+                    metrics["retention/source_cached_kv"] = action_loss.new_tensor(float(source_warmup_anchor))
         metrics["bridge/student_joint"] = loss.new_tensor(float(self.native_source_bridge == "student_joint"))
         metrics["loss/total"] = loss.detach()
         outputs.update(native_loss=loss, native_metrics=metrics)

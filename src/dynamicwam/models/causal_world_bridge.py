@@ -2,7 +2,8 @@
 
 Step 0 updates the future latent and the source action proposal. Step 1 is the
 forward whose pre-attention video K/V becomes the bridge. Later action-only
-denoising steps do not change that cache and are not run here.
+denoising steps do not change that cache. Optional completion runs them on
+the SAME trajectory to publish a separate final action proposal.
 """
 
 from __future__ import annotations
@@ -23,9 +24,12 @@ from dynamicwam.models.multirate_types import (
 
 
 class CausalWorldBridge(torch.nn.Module):
-    def __init__(self, schedule: BridgeSchedule | None = None) -> None:
+    def __init__(self, schedule: BridgeSchedule | None = None, *, complete_source_plan=False) -> None:
         super().__init__()
         self.schedule = schedule or BridgeSchedule.from_flow_match()
+        self.complete_source_plan = bool(complete_source_plan)
+        if self.complete_source_plan and len(self.schedule.action_sigmas) != 10:
+            raise ValueError("completed source proposal requires native K10 schedule")
 
     def forward(
         self,
@@ -75,6 +79,10 @@ class CausalWorldBridge(torch.nn.Module):
         plan = actions - action_sigma.to(actions) * outputs["action_pred"]
         if prefix is not None:
             plan = apply_prefix(plan, prefix)
+        completed = None
+        if self.complete_source_plan:
+            completed = self._complete_source_proposal(model, batch, actions, outputs,
+                                                       action_dtype=action_dtype)
         if detach_cache:
             plan = plan.detach()
         own = lambda value: value.detach() if detach_cache and torch.is_tensor(value) else value
@@ -92,7 +100,7 @@ class CausalWorldBridge(torch.nn.Module):
             null_bridge=False,
             all_video_tokens_valid=cache.get("all_video_tokens_valid", False),
             interface_version=3 if source.action_target_offsets is not None else 2,
-            source_action_plan=plan,
+            source_action_plan=plan, source_completed_plan=completed,
             source_action_sigma=action_sigma.to(actions).detach(),
             source_action_target_offsets=own(source.action_target_offsets),
             source_motion=own(source.motion),
@@ -100,6 +108,30 @@ class CausalWorldBridge(torch.nn.Module):
             source_motion_acceleration_valid_mask=source.motion_acceleration_valid_mask,
             source_rgb=own(source.rgb), source_rgb_valid_mask=source.rgb_valid_mask,
         )
+
+    @torch.no_grad()
+    def _complete_source_proposal(self, model, batch, actions, outputs, *, action_dtype):
+        """Stop-gradient self-conditioning; never restart from fresh noise.
+
+        Keep the early clean estimate and original K/V attached separately for
+        joint gradients. Source Video/Action FM retention trains the backbone;
+        this final proposal is a live-model input, never an expert target.
+        """
+        sigma, next_sigma, _ = self.schedule.action_step(1)
+        actions = euler_update(actions, outputs["action_pred"], sigma, next_sigma)
+        prefix = batch.get("rtc_prefix")
+        if prefix is not None:
+            actions = apply_prefix(actions, prefix)
+        cache = outputs["video_cache"]
+        for index in range(2, len(self.schedule.action_sigmas)):
+            sigma, next_sigma, timestep = self.schedule.action_step(index)
+            packet = dict(batch, video_cache=cache, noisy_actions=actions,
+                          action_t=_expand_time(timestep, actions, action_dtype))
+            velocity = model.forward_action_with_video_cache(packet)["action_pred"]
+            actions = euler_update(actions, velocity, sigma, next_sigma)
+            if prefix is not None:
+                actions = apply_prefix(actions, prefix)
+        return actions.detach()
 
     def _joint_step(
         self,

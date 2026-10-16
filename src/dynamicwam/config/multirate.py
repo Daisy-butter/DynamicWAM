@@ -298,7 +298,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
     motion_options = {k: fast_raw.pop(k, v) for k, v in {
         "motion_kv": False, "kv_rank": 8, "max_relative_update": .25,
         "interface_version": 1, "action_dim": 14, "correction_layers": None,
-        "require_source_rgb": True, "proposal_feedback": False,
+        "require_source_rgb": True, "proposal_feedback": False, "complete_source_plan": False,
     }.items()}
     fast = require_exact_keys(
         fast_raw,
@@ -326,7 +326,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             if int(motion_options["kv_rank"]) < 1 or not 0 < float(motion_options["max_relative_update"]) <= 1:
                 raise ValueError("invalid motion K/V correction bounds")
             if int(motion_options["interface_version"]) == 1:
-                for name in ("interface_version", "action_dim", "correction_layers", "require_source_rgb", "proposal_feedback"):
+                for name in ("interface_version", "action_dim", "correction_layers", "require_source_rgb", "proposal_feedback", "complete_source_plan"):
                     motion_options.pop(name)
             elif int(motion_options["interface_version"]) not in (2, 3):
                 raise ValueError("unsupported motion K/V interface version")
@@ -367,6 +367,9 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
                 or not 0 < int(training["max_steps"]) <= 4 or training["resume_from"]
                 or phase not in {"fast_warmup", "cross_time_joint"}):
             raise ValueError("smoke_subset requires fresh <=4-step V3 physical-grid warmup/joint")
+    if motion_options.get("complete_source_plan", False) and (
+            int(fast.get("interface_version", 1)) != 3 or not motion_options.get("proposal_feedback", False)):
+        raise ValueError("completed source proposal requires V3 proposal feedback")
     if motion_options.get("proposal_feedback", False) and int(fast.get("interface_version", 1)) != 3:
         raise ValueError("proposal feedback requires physical-grid V3")
     if int(distributed["zero_stage"]) not in {0, 1, 2, 3}:
@@ -413,8 +416,10 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
                 raise ValueError("motion_prediction_weight must be nonnegative")
             for name in ("physical_grid_root","future_latent_root"):
                 pair_options[name] = _resolve(pair_options[name],base=project_root,label="pairing."+name)
-        if phase == "fast_warmup" and (float(loss["action_weight"]) != 0 or float(loss["video_weight"]) != 0):
-            raise ValueError("native warmup freezes video and uses only fast objectives")
+        if phase == "fast_warmup" and (float(loss["video_weight"]) != 0 or (not v3 and float(loss["action_weight"]) != 0)):
+            raise ValueError("native warmup freezes Video; source Action retention is only supported by V3")
+        if phase == "fast_warmup" and fast.get("complete_source_plan", False) and float(loss["action_weight"]) <= 0:
+            raise ValueError("completed source plan warmup requires native source Action FM retention")
         if phase == "cross_time_joint" and (float(loss["action_weight"]) <= 0 or float(loss["video_weight"]) <= 0):
             raise ValueError("joint native training preserves aligned video and action objectives")
         if training["native_source_bridge"] == "student_joint" and int(fast.get("interface_version", 1)) not in (2, 3):

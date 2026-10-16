@@ -86,6 +86,9 @@ class BridgeTensorBundle:
     interface_version: int = 1
     source_action_plan: torch.Tensor | None = None
     source_action_sigma: torch.Tensor | float | None = None
+    # Separate final proposal from the SAME native K10 trajectory. It is not
+    # the action condition that produced video K/V. Explicit stop-gradient.
+    source_completed_plan: torch.Tensor | None = None
     source_action_target_offsets: torch.Tensor | None = None
     source_motion: torch.Tensor | None = None
     source_motion_interval_valid_mask: torch.Tensor | None = None

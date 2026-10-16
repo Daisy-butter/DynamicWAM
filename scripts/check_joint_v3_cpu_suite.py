@@ -28,7 +28,7 @@ def main():
         'check_joint_motionkv_v3_training_cpu.py', 'check_joint_deployment_cpu.py',
         'check_rtc_prefix.py', 'check_motionkv_training_cpu.py',
         'check_motion_kv_runtime_contract.py', 'verify_multirate_training.py',
-        'check_joint_source_prefix_cpu.py', 'check_joint_proposal_feedback_cpu.py',
+        'check_joint_source_prefix_cpu.py', 'check_joint_proposal_feedback_cpu.py', 'check_source_plan_completion_cpu.py',
     ]
     tests = ['test_v3_rtc_queue.py', 'test_async_motionkv_policy.py',
              'test_motionkv_rtc_controller.py', 'test_joint_smoke_launcher.py',

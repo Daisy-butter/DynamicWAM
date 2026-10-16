@@ -79,6 +79,8 @@ _JOINT_NEW_STATE_PREFIXES = (
     "fast_conditioner.motion_forecast.",
     "fast_conditioner.proposal_encoder.",
     "fast_conditioner.proposal_gate",
+    "fast_conditioner.completed_plan_encoder.",
+    "fast_conditioner.completed_plan_gate",
 )
 
 
@@ -1154,6 +1156,7 @@ class MultirateTrainer:
                     "motion_forecast": "source_kv_native_motion_elapsed_to_current_stats",
                     "proposal_feedback": "sigma_conditioned_physical_plan_v1" if self.config["model"]["fast_conditioner"].get("proposal_feedback", False) else "disabled",
                     "previous_plan": "soft_context_only; hard_prefix_is_irrevocable",
+                    "source_plan_completion": "same_noise_native_K10_tail_stopgrad_v1" if self.config["model"]["fast_conditioner"].get("complete_source_plan", False) else "disabled",
                     "training_data_kind": self.config["dataset"].get("kind","physical_grid"),
                     "training_scope": "smoke_subset" if self.config["dataset"].get("smoke_subset", False) else "full",
                     "replay_identity": getattr(self.dataset,"replay_identity",None),

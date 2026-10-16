@@ -12,6 +12,7 @@ def group(name):
         ('backbone.action_expert.', 'action'),
         ('backbone.absolute_motion_tokens.', 'native_motion'),
         ('fast_conditioner.proposal_', 'proposal_feedback'),
+        ('fast_conditioner.completed_plan_', 'completed_plan_prior'),
         ('fast_conditioner.motion_forecast', 'motion_forecast'),
         ('fast_conditioner.', 'interface'),
     ):
@@ -67,6 +68,7 @@ def main():
     passed &= all(rows[key]['changed'] > 0 for key in ('action', 'native_motion', 'interface'))
     if a.phase == 'joint':
         passed &= rows.get('proposal_feedback', {}).get('changed', 0) > 0
+        passed &= rows.get('completed_plan_prior', {}).get('changed', 0) > 0
     result = dict(passed=bool(passed), phase=a.phase, before=str(a.before.resolve()),
         after=str(a.after.resolve()), groups=rows,
         limitation='Actual parameter changes verify optimizer/export plumbing; weight decay can also change weights. This is not a per-parameter gradient proof or a quality claim.')

@@ -21,13 +21,16 @@ JOINT_MOTIONKV_INTERFACE_VERSION = 2
 
 class JointMotionKVConditioner(MotionKVConditioner):
     def __init__(self, *, action_dim=14, interface_version=2,
-                 correction_layers=None, require_source_rgb=True, proposal_feedback=False, **kwargs):
+                 correction_layers=None, require_source_rgb=True, proposal_feedback=False, complete_source_plan=False, **kwargs):
         if int(interface_version) not in (2, 3):
             raise ValueError("joint MotionKV requires interface version 2 or 3")
         super().__init__(**kwargs)
         self.interface_version = int(interface_version)
         self.action_dim = int(action_dim)
         self.proposal_feedback = bool(proposal_feedback)
+        self.complete_source_plan = bool(complete_source_plan)
+        if self.complete_source_plan and (not self.proposal_feedback or self.interface_version != 3):
+            raise ValueError("completed source proposal requires V3 proposal feedback")
         if self.proposal_feedback and self.interface_version != 3:
             raise ValueError("proposal feedback requires physical-grid V3")
         if self.action_dim < 1:
@@ -51,16 +54,21 @@ class JointMotionKVConditioner(MotionKVConditioner):
         if self.proposal_feedback:
             # Shared across layers: only 16 endpoint tokens and R rank tokens
             # are processed per denoising step. No additional Video/Action pass.
-            self.proposal_encoder = nn.Sequential(nn.Linear(4 * self.action_dim + 8, d),
+            proposal_width = 4 * self.action_dim + 8 + (self.action_dim + 1 if self.complete_source_plan else 0)
+            self.proposal_encoder = nn.Sequential(nn.Linear(proposal_width, d),
                 nn.SiLU(), nn.Linear(d, d))
             self.proposal_gate = nn.Parameter(torch.zeros(()))
+        if self.complete_source_plan:
+            self.completed_plan_encoder = nn.Sequential(nn.Linear(self.action_dim + 3, d),
+                nn.SiLU(), nn.Linear(d, d))
+            self.completed_plan_gate = nn.Parameter(torch.zeros(()))
         self.innovation_kind = nn.Parameter(torch.randn(1, 3, d) * .02)
         # New information must not alter the V1 softmax normalizer at migration.
         # Loaded nonzero K/V heads train this gate first, then innovation paths.
         self.innovation_gate = nn.Parameter(torch.zeros(()))
         self.constructor_spec.update(action_dim=self.action_dim, interface_version=self.interface_version,
             correction_layers=list(self.correction_layers), require_source_rgb=self.require_source_rgb,
-            proposal_feedback=self.proposal_feedback)
+            proposal_feedback=self.proposal_feedback, complete_source_plan=self.complete_source_plan)
 
     @torch.inference_mode()
     def prepare_source_cache(self, bridge):
@@ -125,9 +133,10 @@ class JointMotionKVConditioner(MotionKVConditioner):
         error = torch.where(valid, prediction - target, torch.zeros_like(prediction))
         return (error.square().sum((1, 2)) / valid.sum((1, 2)).clamp_min(1)).mean()
 
-    def aligned_source_plan(self, current, bridge):
+    def aligned_source_plan(self, current, bridge, *, completed=False):
         """Align source targets by physical time; arms linear, grippers held."""
-        plan, source_offsets = bridge.source_action_plan, bridge.source_action_target_offsets
+        plan = bridge.source_completed_plan if completed else bridge.source_action_plan
+        source_offsets = bridge.source_action_target_offsets
         offsets = current.action_target_offsets
         if plan is None or source_offsets is None or offsets is None or source_offsets.shape != plan.shape[:2] or offsets.shape != plan.shape[:2]:
             raise ValueError("V3 source plan requires matching physical endpoint offsets")
@@ -147,6 +156,8 @@ class JointMotionKVConditioner(MotionKVConditioner):
             keep = (index_d == 6) | (index_d == 13)
             result = torch.where(keep[None,None],lo,result)
         available = (query >= source_offsets[:,:1]-1e-9) & (query <= source_offsets[:,-1:]+1e-9)
+        if completed:
+            available = available & ~self._column(bridge.null_bridge,b,plan.device,torch.bool)
         return torch.where(available[...,None],result,torch.zeros_like(result)), available
 
     def _motion_delta(self, current, bridge, dtype):
@@ -251,7 +262,19 @@ class JointMotionKVConditioner(MotionKVConditioner):
         innovation = self.observation_norm(torch.cat((visual, motion, plan), 1))
         valid = torch.cat((innovation_valid, extra), 1)
         residual = self._attention(base, self.observation_k(innovation), self.observation_v(innovation), valid)
-        return base + self.innovation_gate.tanh().to(dtype) * residual
+        result = base + self.innovation_gate.tanh().to(dtype) * residual
+        if self.complete_source_plan:
+            completed, available = self.aligned_source_plan(current, bridge, completed=True)
+            b, length, _ = completed.shape
+            elapsed = self._column(current.age.delta_sim_seconds,b,completed.device,torch.float64)
+            offsets = current.action_target_offsets.to(device=completed.device,dtype=torch.float64)
+            features = torch.cat((completed.to(dtype), available[...,None].to(dtype),
+                (offsets/self.sim_scale).to(dtype)[...,None],
+                (elapsed/self.sim_scale).to(dtype)[:,None].expand(-1,length,-1)), -1)
+            tokens = self.completed_plan_encoder(features)
+            prior = self._attention(base, self.observation_k(tokens), self.observation_v(tokens), available)
+            result = result + self.completed_plan_gate.tanh().to(dtype) * prior
+        return result
 
     def prepare_memory(self, current, text, text_mask=None, *, bridge=None):
         memory = super().prepare_memory(current, text, text_mask, bridge=bridge)
@@ -263,6 +286,8 @@ class JointMotionKVConditioner(MotionKVConditioner):
             committed = torch.arange(length, device=old.device)[None] < self._column(
                 current.committed_prefix_lengths, b, old.device, torch.long)
             previous_valid = current.previous_plan_valid.bool()
+            if self.complete_source_plan:
+                memory.completed_reference = self.aligned_source_plan(current, bridge, completed=True)
             memory.proposal_reference = (
                 old, available,
                 torch.where(previous_valid[..., None], current.previous_plan, torch.zeros_like(old)),
@@ -297,6 +322,10 @@ class JointMotionKVConditioner(MotionKVConditioner):
             available[..., None].float(), previous_valid[..., None].float(), committed[..., None].float(),
             (offsets / self.sim_scale).float()[..., None], position,
             (elapsed / self.sim_scale).float()[:, None].expand(-1, length, -1)), -1)
+        if self.complete_source_plan:
+            completed, valid = memory.completed_reference
+            delta = torch.where(valid[...,None], sample - confidence * completed.float(), torch.zeros_like(sample))
+            features = torch.cat((features, delta * confidence, valid[...,None].float()), -1)
         return features, confidence
 
     def condition_on_proposal(self, noisy_actions, action_t, memory, *, num_train_timesteps):
