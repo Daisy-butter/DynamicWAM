@@ -10,6 +10,8 @@ paths:
   init_checkpoint: /SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_v3_warmup_smoke_20261015/exports/multirate_step_4.pt
   native_teacher_checkpoint: ''
 pairing:
+  rtc_prefix_sampling: fixed_h4_v1
+  source_prefix_condition_dropout_probability: 0.2
   splits:
   - clean
   - randomized
@@ -152,6 +154,7 @@ model:
     - 26
     - 30
   action_expert:
+    source_physical_time_conditioning: true
     dim: 768
     ffn_dim: 3072
     num_layers: 12

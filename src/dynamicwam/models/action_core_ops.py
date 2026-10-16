@@ -241,6 +241,19 @@ class ActionCoreOps:
         register_count = int(self.action_expert.config.num_registers)
         if int(base_tokens.shape[1]) != core_length + register_count:
             raise RuntimeError("unexpected state/action/register token layout")
+        time_encoder = getattr(self.action_expert, "source_time_encoder", None)
+        if time_encoder is not None and batch.get("source_query", False):
+            offsets = batch.get("source_action_target_offsets")
+            if offsets is None or offsets.shape != noisy_actions.shape[:2]:
+                raise ValueError("source time conditioning requires exact physical target offsets [B,H]")
+            reference = time_encoder[0].weight
+            offsets = offsets.to(device=reference.device, dtype=reference.dtype)
+            features = torch.stack((offsets / 2.56,
+                (offsets[:, :1] / 0.16).expand_as(offsets)), dim=-1)
+            bias = time_encoder(features).to(base_tokens)
+            # Preserve the state, motion and register input tokens bitexactly.
+            base_tokens = torch.cat((base_tokens[:, :1],
+                base_tokens[:, 1:core_length] + bias, base_tokens[:, core_length:]), dim=1)
         motion_tokens = self.absolute_motion_tokens(
             batch["absolute_motion_features"],
             batch["absolute_motion_interval_valid_mask"],

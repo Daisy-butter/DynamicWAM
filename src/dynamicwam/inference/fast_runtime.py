@@ -181,6 +181,11 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
                 expected_completed = 'same_noise_native_K10_tail_stopgrad_v1' if completed else 'disabled'
                 if contract.get('source_plan_completion', 'disabled') != expected_completed:
                     raise RuntimeError('completed source plan architecture and trained contract disagree')
+                source_time = bool(modules['action_expert'].get('source_physical_time_conditioning', False))
+                expected_source_time = 'native_action_tokens_target_offset_phase_v1' if source_time else 'disabled'
+                if (contract.get('source_physical_time_conditioning', 'disabled') != expected_source_time
+                        or bool(config.get('model', {}).get('action_expert', {}).get('source_physical_time_conditioning', False)) != source_time):
+                    raise RuntimeError('source physical time architecture and trained contract disagree')
                 physical = contract.get('physical_grid_contract', {})
                 def valid_sha256(value):
                     return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)

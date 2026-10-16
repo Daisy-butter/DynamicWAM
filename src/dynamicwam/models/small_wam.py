@@ -33,6 +33,7 @@ class SmallWAMActionConfig:
     motion_history_count: int
     motion_feature_mean: tuple[float, ...]
     motion_feature_scale: tuple[float, ...]
+    source_physical_time_conditioning: bool = False
 
 
 class SmallWAMActionModel(ActionCoreOps, nn.Module):
@@ -65,6 +66,7 @@ class SmallWAMActionModel(ActionCoreOps, nn.Module):
                 state_dim=config.state_dim,
                 action_dim=config.action_dim,
                 chunk_size=config.chunk_size,
+                source_physical_time_conditioning=config.source_physical_time_conditioning,
             ),
             wan_cfg,
         )

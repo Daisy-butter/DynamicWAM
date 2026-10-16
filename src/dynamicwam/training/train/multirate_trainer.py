@@ -71,6 +71,7 @@ from dynamicwam.training.utils.scheduler import create_scheduler
 
 
 _JOINT_NEW_STATE_PREFIXES = (
+    "backbone.action_expert.source_time_encoder.",
     "fast_conditioner.visual_innovation.",
     "fast_conditioner.motion_innovation.",
     "fast_conditioner.plan_innovation.",
@@ -82,6 +83,18 @@ _JOINT_NEW_STATE_PREFIXES = (
     "fast_conditioner.completed_plan_encoder.",
     "fast_conditioner.completed_plan_gate",
 )
+
+
+def rtc_sampling_export_metadata(config, dataset):
+    """Recorded replay is never relabelled as the offline H4 sampler."""
+    if config["dataset"].get("kind") == "real_rollout":
+        identity = getattr(dataset, "replay_identity", None)
+        if not isinstance(identity, str) or len(identity) != 64:
+            raise RuntimeError("real replay RTC export lacks validated replay identity")
+        return dict(mode="recorded_real_prefix_v1", prefix_source="on_policy_executed",
+            sampling="none", max_prefix_actions=4, zero_fast_prefix_coverage="not_asserted",
+            bootstrap="recorded_prime_then_hold", replay_identity=identity)
+    return getattr(dataset, "rtc_prefix_sampling_contract", None)
 
 
 def migrate_joint_interface_initialization(model, payload):
@@ -459,6 +472,7 @@ def fast_module_spec(
             "state_dim": int(action["state_dim"]),
             "action_dim": int(action["action_dim"]),
             "chunk_size": int(action["chunk_size"]),
+            "source_physical_time_conditioning": bool(action.get("source_physical_time_conditioning", False)),
         },
         "wan_attention": {
             "dim": int(wan["dim"]),
@@ -528,6 +542,9 @@ class MultirateTrainer:
                 max_cache_age_actions=31, async_seed=int(dataset_cfg.get("async_seed",20261015)),
                 slow_budget_seconds=2.56, rtc_prefix_max=int(config["rtc_prefix_max"]),
                 strict_future_latents=True, smoke_subset=bool(dataset_cfg.get("smoke_subset", False)))
+            if dataset_cfg.get("kind", "physical_grid") == "physical_grid":
+                physical_kwargs.update(rtc_prefix_sampling=dataset_cfg.get("rtc_prefix_sampling", "delay_minimum_v1"),
+                    source_prefix_condition_dropout_probability=float(dataset_cfg.get("source_prefix_condition_dropout_probability", .2)))
         if dataset_cfg.get("kind", "physical_grid") == "real_rollout":
             if int(config["model"]["fast_conditioner"].get("interface_version",1)) != 3:
                 raise ValueError("real rollout refinement requires the complete V3 interface")
@@ -756,6 +773,7 @@ class MultirateTrainer:
                 ae_dim=int(action_cfg["dim"]),
                 ae_ffn_dim=int(action_cfg["ffn_dim"]),
                 ae_num_layers=int(action_cfg["num_layers"]),
+                source_physical_time_conditioning=bool(action_cfg.get("source_physical_time_conditioning", False)),
                 wan_frozen=True,
                 motion_history_count=int(self.dataset.packed.motion_history_count),
                 motion_feature_mean=tuple(
@@ -1078,6 +1096,8 @@ class MultirateTrainer:
                                  "cache_age_seed": int(self.config["dataset"].get("cache_age_seed", 0)),
                                  **({"physical_grid_identity": self.dataset.physical_grid_identity,
                                      "async_seed": int(self.config["dataset"].get("async_seed",20261015)),
+                                     **({"rtc_prefix_sampling": self.dataset.rtc_prefix_sampling_contract}
+                                        if getattr(self.dataset,"rtc_prefix_sampling_contract",{}).get("mode","delay_minimum_v1") != "delay_minimum_v1" else {}),
                                       "dataset_kind": self.config["dataset"].get("kind","physical_grid"),
                                       "replay_identity": getattr(self.dataset,"replay_identity",None),
                                       "replay_target_policy": self.config["dataset"].get("replay_target_policy")}
@@ -1122,7 +1142,7 @@ class MultirateTrainer:
             "runtime_contract": {
                 "version": 1,
                 **({"rtc": {"version": 1, "mode": "training_time_action_prefix", "max_prefix_actions": int(self.config["rtc_prefix_max"]),
-                    "clean_timestep": 0.0, "loss": "per_sample_suffix_mean", "includes_zero_prefix": True,
+                    "clean_timestep": 0.0, "loss": "per_sample_suffix_mean", "includes_zero_prefix": (rtc_sampling_export_metadata(self.config,self.dataset) or {}).get("mode") not in ("fixed_h4_v1", "recorded_real_prefix_v1"),
                     "queue_clock": "absolute_action_effect_times", "overflow": "reject_and_refresh", "execute_suffix_actions": 4}}
                     if self.config.get("rtc_prefix_max", 0) else {}),
                 **({"motion_kv": {"version": int(self.config["model"]["fast_conditioner"].get("interface_version", 1)),
@@ -1151,11 +1171,14 @@ class MultirateTrainer:
                     "physical_grid_contract": {"schema_version": 1, "action_interval_seconds": .16,
                         "action_horizon": 16, "source_plan_alignment": "physical_time_linear_arm_previous_hold_gripper",
                         "latent_manifest_sha256": self.dataset.readiness["latent_manifest_sha256"]},
+                    **({"rtc_prefix_sampling": rtc_sampling_export_metadata(self.config,self.dataset)}
+                       if rtc_sampling_export_metadata(self.config,self.dataset) is not None else {}),
                     "source_retention": "fixed_grid_source_video_action_fm",
                     "slow_source_prefix": "clean_committed_v1",
                     "motion_forecast": "source_kv_native_motion_elapsed_to_current_stats",
                     "proposal_feedback": "sigma_conditioned_physical_plan_v1" if self.config["model"]["fast_conditioner"].get("proposal_feedback", False) else "disabled",
                     "previous_plan": "soft_context_only; hard_prefix_is_irrevocable",
+                    "source_physical_time_conditioning": "native_action_tokens_target_offset_phase_v1" if self.config["model"]["action_expert"].get("source_physical_time_conditioning", False) else "disabled",
                     "source_plan_completion": "same_noise_native_K10_tail_stopgrad_v1" if self.config["model"]["fast_conditioner"].get("complete_source_plan", False) else "disabled",
                     "training_data_kind": self.config["dataset"].get("kind","physical_grid"),
                     "training_scope": "smoke_subset" if self.config["dataset"].get("smoke_subset", False) else "full",

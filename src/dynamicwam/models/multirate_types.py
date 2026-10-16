@@ -51,6 +51,11 @@ class SourceObservation:
             ),
             "text_embeddings": self.text_embeddings,
         }
+        # Explicit source marker distinguishes the native slow/source-FM path
+        # from fast calls, which already carry physical time via the interface.
+        batch["source_query"] = True
+        if self.action_target_offsets is not None:
+            batch["source_action_target_offsets"] = self.action_target_offsets
         if self.committed_prefix is not None or self.committed_prefix_lengths is not None:
             if self.committed_prefix is None or self.committed_prefix_lengths is None:
                 raise ValueError("source committed prefix requires actions and lengths together")

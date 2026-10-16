@@ -31,14 +31,16 @@ def training_environment(inherited=None):
 
 
 def commands(ids, authorization, out, inherited=None, recipe='v2'):
-    if recipe not in ('v2', 'v3', 'v3-replay', 'v3-subset'):
+    if recipe not in ('v2', 'v3', 'v3-replay', 'v3-subset', 'v33-subset'):
         raise ValueError('unknown joint recipe')
     python = str(ROOT / '.venv/bin/python')
     inherited = dict(os.environ if inherited is None else inherited)
     result = []
     phases = ('replay',) if recipe == 'v3-replay' else ('warmup', 'joint')
     for phase in phases:
-        stem = 'joint_motionkv_v3_subset' if recipe == 'v3-subset' else ('joint_motionkv_v3' if recipe.startswith('v3') else 'joint_motionkv')
+        stem = ('joint_motionkv_v33_subset' if recipe == 'v33-subset' else
+            ('joint_motionkv_v3_subset' if recipe == 'v3-subset' else
+             ('joint_motionkv_v3' if recipe.startswith('v3') else 'joint_motionkv')))
         config = ROOT / f'configs/multirate/{stem}_{phase}_smoke.yaml'
         profile = yaml.safe_load(config.read_text())
         if profile['training']['max_steps'] != 4 or profile['training'].get('resume_from'):
@@ -130,7 +132,7 @@ def require_recipe_data(plan, recipe):
             raise ValueError('warmup/joint must use the same audited physical-time dataset')
     # A complete manifest, all shard identities and coverage are verified here;
     # a readiness boolean or a synthetic cached sample cannot release GPU smoke.
-    is_subset = recipe == 'v3-subset'
+    is_subset = recipe in ('v3-subset', 'v33-subset')
     for profile in profiles:
         if bool(profile['pairing'].get('smoke_subset', False)) != is_subset:
             raise ValueError('only explicit v3-subset recipe accepts bounded smoke data')
@@ -152,7 +154,7 @@ def main():
     parser.add_argument('--authorization', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--execute', action='store_true')
-    parser.add_argument('--recipe', choices=('v2', 'v3', 'v3-replay', 'v3-subset'), default='v2')
+    parser.add_argument('--recipe', choices=('v2', 'v3', 'v3-replay', 'v3-subset', 'v33-subset'), default='v2')
     args = parser.parse_args()
     ids = args.gpu_uuids.split(',')
     if len(ids) != 8 or len(set(ids)) != 8 or any(not x.startswith('GPU-') for x in ids):

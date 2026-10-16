@@ -103,6 +103,7 @@ def build_full_cpu_schema(payload, profile):
         compact_wan=compact_config, action_dim=action["action_dim"], state_dim=action["state_dim"],
         chunk_size=action["chunk_size"], ae_dim=action["dim"], ae_ffn_dim=action["ffn_dim"],
         ae_num_layers=action["num_layers"], wan_frozen=True,
+        source_physical_time_conditioning=bool(action.get("source_physical_time_conditioning", False)),
         motion_history_count=motion["history_count"], motion_feature_mean=tuple(motion["mean"]),
         motion_feature_scale=tuple(motion["scale"])), compact)
     conditioner = build_fast_conditioner(payload["modules"]["fast_conditioner"])

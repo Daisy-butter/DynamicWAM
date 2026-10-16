@@ -114,6 +114,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
                      "joint_supervision": False, "cache_age_jitter": False, "cache_age_seed": 0,
                      "physical_grid_root": "", "future_latent_root": "", "async_seed": 20261015, "smoke_subset": False,
                      "max_cache_age_actions": 31, "action_interval_seconds": .16,
+                     "rtc_prefix_sampling": "delay_minimum_v1", "source_prefix_condition_dropout_probability": .2,
                      "kind": "physical_grid", "replay_root": "",
                      "replay_target_policy": "successful_self_imitation_or_expert_corrective"}
     pair_raw = dict(top["pairing"])
@@ -285,11 +286,16 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
         },
         "multirate compact_wan",
     )
+    action_raw = dict(model["action_expert"])
+    source_time = action_raw.pop("source_physical_time_conditioning", False)
+    if type(source_time) is not bool:
+        raise TypeError("source_physical_time_conditioning must be a bool")
     action = require_exact_keys(
-        model["action_expert"],
+        action_raw,
         {"dim", "ffn_dim", "num_layers", "chunk_size", "state_dim", "action_dim"},
         "multirate action_expert",
     )
+    action = dict(action, source_physical_time_conditioning=source_time)
     fast_raw = dict(model["fast_conditioner"])
     world_defaults = {"world_aware": False, "world_layers": [3, 7, 11],
                       "world_heads": 16, "world_head_dim": 128, "world_queries": 16,
@@ -362,11 +368,27 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             raise ValueError("compact_fast selects an unavailable world layer")
         if (int(compact_fast["world_heads"]), int(compact_fast["world_head_dim"])) != (int(compact["num_heads"]), int(compact["head_dim"])):
             raise ValueError("compact_fast world head layout differs from WAN")
+    from dynamicwam.training.data.physical_grid import rtc_prefix_sampling_contract
+    prefix_contract = rtc_prefix_sampling_contract(pair_options["rtc_prefix_sampling"],
+        pair_options["source_prefix_condition_dropout_probability"])
+    if prefix_contract["mode"] == "fixed_h4_v1" and (
+            int(fast.get("interface_version", 1)) != 3 or pair_options["kind"] != "physical_grid"
+            or int(training["rtc_prefix_max"]) != 4):
+        raise ValueError("fixed_h4_v1 requires V3 physical-grid data and rtc_prefix_max=4; real replay retains recorded prefixes")
     if pair_options["smoke_subset"]:
         if (int(fast.get("interface_version", 1)) != 3 or pair_options["kind"] != "physical_grid"
                 or not 0 < int(training["max_steps"]) <= 4 or training["resume_from"]
                 or phase not in {"fast_warmup", "cross_time_joint"}):
             raise ValueError("smoke_subset requires fresh <=4-step V3 physical-grid warmup/joint")
+    if source_time and (int(action["chunk_size"]) != 16
+            or float(pair_options["action_interval_seconds"]) != 0.16):
+        raise ValueError("source physical time features require the fixed H16/dt0.16 contract")
+    if source_time and phase == "fast_warmup" and float(loss["action_weight"]) <= 0:
+        raise ValueError("source time encoder warmup requires native source Action FM retention")
+    if source_time and (int(fast.get("interface_version", 1)) != 3
+            or training["native_source_bridge"] != "student_joint"
+            or not pair_options["joint_supervision"]):
+        raise ValueError("source physical time conditioning requires V3 student source and exact physical data")
     if motion_options.get("complete_source_plan", False) and (
             int(fast.get("interface_version", 1)) != 3 or not motion_options.get("proposal_feedback", False)):
         raise ValueError("completed source proposal requires V3 proposal feedback")

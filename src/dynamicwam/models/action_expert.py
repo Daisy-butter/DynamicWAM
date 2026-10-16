@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import torch
@@ -50,6 +50,7 @@ class ActionExpertConfig:
     chunk_size: int
     num_registers: int = 4
     eps: float = 1e-6
+    source_physical_time_conditioning: bool = False
 
     def __post_init__(self) -> None:
         if self.chunk_size < 2:
@@ -196,10 +197,30 @@ class ActionExpert(nn.Module):
         )
         self.decoder = ActionDecoder(config)
         self._initialize_weights()
+        self.configure_source_physical_time_conditioning(config.source_physical_time_conditioning)
         logger.info(
             "Action Expert initialized with %d parameters",
             sum(parameter.numel() for parameter in self.parameters()),
         )
+
+    def configure_source_physical_time_conditioning(self, enabled: bool) -> None:
+        """Install once before weight loading; never mutate during a query."""
+        if type(enabled) is not bool:
+            raise TypeError("source physical time conditioning must be a bool")
+        existing = getattr(self, "source_time_encoder", None)
+        if existing is not None:
+            if not enabled:
+                raise RuntimeError("cannot silently remove trained source time conditioning")
+            return
+        if enabled:
+            # Two physical features: target horizon and first endpoint phase.
+            # Last projection zero preserves the loaded native model exactly.
+            reference = next(self.input_encoder.parameters())
+            module = nn.Sequential(nn.Linear(2, 64), nn.SiLU(), nn.Linear(64, self.config.dim))
+            nn.init.zeros_(module[-1].weight)
+            nn.init.zeros_(module[-1].bias)
+            self.source_time_encoder = module.to(device=reference.device, dtype=reference.dtype)
+        self.config = replace(self.config, source_physical_time_conditioning=enabled)
 
     def _initialize_weights(self) -> None:
         for module in self.modules():

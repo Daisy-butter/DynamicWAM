@@ -53,9 +53,9 @@ class ProposalContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'smoke_subset'):
                     load_multirate_profile(target)
             bad=deepcopy(raw);bad['pairing']['kind']='real_rollout';target.write_text(yaml.safe_dump(bad))
-            with self.assertRaisesRegex(ValueError,'smoke_subset'):load_multirate_profile(target)
+            with self.assertRaisesRegex(ValueError,'smoke_subset|fixed_h4_v1'):load_multirate_profile(target)
             bad=deepcopy(raw);bad['model']['fast_conditioner']['interface_version']=2;target.write_text(yaml.safe_dump(bad))
-            with self.assertRaisesRegex(ValueError,'smoke_subset'):load_multirate_profile(target)
+            with self.assertRaisesRegex(ValueError,'smoke_subset|fixed_h4_v1'):load_multirate_profile(target)
 
     def test_all_v3_profiles_enable_new_feedback(self):
         for stage in ('warmup','joint','replay'):

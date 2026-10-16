@@ -65,12 +65,45 @@ def rtc_prefix_contract(payload: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if not isinstance(module_rtc, dict):
         raise RuntimeError("RTC contract must be a mapping")
+    sampling = (module_contract or {}).get("rtc_prefix_sampling", {})
+    if config_contract is not None and config_contract.get("rtc_prefix_sampling", {}) != sampling:
+        raise RuntimeError("module and full-checkpoint RTC sampling contracts disagree")
+    fixed_h4 = sampling.get("mode") == "fixed_h4_v1"
+    if fixed_h4:
+        expected = dict(current_prefix_actions=4, source_prefix_actions=[0, 4],
+            source_zero_role="bootstrap_condition_dropout_only",
+            latency_distribution="unchanged_delay_minimum_v1",
+            commit_horizon="fourth_actual_target_endpoint_independent_of_ready_latency",
+            timing_source="sampled_offline_schedule_on_recorded_capture_and_target_times",
+            prefix_source="expert_demonstration", on_policy_ready=False, hold_coverage=False)
+        probability = sampling.get("source_prefix_condition_dropout_probability")
+        if (any(sampling.get(key) != value for key, value in expected.items())
+                or type(probability) not in (int, float) or not 0 <= probability <= 1
+                or modules.get("fast_conditioner", {}).get("interface_version") != 3
+                or module_rtc.get("max_prefix_actions") != 4
+                or module_rtc.get("execute_suffix_actions") != 4
+                or modules.get("action_expert", {}).get("chunk_size") != 16):
+            raise RuntimeError("unsupported fixed-H4 RTC sampling/deployment semantics")
+    elif sampling.get("mode") == "recorded_real_prefix_v1":
+        expected = dict(prefix_source="on_policy_executed", sampling="none", max_prefix_actions=4,
+            zero_fast_prefix_coverage="not_asserted", bootstrap="recorded_prime_then_hold")
+        identity = sampling.get("replay_identity")
+        if (any(sampling.get(key) != value for key, value in expected.items())
+                or not isinstance(identity, str) or len(identity) != 64
+                or any(c not in "0123456789abcdef" for c in identity)
+                or (module_contract or {}).get("replay_identity") != identity
+                or (module_contract or {}).get("training_data_kind") != "real_rollout"
+                or modules.get("fast_conditioner", {}).get("interface_version") != 3
+                or module_rtc.get("max_prefix_actions") != 4):
+            raise RuntimeError("unsupported recorded RTC replay provenance")
+    elif sampling.get("mode", "delay_minimum_v1") != "delay_minimum_v1":
+        raise RuntimeError("unsupported RTC prefix sampling mode")
     required = {
         "version": 1,
         "mode": "training_time_action_prefix",
         "clean_timestep": 0.0,
         "loss": "per_sample_suffix_mean",
-        "includes_zero_prefix": True,
+        "includes_zero_prefix": sampling.get("mode") not in ("fixed_h4_v1", "recorded_real_prefix_v1"),
         "queue_clock": "absolute_action_effect_times",
         "overflow": "reject_and_refresh",
     }
@@ -185,6 +218,8 @@ def install_full_checkpoint(
         new_keys = [key for key in filled if key not in migrated]
         unexpected = [
             key for key in new_keys if not key.startswith(("fast_conditioner.", "fast_policy."))
+            and not (getattr(model.backbone.action_expert.config, "source_physical_time_conditioning", False)
+                and key.startswith("backbone.action_expert.source_time_encoder."))
         ]
         if unexpected:
             raise RuntimeError(
@@ -302,6 +337,7 @@ def build_fast_only_modules(spec: dict[str, Any]) -> nn.ModuleDict:
                     state_dim=int(action_spec["state_dim"]),
                     action_dim=int(action_spec["action_dim"]),
                     chunk_size=int(action_spec["chunk_size"]),
+                    source_physical_time_conditioning=bool(action_spec.get("source_physical_time_conditioning", False)),
                 ),
                 {
                     "dim": int(wan_spec["dim"]),

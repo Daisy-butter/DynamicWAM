@@ -152,6 +152,10 @@ class MultiratePolicy:
             self.wrapper = MultirateWAM(runner.model, conditioner, schedule,
                 native_multirate=bool(spec.get('native_multirate', False)),
                 fast_steps=int(spec.get('fast_steps', 10))).to(runner.device)
+        # Configure the optional source-only encoder once, before strict load
+        # and before any background source worker can access the model.
+        runner.model.action_expert.configure_source_physical_time_conditioning(
+            bool(spec['action_expert'].get('source_physical_time_conditioning', False)))
         install_full_checkpoint(self.wrapper, payload, allow_v2_init=False)
         if spec.get('native_multirate', False):
             install_immutable_source_backbone(runner.model, self.contract,
