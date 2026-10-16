@@ -36,7 +36,7 @@
 | R：真实分布细化 | J 权重 | 独立 development 场景采集真实延迟/cache age/旧队列/动作替换，成功自模仿或专家修正才作为 BC；失败留作诊断，hold/超时样本不能伪装成成功轨迹 |
 | E：冻结验证 | 严格 full/fast reload、CUDA Graph 数值一致后部署 | 1x 连续物理钟、H4/R4/K10/refresh16，同场景/seed 对比；报告成功率、源/快路尾延迟、时限违约、抓手切换、MP4 |
 
-现有候选预算 W=2k、J=18k、R=2k；8 卡每卡 batch1、累积2，有效 batch16。W 的 Action/interface LR 为 1e-5/1e-4；J 的 Video/Action/interface 为 2e-6/5e-6/3e-5；R 为 1e-6/2e-6/1e-5。这些是待 pilot 验证的起点，不是已证明最优 recipe。R 只有在真实合格样本存在时才能运行。正式训练不能使用 4 步 smoke 权重初始化。
+现有候选预算 W=2k、J=18k、R=2k；8 卡每卡 batch1、累积2，有效 batch16。W 的 Action/interface LR 为 1e-5/1e-4；J 的 Video/Action/interface 为 2e-6/5e-6/3e-5；R 为 1e-6/2e-6/1e-5。这些是待 pilot 验证的起点，不是已证明最优 recipe。W+J 合计仅约 32 万次样本呈现，不能等同于完整遍历 141.6 万个物理采样点，更不能据此认定新增模块已收敛；实际训练长度要依据分桶验证曲线与闭环结果调整。R 只有在真实合格样本存在时才能运行。正式训练不能使用 4 步 smoke 权重初始化。
 
 RTC 训练需要把部署的承诺前缀与旧动作分布纳入条件和损失；单纯推理时混合旧动作会带来新的分布偏差。保持前缀并不保证可编辑尾部没有跳变。Soft RTC 的先验去噪值得后续对照，但不能在当前 checkpoint 上直接加混合并声称训推一致。[训练时 RTC](https://arxiv.org/html/2512.05964v2)；[动作先验去噪](https://arxiv.org/html/2605.25537v1)
 
