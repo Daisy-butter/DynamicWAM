@@ -30,6 +30,9 @@ def run():
         model.backbone=SmallWAMActionModel(cfg,TinyCompact())
         model.backbone.action_expert.load_state_dict(old.action_expert.state_dict())
         model.backbone.absolute_motion_tokens.load_state_dict(old.absolute_motion_tokens.state_dict())
+        # The fixture carries source Video FM weight .1, hence it must use
+        # the joint phase; warmup profiles correctly require Video weight zero.
+        configure_multirate_trainable(model,"joint")
         legacy=deepcopy(model)
         disabled_spec=dict(legacy.fast_conditioner.constructor_spec);disabled_spec.pop("proposal_feedback",None)
         reloaded=build_fast_conditioner(disabled_spec);reloaded.load_state_dict(legacy.fast_conditioner.state_dict(),strict=True)

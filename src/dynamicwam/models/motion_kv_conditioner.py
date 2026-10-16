@@ -123,8 +123,26 @@ class MotionKVConditioner(nn.Module):
         q = query.reshape(b, -1, h, width).transpose(1, 2)
         k = key.reshape(b, -1, h, width).transpose(1, 2)
         v = value.reshape(b, -1, h, width).transpose(1, 2)
-        mask = None if valid is None else valid[:, None, None, :]
+        mask, nonempty = None, None
+        if valid is not None:
+            if valid.shape != key.shape[:2] or key.shape[1] < 1:
+                raise ValueError("attention validity must match nonempty key positions")
+            valid = valid.bool()
+            nonempty = valid.any(-1, keepdim=True)
+            # CUDA SDPA backends need not agree on all-masked rows. Route an
+            # empty row to an existing zero sentinel BEFORE attention, rather
+            # than masking a possibly NaN output afterward. Nonempty rows keep
+            # exactly the original q/k/v, mask and sequence dimensions.
+            keep = nonempty[:, None, :, None]
+            q = torch.where(keep, q, torch.zeros_like(q))
+            k = torch.where(keep, k, torch.zeros_like(k))
+            v = torch.where(keep, v, torch.zeros_like(v))
+            first = torch.arange(key.shape[1], device=key.device)[None] == 0
+            safe_valid = valid | (~nonempty & first)
+            mask = safe_valid[:, None, None, :]
         result = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        if nonempty is not None:
+            result = torch.where(nonempty[:, None, :, None], result, torch.zeros_like(result))
         return result.transpose(1, 2).reshape(b, -1, self.world_dim)
 
     def _motion_tokens(self, current, dtype):
