@@ -1,3 +1,7 @@
+## 2026-10-16: source-plan retention and actual GPU acceptance
+
+Restored complete native source proposal, explicit action feedback and source actor retention. Passed guarded8-rank warmup/joint smoke,20actual graph cases/concurrent slow and one full1xdevelopment episode (task failure preserved). Fixed deployment all-empty BF16 SDPA NaN without changing nonempty attention semantics. See docs/route1_information_retention_v32_20261016.md; no formal-training/performance claim.
+
 # Change log
 
 ## 2026-10-14 — Eight-GPU launch audit and deterministic teardown
