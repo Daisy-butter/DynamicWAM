@@ -36,7 +36,7 @@
 | R：后续真实分布细化，未纳入自动正式流程 | 新 Stage3 权重 | 独立 development 场景采集真实延迟/cache age/旧队列/动作替换，成功自模仿或专家修正才作为 BC；失败留作诊断，hold/超时样本不能伪装成成功轨迹 |
 | E：冻结验证 | 严格 full/fast reload、CUDA Graph 数值一致后部署 | 1x 连续物理钟、H4/R4/K10/refresh16，同场景/seed 对比；报告成功率、源/快路尾延迟、时限违约、抓手切换、MP4 |
 
-正式初始预算改为 Stage2 80k、Stage3 40k，均8卡、每卡batch1、累积2，有效batch16；与原版batch128并非相同样本曝光量，预算仍需根据验证曲线判断。Stage2 Action/interface LR为1e-5/1e-4；Stage3 Video/Action/interface为2e-6/5e-6/3e-5，warmup均1000步。source Action FM保持0.1，Stage3 Video FM为0.1，motion forecast为0.1。这是重训recipe的起点，不是已验证最优超参。正式Stage3仅接正式Stage2 step80000，4步smoke权重绝不能成为正式初始化。真实replay成功BC数据仍不足，因此R不会被自动启动。
+正式初始预算改为 Stage2 80k、Stage3 40k，均8卡、每卡batch16、累积1，有效batch128；与原版batch128对齐样本曝光量，预算仍需根据验证曲线判断。Stage2 Action/interface LR为1e-5/1e-4；Stage3 Video/Action/interface为2e-6/5e-6/3e-5，warmup均1000步。source Action FM保持0.1，Stage3 Video FM为0.1，motion forecast为0.1。这是重训recipe的起点，不是已验证最优超参。正式Stage3仅接正式Stage2 step80000，4步smoke权重绝不能成为正式初始化。真实replay成功BC数据仍不足，因此R不会被自动启动。
 
 RTC 训练需要把部署的承诺前缀与旧动作分布纳入条件和损失；单纯推理时混合旧动作会带来新的分布偏差。保持前缀并不保证可编辑尾部没有跳变。Soft RTC 的先验去噪值得后续对照，但不能在当前 checkpoint 上直接加混合并声称训推一致。[训练时 RTC](https://arxiv.org/html/2512.05964v2)；[动作先验去噪](https://arxiv.org/html/2605.25537v1)
 

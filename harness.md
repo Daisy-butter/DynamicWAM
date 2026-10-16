@@ -234,4 +234,4 @@ v1.6 补充（本轮历史能力审计）：可选 source_plan_completion=same_n
 - 源动作精确物理端点贯穿2joint+8Action尾部及source FM。保留native motion/state/register。offline fixed_h4_v1与recorded_real_prefix_v1分别严格校验；bootstrap为slow-only+hold，稳态fast H4。合成延迟不是on-policy覆盖。
 - raw replay v2使用同一绝对monotonic时钟，不猜测修补旧相对wall记录。失败轨迹不得BC；抓手/plan-switch按可编辑的相同物理端点度量。K/V有界不保证动作跳变有界。
 - 全量VAE在独立冻结工作树、SSD及临时all-adapter guard下运行；10500 episodes/1416299点全覆盖与hash通过才放行训练。一次性流水线只在完整缓存、干净资源退出、正确初始化8卡smoke和严格full/fast重载全部通过后启动Stage2，再衔接Stage3。每阶段当时生成fresh guard授权，不复用旧清单；任一错误保存并停止，不自动重试。
-- 正式初始预算Stage2 80k/Stage3 40k，有效batch16，与原batch128不等价；以验证曲线判断收敛。训练用已验证默认通信/allocator，不改驱动；仅初始300秒稳定窗口及阶段终态验收，不另建定时巡检。真实成功replay尚不足，不能自动进入BC refinement。
+- 正式初始预算Stage2 80k/Stage3 40k，有效batch128（8卡×每卡16×累积1），与原版batch128对齐；以验证曲线判断收敛。训练用已验证默认通信/allocator，不改驱动；仅初始300秒稳定窗口及阶段终态验收，不另建定时巡检。真实成功replay尚不足，不能自动进入BC refinement。

@@ -1,5 +1,5 @@
 # Continue only the matching new Stage2 export; never initialize formal training from smoke.
-# Nominal step budget; global batch16 (8 ranks x1 x accumulation2) differs from original128.
+# Nominal step budget; global batch128 (8 ranks x16 x accumulation1) matches original exposure.
 schema_version: 3
 baseline: world_action_multirate_native_v1
 phase: cross_time_joint
@@ -9,7 +9,7 @@ paths:
   source_dataset: /SSD_DISK/users/wuruihan/DynamicWAM/data/converted/domino_exact_time
   wan_root: /SSD_DISK/users/wuruihan/DynamicWAM/external/Wan2.2-TI2V-5B
   training_runs: /SSD_DISK/users/wuruihan/DynamicWAM/outputs/training
-  init_checkpoint: /SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_v33_stage2_20261016/exports/multirate_step_80000.pt
+  init_checkpoint: /SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_v33_stage2_b128_20261016/exports/multirate_step_80000.pt
   native_teacher_checkpoint: ''
 pairing:
   rtc_prefix_sampling: fixed_h4_v1
@@ -71,12 +71,12 @@ pairing:
   action_interval_seconds: 0.16
   smoke_subset: false
 training:
-  name: joint_motionkv_v33_stage3_20261016
+  name: joint_motionkv_v33_stage3_b128_20261016
   device: cuda
   log_level: INFO
   max_steps: 40000
-  per_device_batch_size: 1
-  gradient_accumulation_steps: 2
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 1
   action_learning_rate: 5.0e-06
   fast_learning_rate: 3.0e-05
   video_learning_rate: 2.0e-06

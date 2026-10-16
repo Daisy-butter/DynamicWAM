@@ -69,13 +69,13 @@ def audit():
   assert all(p.requires_grad==(stage=='stage3') for p in video)
   trainability[stage]={'video_trainable':stage=='stage3','action_native_motion_interface_source_time_trainable':True,'optimizer_groups':[{'name':g['name'],'lr':g['lr'],'elements':sum(p.numel() for p in g['params'])} for g in groups]}
  for k,p in profiles.items():
-  c=p.training;assert c['initialize_joint_interface'] is False and c['gradient_accumulation_steps']==2 and c['per_device_batch_size']==1
+  c=p.training;assert c['initialize_joint_interface'] is False and c['gradient_accumulation_steps']==1 and c['per_device_batch_size']==16
   assert c['loss']['action_weight']==.1 and c['motion_prediction_weight']==.1
   assert bool(c['dataset']['smoke_subset'])==k.startswith('smoke')
  assert profiles['stage2'].training['max_steps']==80000 and profiles['stage3'].training['max_steps']==40000
- assert profiles['stage3'].training['model']['initial_checkpoint'].endswith('/joint_motionkv_v33_stage2_20261016/exports/multirate_step_80000.pt')
- assert profiles['smoke3'].training['model']['initial_checkpoint'].endswith('/joint_motionkv_v33_stage2_subset_smoke_20261016/exports/multirate_step_4.pt')
- return dict(passed=True,cuda_used=False,forward_run=False,initialization=inputs,global_step=0,stage2_lineage='Stage1 Video + wo_motion Action + originally fresh native absolute motion; newly fresh v3.3 interface and source-time module',native_tensors_preserved=len(incoming),new_fresh_tensors=len(fresh),new_tensor_names=sorted(fresh),strict_loader=True,stats_and_dataset_identity_match=True,smoke_formal_init_rejected=True,trainability=trainability,effective_global_batch=16,original_global_batch=128,same_exposure_as_original=False,full_data_readiness_checked=False)
+ assert profiles['stage3'].training['model']['initial_checkpoint'].endswith('/joint_motionkv_v33_stage2_b128_20261016/exports/multirate_step_80000.pt')
+ assert profiles['smoke3'].training['model']['initial_checkpoint'].endswith('/joint_motionkv_v33_stage2_subset_smoke_b128_20261016/exports/multirate_step_4.pt')
+ return dict(passed=True,cuda_used=False,forward_run=False,initialization=inputs,global_step=0,stage2_lineage='Stage1 Video + wo_motion Action + originally fresh native absolute motion; newly fresh v3.3 interface and source-time module',native_tensors_preserved=len(incoming),new_fresh_tensors=len(fresh),new_tensor_names=sorted(fresh),strict_loader=True,stats_and_dataset_identity_match=True,smoke_formal_init_rejected=True,trainability=trainability,effective_global_batch=128,original_global_batch=128,same_exposure_as_original=True,full_data_readiness_checked=False)
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
  if os.environ.get('CUDA_VISIBLE_DEVICES')!='':raise RuntimeError('run with CUDA_VISIBLE_DEVICES= for CPU-only audit')

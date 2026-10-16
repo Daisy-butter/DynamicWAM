@@ -71,12 +71,12 @@ pairing:
   action_interval_seconds: 0.16
   smoke_subset: true
 training:
-  name: joint_motionkv_v33_stage2_subset_smoke_20261016
+  name: joint_motionkv_v33_stage2_subset_smoke_b128_20261016
   device: cuda
   log_level: INFO
   max_steps: 4
-  per_device_batch_size: 1
-  gradient_accumulation_steps: 2
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 1
   action_learning_rate: 1.0e-05
   fast_learning_rate: 0.0001
   video_learning_rate: 2.0e-06
