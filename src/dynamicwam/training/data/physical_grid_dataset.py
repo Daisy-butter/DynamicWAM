@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from dynamicwam.action_normalization import RoboTwinQposNormalizer
 from dynamicwam.training.data.physical_grid import (DT, VERSION, json_hash, sha256_file,
-    stable_rng, resample_commands, sample_async_timing)
+    stable_rng, resample_commands, sample_async_timing, rtc_prefix_sampling_contract)
 from dynamicwam.training.data.packed_dataset import PackedAbsoluteMotionDataset
 from dynamicwam.training.data.paired_world_action_dataset import (PairedWorldActionDataset,
     PairRecord, paired_collate_fn, episode_lang_id)
@@ -99,7 +99,8 @@ class PhysicalGridRecords:
 class PhysicalGridPairedWorldActionDataset(PairedWorldActionDataset):
     def __init__(self,packed_root,source_root,*,physical_grid_root,future_latent_root,
                  max_cache_age_actions=31,async_seed=20261015,slow_budget_seconds=2.56,
-                 rtc_prefix_max=4,strict_future_latents=True,smoke_subset=False,**kwargs):
+                 rtc_prefix_max=4,strict_future_latents=True,smoke_subset=False,
+                 rtc_prefix_sampling='delay_minimum_v1',source_prefix_condition_dropout_probability=.2,**kwargs):
         if strict_future_latents is not True: raise ValueError('legacy future latent fallback is forbidden')
         self.physical_grid_root=Path(physical_grid_root);self.future_latent_root=Path(future_latent_root)
         self.readiness=validate_physical_grid_readiness(physical_grid_root,future_latent_root,verify_hashes=False,require_full=not smoke_subset)
@@ -123,8 +124,13 @@ class PhysicalGridPairedWorldActionDataset(PairedWorldActionDataset):
         self.max_supported_cache_age_actions=int(max_cache_age_actions);self.slow_budget_seconds=float(slow_budget_seconds);self.rtc_prefix_max=int(rtc_prefix_max)
         self.physical_grid_identity=self.grid_manifest['physical_grid_identity']
         self.episode_partition_identity=self.grid_manifest['episode_partition_identity'];self.legacy_pairing_identity=self.grid_manifest['legacy_pairing_identity']
-        self.pairing_identity=json_hash(dict(grid=self.physical_grid_identity,async_schema='joint_source_current_prefix_v2',max_age=max_cache_age_actions,
-            async_seed=async_seed,slow_budget_seconds=slow_budget_seconds,rtc_prefix_max=rtc_prefix_max))
+        self.rtc_prefix_sampling_contract=rtc_prefix_sampling_contract(rtc_prefix_sampling,source_prefix_condition_dropout_probability)
+        if rtc_prefix_sampling=='fixed_h4_v1' and self.rtc_prefix_max!=4:
+            raise ValueError('fixed_h4_v1 requires rtc_prefix_max=4')
+        pairing=dict(grid=self.physical_grid_identity,async_schema='joint_source_current_prefix_v2',max_age=max_cache_age_actions,
+            async_seed=async_seed,slow_budget_seconds=slow_budget_seconds,rtc_prefix_max=rtc_prefix_max)
+        if rtc_prefix_sampling!='delay_minimum_v1':pairing['rtc_prefix_sampling']=self.rtc_prefix_sampling_contract
+        self.pairing_identity=json_hash(pairing)
         all_meta=[json.loads(s) for s in (self.physical_grid_root/'episodes.jsonl').read_text().splitlines() if s]
         self._episode_meta={int(e['episode_index']):e for e in all_meta}
         self.episode_partition={int(e['episode_index']):e['subset'] for e in all_meta}
@@ -174,7 +180,9 @@ class PhysicalGridPairedWorldActionDataset(PairedWorldActionDataset):
             bridge_noise_shape_latent=torch.zeros_like(sl),rtc_prefix_actions=fa.clone(),
             async_timing=sample_async_timing(source_time,fast_time,ft,seed=self.async_seed,epoch=self.epoch,
                 source_id=record.source_sample_id,current_id=record.fast_sample_id,slow_budget_seconds=self.slow_budget_seconds,
-                rtc_prefix_max=self.rtc_prefix_max,source_action_times=st),prefix_source='expert_demonstration')
+                rtc_prefix_max=self.rtc_prefix_max,source_action_times=st,
+                rtc_prefix_sampling=self.rtc_prefix_sampling_contract['mode'],
+                source_prefix_condition_dropout_probability=self.rtc_prefix_sampling_contract.get('source_prefix_condition_dropout_probability',.2)),prefix_source='expert_demonstration')
         source_length=sample['async_timing']['source_rtc_prefix_lengths']
         sample['source_rtc_prefix_lengths']=source_length
         sample['source_rtc_prefix_actions']=torch.zeros_like(sa)
