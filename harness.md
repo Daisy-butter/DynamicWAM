@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.6 · 2026-10-16 · 目标投稿：CVPR 2027
+版本：v1.7 · 2026-10-16 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -225,3 +225,13 @@ v1.6（2026-10-16）：旧 0.25x 评测已完成 700/700 并干净释放，SR=18
 允许显式 bounded_real_grid_v1 真实数据子集用于最多四步、八卡 warmup/joint smoke；必须验证原数据索引、时间、标签、训练验证划分和重新编码的完整子集 latent，记录 full_scope=false / formal_training_ready=false。该子集不能用于正式训练，子集权重不能静默成为正式初始化。正式数据门禁保持全量覆盖要求。GPU smoke 仍须新鲜现场证据、全部八卡临时 guard 先于遥测、干净退出；失败保留并定位后才能进行有明确修改的下一次试验。不得将模型反传或 CUDA Graph smoke 作为 1x 连续闭环或收益证明。
 
 v1.6 补充（本轮历史能力审计）：可选 source_plan_completion=same_noise_native_K10_tail_stopgrad_v1 必须沿已有两次联合采样的同一噪声轨迹完成剩余八次 Action 采样，不再运行 Video、不重置动作噪声。源 K/V 条件的早期 clean estimate 与最终 source_completed_plan 是不同字段；最终计划不是执行标签，超过原物理预测窗口必须屏蔽。训练和推理均采用同样的 stop-gradient 计划自条件，源 K/V 与 source FM 保留联合梯度。warmup 增加源缓存下的原生 Action FM（权重0.1），防止共享 Action 专家只适配快路而缺乏慢路监督；Video 仍冻结。此计算恢复不等于恢复 official 权重行为，step12000 初始化与 official 初始化的效果差异仍需同协议开发对照。
+
+
+## 19. Route1 v3.3 正确Stage2起点与自动训练（2026-10-16）
+
+- 最新用户明确要求核对原Stage2起点并整体检查后自动8卡正式训练。原链是Stage1 Video + `DynamicWAM_wo_motion.pt` Action + fresh absolute-motion -> `absolute_motion_init.pt` -> Stage2 -> Stage3。SSD三份源权重均存在且张量来源已核对。正式主recipe使用该step0组合权重，新接口/source-time fresh初始化；full和step12000仅参考/对照，不混入主recipe。复用已完成且兼容的Stage1，因此不重跑PCA/蒸馏。若改压缩/教师/投影契约或发现遗忘，再据证据处理。
+- 原Stage2重训会新初始化motion；这与“继承full适配时禁止无意重置运动”是不同路线。不可将wo_motion直接伪装成绝对运动checkpoint，也不可把Stage3 full称为原Stage2起点。Stage3必须接本轮正式Stage2，4步smoke权重禁止作为formal init。
+- 源动作精确物理端点贯穿2joint+8Action尾部及source FM。保留native motion/state/register。offline fixed_h4_v1与recorded_real_prefix_v1分别严格校验；bootstrap为slow-only+hold，稳态fast H4。合成延迟不是on-policy覆盖。
+- raw replay v2使用同一绝对monotonic时钟，不猜测修补旧相对wall记录。失败轨迹不得BC；抓手/plan-switch按可编辑的相同物理端点度量。K/V有界不保证动作跳变有界。
+- 全量VAE在独立冻结工作树、SSD及临时all-adapter guard下运行；10500 episodes/1416299点全覆盖与hash通过才放行训练。一次性流水线只在完整缓存、干净资源退出、正确初始化8卡smoke和严格full/fast重载全部通过后启动Stage2，再衔接Stage3。每阶段当时生成fresh guard授权，不复用旧清单；任一错误保存并停止，不自动重试。
+- 正式初始预算Stage2 80k/Stage3 40k，有效batch16，与原batch128不等价；以验证曲线判断收敛。训练用已验证默认通信/allocator，不改驱动；仅初始300秒稳定窗口及阶段终态验收，不另建定时巡检。真实成功replay尚不足，不能自动进入BC refinement。

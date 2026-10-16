@@ -23,20 +23,20 @@
 
 `outputs/training/motionkv_rtc_adapt_8gpu_20261014/exports/multirate_step_12000.pt` 是我们从官方 full 做的 12k 步 MotionKV 分频适配。实际对比：Video 339/339 张量逐位相同；Action 131 个中 130 个改变；运动模块 10 个中 8 个改变，mean/scale 与 action normalizer 保留。它不是官方 Stage2 或 Stage3 的第 12000 步。
 
-当前无需重跑 PCA / Stage1，也不要再次调用 initialize_motion_checkpoint 重置已学运动。新增源时间编码和快路接口不改变紧凑 Video 的宽度、深度、latent/text 布局；应从已训练 full/适配权重继续，用新物理时间数据做 Video FM 联合适配。若以后改变压缩结构/特征投影/教师契约，或测得明显视频预测遗忘，才有理由重建对应 PCA/蒸馏或加入保留蒸馏。Video 解冻本身不是重训 Stage1 的理由。[官方代码](https://github.com/Autumn1337/DynamicWAM)
+用户进一步纠正后重新核对：正式主 recipe 改为原 Stage2 起点，而非官方 full 适配。现有 `outputs/checkpoint_init/absolute_motion_init.pt` 的 Action 131/131张量逐位等于 `DynamicWAM_wo_motion.pt`，Video339/339逐位等于已有Stage1 step80000，另含新初始化的10个absolute-motion张量。该Stage1、wo_motion和motion_init均已在SSD找到。复用已验证Stage1，不重训PCA/蒸馏；复用该step0组合初始化，新接口fresh初始化。此前“Stage1本地没有”和“必须以full为主起点”的判断已撤回。full与step12000仅作参考/对照。新增源时间编码和快路接口不改变紧凑 Video 的宽度、深度、latent/text 布局；从已验证的 Stage1 Video 和 wo_motion Action 重新进行新版 Stage2/Stage3，用新物理时间数据联合适配。若以后改变压缩结构/特征投影/教师契约，或测得明显视频预测遗忘，才有理由重建对应 PCA/蒸馏或加入保留蒸馏。Video 解冻本身不是重训 Stage1 的理由。[官方代码](https://github.com/Autumn1337/DynamicWAM)
 
 ## 下一轮 recipe
 
 | 阶段 | 初始化与训练对象 | 数据/损失与验收 |
 |---|---|---|
 | D：数据准备 | 冻结 Wan VAE 编码 | 精确物理网格、当前/源图像与运动、动作真实时间；新未来 latent 与输入网格对应，完整覆盖/hash 后才放行正式训练 |
-| P：初始化对照 | A=官方 backbone+同一已训练旧接口；B=step12000 backbone+同一旧接口；新模块同 seed | 固定数据/噪声先无更新诊断，再相同预算短 pilot；不能用 4 步 smoke 或初始 MSE 决定最终初始化 |
-| W：接口与源计划适配 | 选定 P 的起点，Video 暂冻；训练 Action、原生运动、时间编码与更新器 | fast suffix FM + source Action FM(0.1) + motion forecast(0.1)；固定 H4、真实物理端点，保护完整源计划 |
-| J：联合优化 | W 的完整权重；Video、Action、运动更新器共同训练 | fast FM + source Action FM(0.1) + source Video FM(0.1) + motion forecast(0.1)；旧 cache 的独立快查询与后台源快照语义一致 |
-| R：真实分布细化 | J 权重 | 独立 development 场景采集真实延迟/cache age/旧队列/动作替换，成功自模仿或专家修正才作为 BC；失败留作诊断，hold/超时样本不能伪装成成功轨迹 |
+| P：独立诊断 | A=官方 backbone+同一已训练旧接口；B=step12000 backbone+同一旧接口；新模块同 seed | 已做固定数据/噪声无更新诊断；用于定位旧适配的影响，不作为主 recipe 起点 |
+| Stage2：动作与接口预训练 | 已验证 absolute_motion_init.pt（Stage1 Video + wo_motion Action + fresh motion）；新增接口与时间编码 fresh 初始化，Video 暂冻；训练 Action、运动、时间编码与更新器 | fast suffix FM + source Action FM(0.1) + motion forecast(0.1)；固定 H4、真实物理端点，保护完整源计划 |
+| Stage3：联合精调 | 新 Stage2 的正式完整权重；Video、Action、运动更新器共同训练 | fast FM + source Action FM(0.1) + source Video FM(0.1) + motion forecast(0.1)；旧 cache 的独立快查询与后台源快照语义一致 |
+| R：后续真实分布细化，未纳入自动正式流程 | 新 Stage3 权重 | 独立 development 场景采集真实延迟/cache age/旧队列/动作替换，成功自模仿或专家修正才作为 BC；失败留作诊断，hold/超时样本不能伪装成成功轨迹 |
 | E：冻结验证 | 严格 full/fast reload、CUDA Graph 数值一致后部署 | 1x 连续物理钟、H4/R4/K10/refresh16，同场景/seed 对比；报告成功率、源/快路尾延迟、时限违约、抓手切换、MP4 |
 
-现有候选预算 W=2k、J=18k、R=2k；8 卡每卡 batch1、累积2，有效 batch16。W 的 Action/interface LR 为 1e-5/1e-4；J 的 Video/Action/interface 为 2e-6/5e-6/3e-5；R 为 1e-6/2e-6/1e-5。这些是待 pilot 验证的起点，不是已证明最优 recipe。W+J 合计仅约 32 万次样本呈现，不能等同于完整遍历 141.6 万个物理采样点，更不能据此认定新增模块已收敛；实际训练长度要依据分桶验证曲线与闭环结果调整。R 只有在真实合格样本存在时才能运行。正式训练不能使用 4 步 smoke 权重初始化。
+正式初始预算改为 Stage2 80k、Stage3 40k，均8卡、每卡batch1、累积2，有效batch16；与原版batch128并非相同样本曝光量，预算仍需根据验证曲线判断。Stage2 Action/interface LR为1e-5/1e-4；Stage3 Video/Action/interface为2e-6/5e-6/3e-5，warmup均1000步。source Action FM保持0.1，Stage3 Video FM为0.1，motion forecast为0.1。这是重训recipe的起点，不是已验证最优超参。正式Stage3仅接正式Stage2 step80000，4步smoke权重绝不能成为正式初始化。真实replay成功BC数据仍不足，因此R不会被自动启动。
 
 RTC 训练需要把部署的承诺前缀与旧动作分布纳入条件和损失；单纯推理时混合旧动作会带来新的分布偏差。保持前缀并不保证可编辑尾部没有跳变。Soft RTC 的先验去噪值得后续对照，但不能在当前 checkpoint 上直接加混合并声称训推一致。[训练时 RTC](https://arxiv.org/html/2512.05964v2)；[动作先验去噪](https://arxiv.org/html/2605.25537v1)
 
@@ -48,6 +48,10 @@ RTC 训练需要把部署的承诺前缀与旧动作分布纳入条件和损失�
 
 必须用固定协议的消融分辨：完整源计划、源时间编码、运动创新、action proposal 修正、联合训练的各自作用；通过实际闭环的成功率/抓手事件与 tail latency 才能接受性能改进。
 
+## 额外核对：运动历史跨度
+
+当前仍以 policy_stride4×frame_period0.16 构造每段0.64s光流，4段覆盖2.56s，额外前一段供加速度，共需3.2s。真实dev的54个有效间隔均约0.64s；packed数据间隔均值0.64537s。旧bounded的adjust_bottle 20集、370次慢路刷新，其4段跨度中位7.022s（TOPP可变时间；仅单任务）。不存在丢stride的bug，但旧native与新固定物理跨度确有分布差异。
+
 ## 本轮执行证据（待实际测试后更新）
 
-不启动正式训练，不建立定时巡检。完整 VAE 会使用独立冻结工作树启动；运行中不等于完成。GPU 全部通过临时 all-adapter FD guard 管理，不进行任何驱动/PCI恢复。
+最新用户已授权整体检查后自动8卡正式训练：准备一次性缓存→正确初始化smoke→Stage2→Stage3流水线，任一校验失败即停止，不自动重试。完整VAE已在独立冻结工作树启动；运行中不等于完成，当前不得称正式训练已启动。GPU 全部通过临时 all-adapter FD guard 管理，不进行任何驱动/PCI恢复。
