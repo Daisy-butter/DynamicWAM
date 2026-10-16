@@ -69,7 +69,11 @@ def audit():
   assert all(p.requires_grad==(stage=='stage3') for p in video)
   trainability[stage]={'video_trainable':stage=='stage3','action_native_motion_interface_source_time_trainable':True,'optimizer_groups':[{'name':g['name'],'lr':g['lr'],'elements':sum(p.numel() for p in g['params'])} for g in groups]}
  for k,p in profiles.items():
-  c=p.training;assert c['initialize_joint_interface'] is False and c['gradient_accumulation_steps']==1 and c['per_device_batch_size']==16
+  c=p.training;assert c['initialize_joint_interface'] is False
+  if k.startswith('smoke'):
+    assert c['gradient_accumulation_steps']==2 and c['per_device_batch_size']==1
+  else:
+    assert c['gradient_accumulation_steps']==1 and c['per_device_batch_size']==16
   assert c['loss']['action_weight']==.1 and c['motion_prediction_weight']==.1
   assert bool(c['dataset']['smoke_subset'])==k.startswith('smoke')
  assert profiles['stage2'].training['max_steps']==80000 and profiles['stage3'].training['max_steps']==40000

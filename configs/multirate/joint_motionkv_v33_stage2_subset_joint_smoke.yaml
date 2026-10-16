@@ -1,4 +1,5 @@
 # Continue only the matching new Stage2 export; never initialize formal training from smoke.
+# Smoke microbatch stays 1x2 (global16): subset has fewer than 128 samples; formal stages use 16x1=128.
 schema_version: 3
 baseline: world_action_multirate_native_v1
 phase: cross_time_joint
@@ -74,8 +75,8 @@ training:
   device: cuda
   log_level: INFO
   max_steps: 4
-  per_device_batch_size: 16
-  gradient_accumulation_steps: 1
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 2
   action_learning_rate: 5.0e-06
   fast_learning_rate: 3.0e-05
   video_learning_rate: 2.0e-06
