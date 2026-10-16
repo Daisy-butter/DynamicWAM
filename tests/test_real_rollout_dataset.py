@@ -40,9 +40,10 @@ class ReplayRoundtripTest(unittest.TestCase):
             recorder.query_arrays[i]['motion_history_end_times']=np.full(4,np.nan)
             recorder.query_arrays[i]['motion_history_start_times']=np.full(4,np.nan)
             recorder.record_result(dict(query_index=i,receive_wall_s=10.8 if i==0 else 11.1,
+                receive_monotonic=1000010.8 if i==0 else 1000011.1,
                 receive_physics_s=.8 if i==0 else 1.1,installed=True,policy_diagnostics=dict(asynchronous_world=dict(
-                    source_sim_time=0.,source_action_index=0,source_published_monotonic=10.8,
-                    source_consumed_monotonic=10.8 if i==0 else 11.02))),np.zeros((16,14),np.float32))
+                    source_sim_time=0.,source_action_index=0,source_published_monotonic=1000010.8,
+                    source_consumed_monotonic=1000010.8 if i==0 else 1000011.02))),np.zeros((16,14),np.float32))
         recorder.finalize(success=True,complete=True)
         def synthetic_encoder(kind,first,others):return torch.zeros((48,2,24,20) if kind=='condition' else (48,2,12,10))
         manifest,samples,drops=prep.build_replay_samples(raw,episode_index=0,language_catalog=CATALOG,encoder=synthetic_encoder)
@@ -58,6 +59,9 @@ class ReplayRoundtripTest(unittest.TestCase):
             self.assertEqual(batch['delta_actions'].item(),0);self.assertEqual(batch['delta_sim_seconds'].item(),1.)
             self.assertEqual(batch['async_timing']['rtc_prefix_lengths'].item(),4)
             self.assertEqual(batch['source_rtc_prefix_lengths'].item(),0)
+            self.assertEqual(blob['receive_monotonic'],1000011.1)
+            self.assertGreater(blob['source_consumed_monotonic'],1000000.)
+            self.assertEqual(blob['clock_schema'],'host_monotonic_and_episode_elapsed_v1')
             self.assertEqual(batch['source_rtc_prefix_actions'].abs().sum().item(),0.)
             self.assertFalse(batch['async_timing']['cache_publication_time_is_exact'].item())
             self.assertNotIn('cache_publication_time',batch['async_timing'])
@@ -103,8 +107,17 @@ class ReplayRoundtripTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'hold command'):adapt_replay_sample(blob,row,normalizer=norm,language=torch.zeros(1,512))
     def test_wall_publication_order_is_not_fabricated_physics_time(self):
         with tempfile.TemporaryDirectory() as d:
-            row,blob,norm,raw=self.fixture(Path(d));blob['source_published_monotonic']=12.
+            row,blob,norm,raw=self.fixture(Path(d));blob['source_published_monotonic']=1000012.
             with self.assertRaisesRegex(ValueError,'publication bounds'):adapt_replay_sample(blob,row,normalizer=norm,language=torch.zeros(1,512))
+    def test_mixed_relative_receipt_and_legacy_blob_fail_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            row,blob,norm,raw=self.fixture(Path(d));blob['receive_monotonic']=11.1
+            with self.assertRaisesRegex(ValueError,'monotonic ordering'):
+                adapt_replay_sample(blob,row,normalizer=norm,language=torch.zeros(1,512))
+            blob.pop('clock_schema')
+            with self.assertRaisesRegex(ValueError,'recollect and reconvert'):
+                adapt_replay_sample(blob,row,normalizer=norm,language=torch.zeros(1,512))
+
     def test_unexecuted_policy_proposal_is_not_a_target(self):
         with tempfile.TemporaryDirectory() as d:
             row,blob,norm,raw=self.fixture(Path(d));blob['current_targets']['raw_actions'][0,0]=2.

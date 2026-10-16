@@ -433,7 +433,11 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
     def finish_request(result=None, *, terminal=False):
         nonlocal active, reservation, grid0, last_handoff_boundary, last_handoff_query
         r = active
+        # AsyncWorldScheduler publishes absolute time.monotonic() timestamps.
+        # Keep this separate from episode-relative wall(), including fake clocks.
         r.update(receive_wall_s=wall(), receive_physics_s=physical(), terminal_before_result=terminal)
+        if replay_recorder is not None:
+            r["receive_monotonic"] = time.monotonic()
         r["inference_wall_elapsed_s"] = r["receive_wall_s"] - r["submit_wall_s"]
         r["inference_physics_advance_s"] = r["receive_physics_s"] - r["submit_physics_s"]
         r["inference_clock_error_s"] = r["inference_wall_elapsed_s"] - r["inference_physics_advance_s"]

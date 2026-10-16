@@ -87,6 +87,13 @@ class ReplayTests(unittest.TestCase):
             manifest,queries=load_development_replay(path,require_success=True)
             self.assertTrue(report["success"])
             self.assertEqual(manifest["action_target_source"],"successful_self_imitation")
+            self.assertEqual(manifest['schema'],'dynamicwam_development_replay_v2')
+            self.assertIn('plan_switch_diagnostics.json',manifest['files'])
+            for q in queries:
+                if q.get('result_received'):
+                    source=q['policy_diagnostics']['asynchronous_world']
+                    self.assertLessEqual(source['source_consumed_monotonic'],q['receive_monotonic'])
+                    self.assertGreaterEqual(q['receive_monotonic'],0.)
             first,second=queries[:2]
             self.assertEqual(first["completed_action_count"],second["completed_action_count"])
             self.assertEqual(second["source_query_index"],0)
@@ -124,6 +131,27 @@ class ReplayTests(unittest.TestCase):
             manifest["files"]["queries.json"]=sha256(path/"queries.json")
             (path/"manifest.json").write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError,"source observation missing"):
+                load_development_replay(path)
+
+    def test_legacy_clock_schema_requires_recollection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path,_=self.collect(Path(temp))
+            manifest=json.loads((path/'manifest.json').read_text())
+            manifest['schema']='dynamicwam_development_replay_v1'
+            (path/'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError,'recollect.*never infer'):
+                load_development_replay(path)
+
+    def test_mixed_relative_and_absolute_clock_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path,_=self.collect(Path(temp))
+            queries=json.loads((path/'queries.json').read_text())
+            queries[1]['receive_monotonic']=queries[1]['ready_wall_s']
+            (path/'queries.json').write_text(json.dumps(queries))
+            manifest=json.loads((path/'manifest.json').read_text())
+            manifest['files']['queries.json']=sha256(path/'queries.json')
+            (path/'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError,'do not mix relative'):
                 load_development_replay(path)
 
     def test_trace_tampering_rejected(self):

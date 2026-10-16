@@ -41,6 +41,8 @@ def validate_replay_manifest(replay_root,physical_grid_root,packed_root,*,strict
     m=json.loads(path.read_text());grid=json.loads((Path(physical_grid_root)/'manifest.json').read_text())
     if m.get('kind')!='dynamicwam_prepared_real_replay_v1' or m.get('complete') is not True or m.get('synthetic') is not False:
         raise ValueError('real completed replay required; synthetic fixtures cannot authorize training')
+    if m.get('clock_schema')!='host_monotonic_and_episode_elapsed_v1':
+        raise ValueError('prepared replay clock schema missing/unsupported; recollect and reconvert legacy traces')
     if m['physical_grid_identity']!=grid['physical_grid_identity'] or m['parent_episode_partition_identity']!=grid['episode_partition_identity']:
         raise ValueError('replay parent physical-grid identity mismatch')
     packed=Path(packed_root)
@@ -194,6 +196,8 @@ def adapt_replay_sample(blob,record,*,normalizer,language,max_cache_age_actions=
     ss=normalizer.normalize(_tensor(source['state'],(14,),'source state'));fs=normalizer.normalize(_tensor(current['state'],(14,),'current state'))
     def motion(obs):return _tensor(obs['native_motion'],(4,12),'native motion')
     def mask(obs,key):return _tensor(obs[key],(4,),key)
+    if blob.get('clock_schema')!='host_monotonic_and_episode_elapsed_v1':
+        raise ValueError('replay clock schema missing/unsupported; recollect and reconvert legacy traces without guessing offsets')
     lower=float(blob['cache_publication_lower_bound_time']);upper=float(blob['cache_publication_upper_bound_time'])
     published=float(blob['source_published_monotonic']);consumed=float(blob['source_consumed_monotonic']);received=float(blob['receive_monotonic'])
     if blob.get('cache_publication_time_is_exact') is not False or not np.isfinite([lower,upper,published,consumed,received]).all() or not st<=lower<=upper<=ready or not published<=consumed<=received:

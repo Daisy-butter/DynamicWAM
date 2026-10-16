@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from dynamicwam.image import resize_with_padding
 from dynamicwam.observations.multiview import fast_views_from_composite
-from dynamicwam.runtime.domino_continuous.development_replay import load_development_replay
+from dynamicwam.runtime.domino_continuous.development_replay import load_development_replay,CLOCK_SCHEMA
 from dynamicwam.training.data.physical_grid import DT,sha256_file,json_hash,resample_commands,video_endpoints
 from dynamicwam.training.data.multirate_sampling import partition_episodes
 from dynamicwam.training.data.replay_language import build_replay_language_catalog,match_replay_instruction
@@ -98,7 +98,8 @@ def build_replay_samples(directory,*,episode_index,language_catalog,encoder=None
             source_rtc_prefix_raw_actions=torch.from_numpy(np.asarray(packets[source_i]['_rtc_prefix_actions'],dtype=np.float32)[:int(queries[source_i]['prefix_length'])].copy()),
             source_rtc_prefix_endpoint_times=torch.tensor(queries[source_i]['prefix_endpoint_times'],dtype=torch.float64),
             source_published_monotonic=float(wall['source_published_monotonic']),
-            source_consumed_monotonic=float(wall['source_consumed_monotonic']),receive_monotonic=float(q['ready_wall_s']),
+            source_consumed_monotonic=float(wall['source_consumed_monotonic']),receive_monotonic=float(q['receive_monotonic']),
+            clock_schema=manifest['clock_schema'],
             bootstrap_mode='prime_then_hold' if bootstrap else 'none')
         scene=manifest['scene'];scene=dict(task=scene['task'],seed=int(scene['seed']),scene_id=f"{scene['task']}:{int(scene['seed'])}",
             scene_sha256=scene.get('scene_sha256',scene['manifest_sha256']),motion_sha256=scene['motion_sha256'])
@@ -170,7 +171,7 @@ def main():
     for row in records:row['subset']=assignments[row['episode_index']]
     bootstrap_counts=Counter(r['subset'] for r in records if r['bootstrap_mode']=='prime_then_hold')
     complete=bool(a.encode and records and bootstrap_counts['train']>0)
-    result=dict(kind='dynamicwam_prepared_real_replay_v1',schema_version=1,complete=complete,synthetic=False,
+    result=dict(kind='dynamicwam_prepared_real_replay_v1',schema_version=1,clock_schema=CLOCK_SCHEMA,complete=complete,synthetic=False,
         physical_grid_identity=grid['physical_grid_identity'],parent_episode_partition_identity=grid['episode_partition_identity'],
         action_stats_sha256=sha256_file(packed/'action_stats.json'),motion_stats_sha256=sha256_file(packed/'motion_stats.json'),
         formal_inventory_sha256=sha256_file(Path(a.physical_grid_root)/'formal700_exclusion.json'),

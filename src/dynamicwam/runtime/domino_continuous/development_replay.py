@@ -10,7 +10,23 @@ import json
 from pathlib import Path
 import numpy as np
 
-SCHEMA = "dynamicwam_development_replay_v1"
+SCHEMA = "dynamicwam_development_replay_v2"
+CLOCK_SCHEMA = "host_monotonic_and_episode_elapsed_v1"
+
+
+def validate_result_clocks(row):
+    if row.get("clock_schema") != CLOCK_SCHEMA:
+        raise ValueError("replay lacks explicit absolute monotonic receipt; recollect legacy traces, never infer a wall offset")
+    source=row.get("policy_diagnostics",{}).get("asynchronous_world",{})
+    try:
+        published=float(source["source_published_monotonic"])
+        consumed=float(source["source_consumed_monotonic"])
+        received=float(row["receive_monotonic"])
+        elapsed=float(row["ready_wall_s"])
+    except (KeyError,TypeError,ValueError) as error:
+        raise ValueError("replay requires explicit absolute monotonic and episode elapsed clock evidence") from error
+    if not np.isfinite([published,consumed,received,elapsed]).all() or not 0<=published<=consumed<=received or elapsed<0:
+        raise ValueError("replay absolute monotonic publication/consumption/receipt ordering is invalid; do not mix relative wall time")
 ARRAY_FIELDS = ("frame", "fast_frame", "state", "flow_frames", "motion_features",
     "motion_interval_valid_mask", "motion_acceleration_valid_mask",
     "_rtc_prefix_actions", "_rtc_previous_actions", "_rtc_previous_valid", "_rtc_action_target_offsets")
@@ -92,7 +108,8 @@ class DevelopmentReplayRecorder:
         if not scope.get("formal_exclusion_verified") or not all(_hash(v) for v in (policy_checkpoint_sha256,policy_source_sha256)):
             raise ValueError("replay requires frozen development and policy provenance")
         self.directory.mkdir(parents=True,exist_ok=False)
-        self.identity=dict(schema=SCHEMA,trajectory_id=str(trajectory_id),episode_id=str(episode_id),
+        self.identity=dict(schema=SCHEMA,clock_schema=CLOCK_SCHEMA,monotonic_clock="python.time.monotonic",
+            trajectory_id=str(trajectory_id),episode_id=str(episode_id),
             development_scene_id=scene["development_scene_id"],scene=scene,
             development_scope=scope,policy_checkpoint_sha256=policy_checkpoint_sha256,
             policy_source_sha256=policy_source_sha256,observation_origin="policy_capture",
@@ -148,9 +165,12 @@ class DevelopmentReplayRecorder:
         self.query_arrays[index]["returned_actions"]=self._copy(actions)
         info=record.get("policy_diagnostics",{})
         source=info.get("asynchronous_world",{})
-        row.update(result_received=True,ready_wall_s=record["receive_wall_s"],
+        clocks=dict(clock_schema=CLOCK_SCHEMA,receive_monotonic=record.get("receive_monotonic"),
+            ready_wall_s=record["receive_wall_s"],policy_diagnostics=info)
+        validate_result_clocks(clocks)
+        row.update(**clocks,result_received=True,
             ready_physics_s=record["receive_physics_s"],installed=bool(record.get("installed")),
-            policy_diagnostics=info,source_capture_time=source.get("source_sim_time"),
+            source_capture_time=source.get("source_sim_time"),
             source_completed_action_count=source.get("source_action_index"),
             source_publication_physics_upper_bound=record["receive_physics_s"],
             source_publication_time_semantics="upper_bound_at_result_receipt; exact_monotonic_in_policy_diagnostics")
@@ -183,6 +203,12 @@ class DevelopmentReplayRecorder:
             measured_states=column(self.executed,4,(14,)),held=column(self.executed,5,dtype=bool))
         save_npz("targets.npz",action_indices=column(self.targets,0,dtype=np.int64),
             endpoint_times=column(self.targets,1),commands=column(self.targets,2,(14,)))
+        # Small CPU-only summaries run after the episode; commands are never changed.
+        from .plan_switch_diagnostics import summarize_plan_switches
+        diagnostics=summarize_plan_switches(self.queries,self.query_arrays,self.targets)
+        diagnostic_path=self.directory/"plan_switch_diagnostics.json"
+        diagnostic_path.write_text(json.dumps(diagnostics,indent=2,allow_nan=False)+"\n")
+        files[diagnostic_path.name]=sha256(diagnostic_path)
         queries=self.directory/"queries.json";queries.write_text(json.dumps(self.queries,indent=2,allow_nan=False)+"\n")
         files["queries.json"]=sha256(queries)
         manifest=dict(self.identity,files=files,initial_physics_s=self.initial_physics_s,
@@ -199,6 +225,10 @@ class DevelopmentReplayRecorder:
 
 def load_development_replay(directory, *, require_success=False):
     directory=Path(directory);manifest=json.loads((directory/"manifest.json").read_text())
+    if manifest.get("schema")=="dynamicwam_development_replay_v1":
+        raise ValueError("legacy replay v1 lacks absolute monotonic receipt; recollect with schema v2, never infer a wall offset")
+    if manifest.get("clock_schema")!=CLOCK_SCHEMA or manifest.get("monotonic_clock")!="python.time.monotonic":
+        raise ValueError("replay clock schema is missing or unsupported; recollect legacy traces")
     if manifest.get("schema")!=SCHEMA or manifest.get("trainer_ready") is not False:
         raise ValueError("not a raw development replay")
     if not manifest["development_scope"].get("formal_exclusion_verified"):
@@ -214,6 +244,7 @@ def load_development_replay(directory, *, require_success=False):
     identities={(q["capture_time"],q["completed_action_count"]):q for q in queries}
     for q in queries:
         if q.get("result_received"):
+            validate_result_clocks(q)
             source=(q.get("source_capture_time"),q.get("source_completed_action_count"))
             if source not in identities or source[0]>q["capture_time"]:
                 raise ValueError("actual source observation missing or noncausal; cannot substitute current")
