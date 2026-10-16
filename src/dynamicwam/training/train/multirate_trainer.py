@@ -77,6 +77,8 @@ _JOINT_NEW_STATE_PREFIXES = (
     "fast_conditioner.innovation_kind",
     "fast_conditioner.innovation_gate",
     "fast_conditioner.motion_forecast.",
+    "fast_conditioner.proposal_encoder.",
+    "fast_conditioner.proposal_gate",
 )
 
 
@@ -509,6 +511,11 @@ class MultirateTrainer:
             native_teacher_weight=float(loss_cfg.get('native_teacher_weight', 0.0)),
         )
         dataset_cfg = config["dataset"]
+        if dataset_cfg.get("smoke_subset", False):
+            if (not 0 < int(config.get("max_steps", 0)) <= 4 or config.get("resume_from")
+                    or self.phase not in {"warmup", "joint"}
+                    or dataset_cfg.get("kind", "physical_grid") == "real_rollout"):
+                raise ValueError("physical subset is only for fresh <=4-step warmup/joint smoke")
         dataset_class, collate_function = PairedWorldActionDataset, paired_collate_fn
         physical_kwargs = {}
         if int(config["model"]["fast_conditioner"].get("interface_version",1)) >= 3:
@@ -518,7 +525,7 @@ class MultirateTrainer:
                 future_latent_root=dataset_cfg["future_latent_root"],
                 max_cache_age_actions=31, async_seed=int(dataset_cfg.get("async_seed",20261015)),
                 slow_budget_seconds=2.56, rtc_prefix_max=int(config["rtc_prefix_max"]),
-                strict_future_latents=True)
+                strict_future_latents=True, smoke_subset=bool(dataset_cfg.get("smoke_subset", False)))
         if dataset_cfg.get("kind", "physical_grid") == "real_rollout":
             if int(config["model"]["fast_conditioner"].get("interface_version",1)) != 3:
                 raise ValueError("real rollout refinement requires the complete V3 interface")
@@ -925,6 +932,9 @@ class MultirateTrainer:
                 raise RuntimeError(f"checkpoint dataset identity differs from paired data: {path}")
             self._check_transfer_compatibility(payload)
         saved_runtime = config.get("runtime_contract", {})
+        if saved_runtime.get("training_scope") == "smoke_subset" and (
+                not 0 < int(self.config.get("max_steps", 0)) <= 4 or self.config.get("resume_from")):
+            raise RuntimeError("a smoke-subset checkpoint cannot initialize or resume formal training")
         replay_transition = False
         if self.config["dataset"].get("kind") == "real_rollout":
             replay_transition = (
@@ -1142,8 +1152,10 @@ class MultirateTrainer:
                     "source_retention": "fixed_grid_source_video_action_fm",
                     "slow_source_prefix": "clean_committed_v1",
                     "motion_forecast": "source_kv_native_motion_elapsed_to_current_stats",
+                    "proposal_feedback": "sigma_conditioned_physical_plan_v1" if self.config["model"]["fast_conditioner"].get("proposal_feedback", False) else "disabled",
                     "previous_plan": "soft_context_only; hard_prefix_is_irrevocable",
                     "training_data_kind": self.config["dataset"].get("kind","physical_grid"),
+                    "training_scope": "smoke_subset" if self.config["dataset"].get("smoke_subset", False) else "full",
                     "replay_identity": getattr(self.dataset,"replay_identity",None),
                     "prefix_training_source": "on_policy_executed" if self.config["dataset"].get("kind") == "real_rollout" else "expert_demonstration"}
                    if int(self.config["model"]["fast_conditioner"].get("interface_version",1)) >= 3 else {}),

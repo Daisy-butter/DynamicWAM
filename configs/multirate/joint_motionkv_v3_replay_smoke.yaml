@@ -208,6 +208,7 @@ model:
     - 10
     - 11
     require_source_rgb: true
+    proposal_feedback: true
 distributed:
   zero_stage: 0
   bf16: true

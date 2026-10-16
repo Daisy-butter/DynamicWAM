@@ -26,6 +26,9 @@ def validate_physical_grid_readiness(physical_grid_root, future_latent_root, *,
     if identity!=computed or m['schema_version']!=VERSION:
         raise ValueError('physical-grid manifest identity/version mismatch')
     if require_full and not m['full_scope']: raise ValueError('subset physical-grid index cannot authorize full training')
+    if not m['full_scope']:
+        from dynamicwam.training.data.smoke_grid import validate_smoke_subset
+        validate_smoke_subset(root,m)
     for path,key in [('episodes.jsonl','episode_index_sha256'),('eligible_sample_ids.npy','eligible_ids_sha256')]:
         if sha256_file(root/path)!=m[key]: raise ValueError('physical-grid index hash mismatch: '+path)
     old=Path(m['packed_root'])
@@ -96,10 +99,11 @@ class PhysicalGridRecords:
 class PhysicalGridPairedWorldActionDataset(PairedWorldActionDataset):
     def __init__(self,packed_root,source_root,*,physical_grid_root,future_latent_root,
                  max_cache_age_actions=31,async_seed=20261015,slow_budget_seconds=2.56,
-                 rtc_prefix_max=4,strict_future_latents=True,**kwargs):
+                 rtc_prefix_max=4,strict_future_latents=True,smoke_subset=False,**kwargs):
         if strict_future_latents is not True: raise ValueError('legacy future latent fallback is forbidden')
         self.physical_grid_root=Path(physical_grid_root);self.future_latent_root=Path(future_latent_root)
-        self.readiness=validate_physical_grid_readiness(physical_grid_root,future_latent_root,verify_hashes=False)
+        self.readiness=validate_physical_grid_readiness(physical_grid_root,future_latent_root,verify_hashes=False,require_full=not smoke_subset)
+        if smoke_subset and self.readiness["full_scope"]: raise ValueError("bounded smoke profile requires the explicitly audited subset")
         self.grid_manifest=json.loads((self.physical_grid_root/'manifest.json').read_text())
         if Path(packed_root).resolve()!=Path(self.grid_manifest['packed_root']).resolve() or Path(source_root).resolve()!=Path(self.grid_manifest['source_root']).resolve():
             raise ValueError('physical-grid source paths disagree')

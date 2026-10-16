@@ -173,6 +173,10 @@ def validate_runtime_contract(payload, runtime, *, allow_zero_prefix_ablation=Fa
                 if (contract.get('max_age_actions') != 31 or contract.get('max_age_seconds') != 4.96 or
                     native.get('slow_schedule') != 'asynchronous_latest_completed_v1'):
                     raise RuntimeError('v3 requires asynchronous publication with trained 31-action/4.96-second cache bounds')
+                feedback = bool(modules['fast_conditioner'].get('proposal_feedback', False))
+                expected_feedback = 'sigma_conditioned_physical_plan_v1' if feedback else 'disabled'
+                if contract.get('proposal_feedback', 'disabled') != expected_feedback:
+                    raise RuntimeError('proposal feedback architecture and trained runtime contract disagree')
                 physical = contract.get('physical_grid_contract', {})
                 def valid_sha256(value):
                     return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)

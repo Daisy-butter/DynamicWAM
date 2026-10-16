@@ -98,6 +98,13 @@ def main():
     if not out.is_relative_to(SSD.resolve()) or not latent.is_relative_to(SSD.resolve()):
         raise ValueError('all new artifacts must be on the project SSD')
     ids = a.gpu_uuids.split(',')
+    grid_manifest=json.loads((a.physical_grid_root/'manifest.json').read_text())
+    subset=grid_manifest.get('full_scope') is False
+    if subset:
+        sys.path.insert(0,str(ROOT/'src'))
+        from dynamicwam.training.data.smoke_grid import validate_smoke_subset
+        validate_smoke_subset(a.physical_grid_root,grid_manifest)
+        if a.episode_limit != 0: raise ValueError('bounded subset requires explicit --episode-limit 0 for all 256 selected samples')
     workers = worker_commands(ids, a.physical_grid_root.resolve(), latent, a.vae_checkpoint.resolve(), a.episode_limit)
     guard = out / 'guard'
     command = [sys.executable, str(ROOT / 'scripts/supervise_motionkv_eval.py'), '--stage', 'prepare',
@@ -109,19 +116,20 @@ def main():
                 '--future-latent-root', str(latent), '--finalize']
     plan = dict(workers=workers, command=command, finalize=finalize if a.episode_limit == 0 else None,
                 guard=str(guard), formal_training=False, automatic_retry=False,
-                profiles=[dict(config=str(ROOT / 'configs/multirate/joint_motionkv_v3_warmup_smoke.yaml'))])
+                profiles=[dict(config=str(ROOT / 'configs/multirate/joint_motionkv_v3_warmup_smoke.yaml'))],
+                bounded_subset=subset, full_dataset_ready=False)
     if not a.execute:
         print(json.dumps(dict(executed=False, **plan), indent=2))
         return
     require_release(PROTECTED, require_success=False, label='protected evaluation')
     plan['authorization_sha256'] = require_fresh_authorization(a.authorization, ids)
     plan['identity'] = frozen_identity(plan['profiles'])
-    require_output_freshness(out, latent, a.episode_limit)
+    require_output_freshness(out, latent, 1 if subset else a.episode_limit)
     if not (a.physical_grid_root / 'manifest.json').is_file() or not a.vae_checkpoint.is_file():
         raise FileNotFoundError('audited grid manifest and official VAE are required')
     out.mkdir(parents=True)
     atomic_json(out / 'plan.json', plan)
-    status = dict(state='running', complete_data=False, gpu_smoke_only=a.episode_limit > 0)
+    status = dict(state='running', complete_data=False, complete_selected_scope=False, gpu_smoke_only=subset or a.episode_limit > 0, formal_training_ready=False)
     try:
         subprocess.run(command, cwd=ROOT, check=True)
         require_release(guard / 'status.json', require_success=True, label='VAE encoding')
@@ -129,7 +137,8 @@ def main():
         if plan['finalize']:
             env = dict(os.environ, CUDA_VISIBLE_DEVICES='', PYTHONDONTWRITEBYTECODE='1', OMP_NUM_THREADS='2')
             subprocess.run(finalize, cwd=ROOT, env=env, check=True)
-            status['complete_data'] = True
+            status['complete_selected_scope'] = True
+            status['complete_data'] = not subset
         status['state'] = 'completed'
     except BaseException as error:
         status.update(state='failed_no_retry', error=repr(error))

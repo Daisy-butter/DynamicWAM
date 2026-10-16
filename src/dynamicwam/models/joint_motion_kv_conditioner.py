@@ -9,6 +9,7 @@ remain differentiable during joint training; no hidden inference state exists.
 from __future__ import annotations
 
 from dataclasses import replace
+from copy import copy
 
 import torch
 from torch import nn
@@ -20,12 +21,15 @@ JOINT_MOTIONKV_INTERFACE_VERSION = 2
 
 class JointMotionKVConditioner(MotionKVConditioner):
     def __init__(self, *, action_dim=14, interface_version=2,
-                 correction_layers=None, require_source_rgb=True, **kwargs):
+                 correction_layers=None, require_source_rgb=True, proposal_feedback=False, **kwargs):
         if int(interface_version) not in (2, 3):
             raise ValueError("joint MotionKV requires interface version 2 or 3")
         super().__init__(**kwargs)
         self.interface_version = int(interface_version)
         self.action_dim = int(action_dim)
+        self.proposal_feedback = bool(proposal_feedback)
+        if self.proposal_feedback and self.interface_version != 3:
+            raise ValueError("proposal feedback requires physical-grid V3")
         if self.action_dim < 1:
             raise ValueError("action_dim must be positive")
         self.correction_layers = tuple(range(self.layers)) if correction_layers is None else tuple(int(i) for i in correction_layers)
@@ -44,12 +48,19 @@ class JointMotionKVConditioner(MotionKVConditioner):
                 nn.SiLU(), nn.Linear(d, 12 * self.motion_history_count))
             nn.init.zeros_(self.motion_forecast[-1].weight)
             nn.init.zeros_(self.motion_forecast[-1].bias)
+        if self.proposal_feedback:
+            # Shared across layers: only 16 endpoint tokens and R rank tokens
+            # are processed per denoising step. No additional Video/Action pass.
+            self.proposal_encoder = nn.Sequential(nn.Linear(4 * self.action_dim + 8, d),
+                nn.SiLU(), nn.Linear(d, d))
+            self.proposal_gate = nn.Parameter(torch.zeros(()))
         self.innovation_kind = nn.Parameter(torch.randn(1, 3, d) * .02)
         # New information must not alter the V1 softmax normalizer at migration.
         # Loaded nonzero K/V heads train this gate first, then innovation paths.
         self.innovation_gate = nn.Parameter(torch.zeros(()))
         self.constructor_spec.update(action_dim=self.action_dim, interface_version=self.interface_version,
-            correction_layers=list(self.correction_layers), require_source_rgb=self.require_source_rgb)
+            correction_layers=list(self.correction_layers), require_source_rgb=self.require_source_rgb,
+            proposal_feedback=self.proposal_feedback)
 
     @torch.inference_mode()
     def prepare_source_cache(self, bridge):
@@ -241,6 +252,69 @@ class JointMotionKVConditioner(MotionKVConditioner):
         valid = torch.cat((innovation_valid, extra), 1)
         residual = self._attention(base, self.observation_k(innovation), self.observation_v(innovation), valid)
         return base + self.innovation_gate.tanh().to(dtype) * residual
+
+    def prepare_memory(self, current, text, text_mask=None, *, bridge=None):
+        memory = super().prepare_memory(current, text, text_mask, bridge=bridge)
+        if self.proposal_feedback:
+            # Query-owned, differentiable, immutable static reference. Source
+            # alignment uses physical times and masks targets beyond its horizon.
+            old, available = self.aligned_source_plan(current, bridge)
+            b, length, _ = old.shape
+            committed = torch.arange(length, device=old.device)[None] < self._column(
+                current.committed_prefix_lengths, b, old.device, torch.long)
+            previous_valid = current.previous_plan_valid.bool()
+            memory.proposal_reference = (
+                old, available,
+                torch.where(previous_valid[..., None], current.previous_plan, torch.zeros_like(old)),
+                previous_valid, committed,
+                current.action_target_offsets.to(device=old.device, dtype=torch.float64),
+                self._column(current.age.delta_sim_seconds, b, old.device, torch.float64),
+            )
+        return memory
+
+    def proposal_features(self, noisy_actions, action_t, memory, *, num_train_timesteps):
+        """No clean suffix input: the current FM sample is the evolving proposal.
+
+        The vendor scheduler defines t = sigma * num_train_timesteps, including
+        its shifted schedule. For a suffix x_t=(1-sigma)*a+sigma*noise, compare
+        x_t against (1-sigma)*reference, rather than pretending x_t is clean a.
+        Committed prefix tokens are already clean and keep confidence one.
+        """
+        old, available, previous, previous_valid, committed, offsets, elapsed = memory.proposal_reference
+        batch, length, _ = noisy_actions.shape
+        if noisy_actions.shape != old.shape:
+            raise ValueError("proposal and source-reference action shapes differ")
+        sigma = (self._column(action_t, batch, noisy_actions.device, torch.float32)
+                 / float(num_train_timesteps)).clamp(0, 1)[:, None].expand(-1, length, -1)
+        confidence = torch.where(committed[..., None], torch.ones_like(sigma), 1 - sigma)
+        sample = noisy_actions.float()
+        source_delta = torch.where(available[..., None], sample - confidence * old.float(), torch.zeros_like(sample))
+        queue_delta = torch.where(previous_valid[..., None], sample - confidence * previous.float(), torch.zeros_like(sample))
+        known = torch.where(committed[..., None], sample, torch.zeros_like(sample))
+        position = torch.arange(length, device=sample.device, dtype=torch.float32)[None, :, None].expand(batch, -1, -1) / max(1, length - 1)
+        features = torch.cat((sample * confidence, source_delta * confidence,
+            queue_delta * confidence, known, sigma, confidence,
+            available[..., None].float(), previous_valid[..., None].float(), committed[..., None].float(),
+            (offsets / self.sim_scale).float()[..., None], position,
+            (elapsed / self.sim_scale).float()[:, None].expand(-1, length, -1)), -1)
+        return features, confidence
+
+    def condition_on_proposal(self, noisy_actions, action_t, memory, *, num_train_timesteps):
+        if not self.proposal_feedback:
+            return memory
+        features, confidence = self.proposal_features(noisy_actions, action_t, memory,
+            num_train_timesteps=num_train_timesteps)
+        dtype = self.proposal_encoder[0].weight.dtype
+        tokens = self.proposal_encoder(features.to(dtype)) * confidence.to(dtype)
+        # All-masked sigma=1/no-prefix attention returns exactly zero. Do not
+        # let pure noise or padded references create fictitious plan evidence.
+        read = self._attention(self.rank_queries.to(dtype).expand(tokens.shape[0], -1, -1),
+            self.observation_k(tokens), self.observation_v(tokens), confidence[..., 0] > 0)
+        residual = self.proposal_gate.tanh().to(dtype) * read
+        derived = copy(memory)
+        derived.rank_context = tuple(context + residual.to(context.dtype) for context in memory.rank_context)
+        derived.keys = derived.values = derived.rank_context
+        return derived
 
     def adapt_video_kv(self, layer_idx, action_tokens, memory, base_key, base_value):
         key, value = super().adapt_video_kv(layer_idx, action_tokens, memory, base_key, base_value)

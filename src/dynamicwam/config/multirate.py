@@ -112,7 +112,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
                      "samples_per_episode": 10, "stress_probability": 0.0, "sampler_seed": None,
                      "age_weighting": "schedule_mixture", "cache_age_actions": None,
                      "joint_supervision": False, "cache_age_jitter": False, "cache_age_seed": 0,
-                     "physical_grid_root": "", "future_latent_root": "", "async_seed": 20261015,
+                     "physical_grid_root": "", "future_latent_root": "", "async_seed": 20261015, "smoke_subset": False,
                      "max_cache_age_actions": 31, "action_interval_seconds": .16,
                      "kind": "physical_grid", "replay_root": "",
                      "replay_target_policy": "successful_self_imitation_or_expert_corrective"}
@@ -298,7 +298,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
     motion_options = {k: fast_raw.pop(k, v) for k, v in {
         "motion_kv": False, "kv_rank": 8, "max_relative_update": .25,
         "interface_version": 1, "action_dim": 14, "correction_layers": None,
-        "require_source_rgb": True,
+        "require_source_rgb": True, "proposal_feedback": False,
     }.items()}
     fast = require_exact_keys(
         fast_raw,
@@ -326,7 +326,7 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             if int(motion_options["kv_rank"]) < 1 or not 0 < float(motion_options["max_relative_update"]) <= 1:
                 raise ValueError("invalid motion K/V correction bounds")
             if int(motion_options["interface_version"]) == 1:
-                for name in ("interface_version", "action_dim", "correction_layers", "require_source_rgb"):
+                for name in ("interface_version", "action_dim", "correction_layers", "require_source_rgb", "proposal_feedback"):
                     motion_options.pop(name)
             elif int(motion_options["interface_version"]) not in (2, 3):
                 raise ValueError("unsupported motion K/V interface version")
@@ -362,6 +362,13 @@ def load_multirate_profile(path: str | Path) -> MultirateProfile:
             raise ValueError("compact_fast selects an unavailable world layer")
         if (int(compact_fast["world_heads"]), int(compact_fast["world_head_dim"])) != (int(compact["num_heads"]), int(compact["head_dim"])):
             raise ValueError("compact_fast world head layout differs from WAN")
+    if pair_options["smoke_subset"]:
+        if (int(fast.get("interface_version", 1)) != 3 or pair_options["kind"] != "physical_grid"
+                or not 0 < int(training["max_steps"]) <= 4 or training["resume_from"]
+                or phase not in {"fast_warmup", "cross_time_joint"}):
+            raise ValueError("smoke_subset requires fresh <=4-step V3 physical-grid warmup/joint")
+    if motion_options.get("proposal_feedback", False) and int(fast.get("interface_version", 1)) != 3:
+        raise ValueError("proposal feedback requires physical-grid V3")
     if int(distributed["zero_stage"]) not in {0, 1, 2, 3}:
         raise ValueError("unsupported ZeRO stage")
     if phase == "fast_warmup" and float(loss["video_weight"]) != 0.0:

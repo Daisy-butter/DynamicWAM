@@ -190,6 +190,7 @@ model:
     kv_rank: 8
     max_relative_update: 0.25
     interface_version: 3
+    proposal_feedback: true
     action_dim: 14
     correction_layers:
     - 0

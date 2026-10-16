@@ -111,6 +111,9 @@ class MultirateWAM(nn.Module):
         if prefix is not None:
             from dynamicwam.models.rtc_prefix import apply_prefix
             noisy_actions = apply_prefix(noisy_actions, prefix)
+        if getattr(self.fast_conditioner, "proposal_feedback", False):
+            memory = self.fast_conditioner.condition_on_proposal(noisy_actions, action_t, memory,
+                num_train_timesteps=self.fast_schedule.num_train_timesteps)
         batch = {
             "video_cache": video_cache if video_cache is not None else bridge.as_video_cache(),
             "noisy_actions": noisy_actions,
