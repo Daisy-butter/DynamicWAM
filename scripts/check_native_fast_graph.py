@@ -45,7 +45,7 @@ def tensor_fingerprint(named_tensors):
     for name, tensor in named_tensors:
         digest.update(name.encode())
         digest.update(str((tuple(tensor.shape), tensor.dtype)).encode())
-        raw = tensor.detach().contiguous().view(torch.uint8).cpu().numpy()
+        raw = tensor.detach().contiguous().reshape(-1).view(torch.uint8).cpu().numpy()
         digest.update(raw.tobytes())
     return digest.hexdigest()
 
