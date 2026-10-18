@@ -88,3 +88,5 @@ User permits declared hardware concessions to complete evaluation of step12000; 
 
 ## Latest scope: joint MotionKV, 2026-10-15
 User explicitly requests next architecture/recipe/data/inference implementation and smokes while old scaled evaluation continues. Work only in this isolated SSD worktree. Harness v1.4 supersedes historical frozen-model scopes for this branch. Preserve the main repository frozen at 448782a and its running evaluation. New design targets 1x continuous time; GPU smokes wait for free resources and current guarded health clearance. No formal training is requested in this step.
+
+2026-10-18 correction: diagnostic warmup must be below its four-step budget; attempt01 failed before training with warmup1000 and closed cleanly. New explicit corrected attempt02 uses diagnostic warmup0/formal1000; status is /SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/stage3_memory_20261018_attempt02/status.json. Preserve attempt01 evidence.

@@ -11,11 +11,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SSD = Path('/SSD_DISK/users/wuruihan/DynamicWAM')
-OUT = SSD / 'outputs/diagnostics/stage3_memory_20261018'
+OUT = SSD / 'outputs/diagnostics/stage3_memory_20261018_attempt02'
 OLD = SSD / 'outputs/diagnostics/retention_recipe_v33_20261016/formal_pipeline'
 GRID = SSD / 'outputs/data/joint_motionkv_physical_grid_20261015'
 STAGE2_AUDIT = OLD / 'stage2/export_audit.json'
-OLD_RELEASE = OLD / 'stage3/guard'
+OLD_RELEASE = SSD / 'outputs/diagnostics/stage3_memory_20261018/smoke/guard'
 FORMAL_AUDITOR = OLD / 'audit_formal_export.py'
 PYTHON = str(ROOT / '.venv/bin/python')
 sys.path[:0] = [str(ROOT / 'scripts'), str(ROOT / 'src')]
@@ -61,6 +61,7 @@ def profiles():
                              ('formal','joint_motionkv_v33_stage3_mb8_20261018.yaml',40000)]:
         path=ROOT/'configs/multirate'/name;p=load_multirate_profile(path).training
         require(p['max_steps']==steps and not p['resume_from'] and p['phase']=='cross_time_joint','fresh joint Stage3 budget required')
+        require(0 <= p['warmup_steps'] < p['max_steps'], 'warmup must fit the actual stage budget before GPU initialization')
         require(p['per_device_batch_size']==8 and p['gradient_accumulation_steps']==2,'must test exact microbatch8/accum2/global128')
         require(p['dataset'].get('smoke_subset') is False and p['dataset']['kind']=='physical_grid','both stages require complete physical-grid scope')
         require(Path(p['dataset']['physical_grid_root']).resolve()==GRID.resolve()

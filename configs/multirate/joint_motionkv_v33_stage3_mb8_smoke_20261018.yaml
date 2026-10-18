@@ -71,7 +71,7 @@ pairing:
   action_interval_seconds: 0.16
   smoke_subset: false
 training:
-  name: joint_motionkv_v33_stage3_mb8_smoke_20261018
+  name: joint_motionkv_v33_stage3_mb8_smoke02_20261018
   device: cuda
   log_level: INFO
   max_steps: 4
@@ -82,7 +82,7 @@ training:
   video_learning_rate: 2.0e-06
   weight_decay: 0.001
   min_lr_ratio: 0.01
-  warmup_steps: 1000
+  warmup_steps: 0
   grad_clip_norm: 1.0
   num_workers: 0
   pin_memory: true
