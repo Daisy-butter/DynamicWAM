@@ -92,9 +92,11 @@ class HeadFlowRunner(DynamicWAMRunner):
         return next(self.model.action_expert.parameters()).dtype
 
     def _normalize_state(self, state: torch.Tensor) -> torch.Tensor:
+        # Match packed/physical-grid training: normalize raw values in FP32,
+        # then cast. Casting raw commands first loses precision before scaling.
         return self.runtime.action_normalizer.normalize(
-            state.to(self.device, dtype=self._action_dtype())
-        )
+            state.to(self.device, dtype=torch.float32)
+        ).to(dtype=self._action_dtype())
 
     def _motion_batch(
         self,
@@ -143,7 +145,7 @@ class HeadFlowRunner(DynamicWAMRunner):
             return None, None, 0
         leftover = torch.as_tensor(
             leftover_qpos,
-            dtype=self._action_dtype(),
+            dtype=torch.float32,
             device=self.device,
         )
         if leftover.ndim == 2:
@@ -159,7 +161,9 @@ class HeadFlowRunner(DynamicWAMRunner):
         )
         if prefix_len <= 0:
             return None, None, 0
-        prefix = self.runtime.action_normalizer.normalize(leftover[:, :prefix_len])
+        prefix = self.runtime.action_normalizer.normalize(
+            leftover[:, :prefix_len]
+        ).to(dtype=self._action_dtype())
         prefix_noise = torch.randn_like(prefix)
         return prefix, prefix_noise, prefix_len
 

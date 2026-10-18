@@ -315,8 +315,8 @@ class MotionKVPolicy(MultiratePolicy):
         noise = runner._fresh_noisy_actions(generator=packet_noise_generator(packet, device, branch='fast'))
         prefix_actions = torch.zeros_like(noise)
         if length:
-            raw = torch.from_numpy(raw_prefix).to(device=device, dtype=noise.dtype).unsqueeze(0)
-            prefix_actions[:, :length] = self.runtime.action_normalizer.normalize(raw)
+            raw = torch.from_numpy(raw_prefix).to(device=device, dtype=torch.float32).unsqueeze(0)
+            prefix_actions[:, :length] = self.runtime.action_normalizer.normalize(raw).to(dtype=noise.dtype)
         prefix = PrefixCondition(prefix_actions, torch.tensor([length], dtype=torch.long, device=device))
         current.committed_prefix = prefix.actions
         current.committed_prefix_lengths = prefix.lengths
@@ -333,8 +333,8 @@ class MotionKVPolicy(MultiratePolicy):
                 device=device,dtype=torch.float64)
             current.observation_delay_seconds = current.action_target_offsets[:,length-1] if length else current.action_target_offsets.new_zeros(1)
             safe = np.where(previous_valid[:,None],previous,0.)
-            previous_tensor = torch.from_numpy(safe).to(device=device,dtype=noise.dtype)[None]
-            current.previous_plan = self.runtime.action_normalizer.normalize(previous_tensor)
+            previous_tensor = torch.from_numpy(safe).to(device=device,dtype=torch.float32)[None]
+            current.previous_plan = self.runtime.action_normalizer.normalize(previous_tensor).to(dtype=noise.dtype)
             current.previous_plan_valid = torch.from_numpy(previous_valid.copy()).to(device)[None]
         self._sync_current_stream(device)
         preprocess_ms = (time.perf_counter()-started)*1000

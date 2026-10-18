@@ -54,8 +54,9 @@ def normalize_source_rtc_prefix(packet, normalizer, reference):
         raise ValueError('source RTC serving requires one 16-row action chunk')
     actions=torch.zeros_like(reference)
     if length:
-        source_raw=torch.from_numpy(raw.copy()).to(device=reference.device,dtype=reference.dtype)[None]
-        actions[:,:length]=normalizer.normalize(source_raw)
+        # Training normalizes raw FP32 source commands before the model cast.
+        source_raw=torch.from_numpy(raw.copy()).to(device=reference.device,dtype=torch.float32)[None]
+        actions[:,:length]=normalizer.normalize(source_raw).to(dtype=reference.dtype)
     lengths=torch.tensor([length],device=reference.device,dtype=torch.long)
     return actions,lengths
 
