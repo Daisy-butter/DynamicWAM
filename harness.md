@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.7 · 2026-10-16 · 目标投稿：CVPR 2027
+版本：v1.8 · 2026-10-16 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -235,3 +235,8 @@ v1.6 补充（本轮历史能力审计）：可选 source_plan_completion=same_n
 - raw replay v2使用同一绝对monotonic时钟，不猜测修补旧相对wall记录。失败轨迹不得BC；抓手/plan-switch按可编辑的相同物理端点度量。K/V有界不保证动作跳变有界。
 - 全量VAE在独立冻结工作树、SSD及临时all-adapter guard下运行；10500 episodes/1416299点全覆盖与hash通过才放行训练。一次性流水线只在完整缓存、干净资源退出、正确初始化8卡smoke和严格full/fast重载全部通过后启动Stage2，再衔接Stage3。每阶段当时生成fresh guard授权，不复用旧清单；任一错误保存并停止，不自动重试。
 - 正式初始预算Stage2 80k/Stage3 40k，有效batch128（8卡×每卡16×累积1），与原版batch128对齐；以验证曲线判断收敛。训练用已验证默认通信/allocator，不改驱动；仅初始300秒稳定窗口及阶段终态验收，不另建定时巡检。真实成功replay尚不足，不能自动进入BC refinement。
+
+
+## 20. Stage3 memory correction (2026-10-18)
+
+The user requests an actual recipe/initialization audit and repair of Stage3 OOM. Preserve completed Stage2 (8x16x1=128,80k) and all failed evidence. New Stage3 uses 8 GPUs x microbatch8 x accumulation2 =128, retains objectives/LRs/40k and full data, and initializes only the audited formal Stage2 step80000. Four-update diagnostic smoke must exercise this exact microbatch/accumulation and formal data/initialization, including backward, Adam state creation and strict export reload; it may not initialize formal training. Same effective batch does not promise bitwise-identical stochastic training. Fresh health/guard/source/config identities apply to each run; old failed run may release resources cleanly but is not successful training. No driver recovery, allocator experiment, automatic retry or recurring health watcher.
