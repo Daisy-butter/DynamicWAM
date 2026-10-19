@@ -11,3 +11,5 @@ Exact DOMINO6c5a00db source is reproducible with manifests/external_assets_stage
 Target root: /SSD_DISK/users/wuruihan/DynamicWAM/eval20k_20261019. Independent copied Python runtime disables user site packages; system/home packages must not override it. Asset/runtime binaries and weights are not committed. Kernel-log broker only permits fixed read-only dmesg for this UID, with bounded lifetime and explicit shutdown, and never modifies driver/GPU state.
 
 Acceptance order: local source/asset/checkpoint verification -> fresh guarded telemetry -> actual20k Graph parity/background slow concurrency -> eight tasks x two full native episodes plus MP4 decode and clean guard release -> formal35x20. No automatic retry; failures remain recorded. Launch alone is not successful evaluation.
+
+Native camera binary and its ABI receipt use relative links into external/native_camera_build. Each target builds its own ABI-matched binary there; no absolute .50 binary path is carried to .100.
