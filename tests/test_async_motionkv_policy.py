@@ -146,6 +146,66 @@ class AsyncPolicyTests(unittest.TestCase):
                 schedule.poll(packet(20))
         finally:self.assertTrue(schedule.close())
 
+    def test_episode_drain_cancels_pending_and_waits_for_actual_slow_completion(self):
+        started,release,drained=threading.Event(),threading.Event(),threading.Event()
+        built=[];receipt={};errors=[]
+        def build(p):
+            built.append(p['action_index'])
+            if p['action_index']==16:
+                started.set()
+                if not release.wait(2):raise TimeoutError('test release')
+            return value(p)
+        policy=FakePolicy(build)
+        def drain():
+            try:receipt.update(policy.drain_episode(timeout=1.))
+            except Exception as exc:errors.append(exc)
+            finally:drained.set()
+        try:
+            policy.sample(packet(0,prefix=0));policy.sample(packet(16));self.assertTrue(started.wait(1))
+            policy._async_world.request(packet(20))
+            thread=threading.Thread(target=drain);thread.start()
+            self.assertFalse(drained.wait(.03))
+            release.set();self.assertTrue(drained.wait(1));thread.join()
+            self.assertFalse(errors)
+            self.assertEqual(built,[0,16])
+            self.assertTrue(receipt['cancelled_pending_slow']);self.assertTrue(receipt['waited_active_slow'])
+            self.assertTrue(receipt['slow_quiescent']);self.assertIsNone(policy.bridge)
+            self.assertIsNone(policy._async_world.current)
+            policy.sample(packet(0,timestamp=100.,prefix=0))
+            self.assertEqual(policy.bridge_sim_time,100.)
+        finally:release.set();policy.close()
+
+    def test_episode_drain_timeout_does_not_claim_quiescence_or_reset_active(self):
+        started,release=threading.Event(),threading.Event()
+        def build(p):
+            if p['action_index']==16:started.set();release.wait(2)
+            return value(p)
+        policy=FakePolicy(build)
+        try:
+            policy.sample(packet(0,prefix=0));policy.sample(packet(16));self.assertTrue(started.wait(1))
+            generation=policy._async_world.worker.generation
+            with self.assertRaisesRegex(TimeoutError,'did not drain'):
+                policy.drain_episode(timeout=.01)
+            self.assertEqual(policy._async_world.worker.generation,generation)
+            self.assertIsNotNone(policy._async_world.worker.active)
+            release.set();policy.drain_episode(timeout=1.)
+        finally:release.set();policy.close()
+
+    def test_episode_drain_preserves_producer_error(self):
+        started,release=threading.Event(),threading.Event()
+        def build(p):
+            if p['action_index']==16:
+                started.set();release.wait(2);raise ValueError('intentional drain failure')
+            return value(p)
+        policy=FakePolicy(build)
+        try:
+            policy.sample(packet(0,prefix=0));policy.sample(packet(16));self.assertTrue(started.wait(1))
+            release.set()
+            with self.assertRaisesRegex(RuntimeError,'world producer failed'):
+                policy.drain_episode(timeout=1.)
+            self.assertIsNotNone(policy._async_world.worker.error)
+        finally:release.set();policy.close()
+
     def test_v3_exact_clock_and_previous_plan_inputs(self):
         p=packet(0,prefix=0);p['_rtc_action_target_offsets']-=.03
         offsets,previous,valid=validate_v3_packet_context(p)

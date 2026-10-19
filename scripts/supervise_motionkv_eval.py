@@ -11,7 +11,8 @@ import subprocess
 import time
 import traceback
 
-from supervise_motionkv_training import (atomic_json, driver_evidence, driver_identity,
+from eval_kernel_log import driver_evidence
+from supervise_motionkv_training import (atomic_json, driver_identity,
     file_digest, finish_device_guard, gpu_preflight, inside_ssd, load_device_guard,
     register_run_processes, source_files_and_hash, utc, verify_ssd)
 
@@ -70,15 +71,16 @@ def environment(run):
         TORCH_EXTENSIONS_DIR=str(cache / 'torch_extensions'), CUDA_CACHE_PATH=str(cache / 'cuda'),
         TORCHINDUCTOR_CACHE_DIR=str(cache / 'inductor'), TRITON_CACHE_DIR=str(cache / 'triton'),
         OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2', NUMEXPR_NUM_THREADS='2',
-        PYTHONUNBUFFERED='1', TOKENIZERS_PARALLELISM='false', WANDB_MODE='disabled',
+        PYTHONUNBUFFERED='1', PYTHONNOUSERSITE='1', TOKENIZERS_PARALLELISM='false', WANDB_MODE='disabled',
         CUDA_VISIBLE_DEVICES='', WAM_TRAINING_RUN_DIR=str(run),
         PYTHONPATH=str(ROOT / 'src') + ':' + str(ROOT / 'external/flash_attn_runtime'),
         VK_ICD_FILENAMES=str(ROOT / 'external/vulkan-icd/nvidia_icd.json'),
         SAPIEN_VULKAN_LIBRARY_PATH=str(ROOT / 'external/vulkan-conda/lib/libvulkan.so.1'),
         __EGL_VENDOR_LIBRARY_FILENAMES='/usr/share/glvnd/egl_vendor.d/10_nvidia.json', SAPIEN_RENDER='egl')
     lib = subprocess.check_output([str(ROOT / 'external/robotwin/bin/python'), '-c',
-        'import importlib.util,pathlib; print(pathlib.Path(importlib.util.find_spec("sapien").origin).parent.parent/"sapien.libs")'], text=True).strip()
+        'import importlib.util,pathlib; print(pathlib.Path(importlib.util.find_spec("sapien").origin).parent.parent/"sapien.libs")'], text=True, env=env).strip()
     env['LD_LIBRARY_PATH'] = lib + ':' + env.get('LD_LIBRARY_PATH', '')
+    env['PATH'] = str(ROOT / 'external/bin') + ':' + env.get('PATH', '')
     for key in ('TMPDIR', 'XDG_CACHE_HOME', 'HF_HOME', 'TORCH_HOME', 'TORCH_EXTENSIONS_DIR',
                 'CUDA_CACHE_PATH', 'TORCHINDUCTOR_CACHE_DIR', 'TRITON_CACHE_DIR'):
         Path(env[key]).mkdir(parents=True, exist_ok=True)

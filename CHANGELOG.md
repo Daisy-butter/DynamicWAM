@@ -1,3 +1,7 @@
+## 2026-10-19 — isolated Stage3 step20000 deployment
+
+Preserve .50 training. Normalize before BF16, strictly load source-time modules, drain slow work at episode boundaries, and clean failed worker startup. Seal actual DOMINO source and frozen-scene compatibility, migrate a matching20k deployment to .100, and gate35x20 with local Graph/concurrency and full-episode smoke. See docs/route1_stage3_20k_deployment_20261019.md.
+
 ## 2026-10-16: source-plan retention and actual GPU acceptance
 
 Restored complete native source proposal, explicit action feedback and source actor retention. Passed guarded8-rank warmup/joint smoke,20actual graph cases/concurrent slow and one full1xdevelopment episode (task failure preserved). Fixed deployment all-empty BF16 SDPA NaN without changing nonempty attention semantics. See docs/route1_information_retention_v32_20261016.md; no formal-training/performance claim.

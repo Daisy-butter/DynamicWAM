@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -18,6 +19,21 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from check_native_fast_graph import tensor_fingerprint
+
+
+def input_identity(path):
+    path = Path(path).resolve(strict=True)
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+            digest.update(block)
+    return dict(path=str(path), bytes=path.stat().st_size, sha256=digest.hexdigest())
+
+
+def graph_input_bindings(checkpoint, config):
+    from supervise_motionkv_training import source_files_and_hash
+    return dict(checkpoint=input_identity(checkpoint), config=input_identity(config),
+        source_sha256=source_files_and_hash(ROOT)[1])
 
 
 def parse_args():
@@ -178,7 +194,11 @@ def main():
     policy = MultiratePolicy(args.deploy_config, args.checkpoint, project_root=args.project_root,
         scheduling="controlled_ratio", native_cuda_graph=False,
         allow_zero_prefix_ablation=True)
-    report = dict(kind="motionkv_rtc_native_graph", checkpoint=str(Path(args.checkpoint).resolve()),
+    bindings = graph_input_bindings(args.checkpoint, args.deploy_config)
+    report = dict(kind="motionkv_rtc_native_graph", checkpoint=bindings['checkpoint']['path'],
+        config=bindings['config']['path'], checkpoint_sha256=bindings['checkpoint']['sha256'],
+        config_sha256=bindings['config']['sha256'], source_sha256=bindings['source_sha256'],
+        input_bindings=bindings, inputs_unchanged=False,
         packet=str(Path(args.packet).resolve()), seed=args.seed, cases=[], passed=False,
         limitations=["sampler only: excludes preprocessing, slow refresh and physical execution",
                      "queue adapter must separately establish asynchronous train/deploy timing parity",
@@ -436,10 +456,21 @@ def main():
         if graph is not None:
             graph.invalidate()
         policy.close()
+        binding_error = None
+        try:
+            if graph_input_bindings(args.checkpoint, args.deploy_config) != bindings:
+                raise RuntimeError('checkpoint, deployment config or source changed during graph test')
+            report['inputs_unchanged'] = True
+        except Exception as exc:
+            binding_error = exc
+            report['passed'] = False
+            report['input_validation_error'] = f'{type(exc).__name__}: {exc}'
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        if binding_error is not None:
+            raise RuntimeError('graph input provenance validation failed') from binding_error
 
 
 if __name__ == "__main__":

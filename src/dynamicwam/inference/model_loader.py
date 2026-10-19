@@ -106,6 +106,14 @@ def _select_keys(config: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any
     return {key: config.get(key) for key in keys}
 
 
+def _source_time_conditioning(action_config: dict[str, Any]) -> bool:
+    """The checkpoint owns this optional trained encoder, never a runtime guess."""
+    enabled = action_config.get("source_physical_time_conditioning", False)
+    if type(enabled) is not bool:
+        raise TypeError("checkpoint source_physical_time_conditioning must be a bool")
+    return enabled
+
+
 def _validate_model_config(
     runtime_config: dict[str, Any],
     checkpoint_config: dict[str, Any],
@@ -124,6 +132,12 @@ def _validate_model_config(
         },
         "checkpoint model",
     )
+    # Legacy deployment profiles specify the six native Action dimensions.
+    # New backbones additionally declare their trained source-time encoder;
+    # construct it from that strict bool, while comparing every native field.
+    checkpoint_action = dict(checkpoint_model.get("action_expert") or {})
+    _source_time_conditioning(checkpoint_action)
+    checkpoint_action.pop("source_physical_time_conditioning", None)
     expected = {
         "compact_wan": _select_keys(
             expected_model["compact_wan"],
@@ -139,7 +153,7 @@ def _validate_model_config(
             checkpoint_model.get("compact_wan") or {},
             COMPACT_WAN_CHECKPOINT_KEYS,
         ),
-        "action_expert": checkpoint_model.get("action_expert"),
+        "action_expert": checkpoint_action,
     }
     mismatches = [
         f"{key}: expected {expected[key]!r}, got {actual[key]!r}"
@@ -257,6 +271,9 @@ def _build_model(
         ae_ffn_dim=int(action["ffn_dim"]),
         ae_num_layers=int(action["num_layers"]),
         wan_frozen=True,
+        source_physical_time_conditioning=_source_time_conditioning(
+            checkpoint_config["model"]["action_expert"]
+        ),
         motion_history_count=int(absolute_motion["history_count"]),
         motion_feature_mean=tuple(
             float(value) for value in absolute_motion["feature_mean"]

@@ -146,10 +146,16 @@ class ProcessInferenceWorker:
         self.intervals: list[tuple[float, float]] = []
         self.startup_metadata = {}
         self._process.start()
-        status = self._wait_until_ready(900.0)
-        if status:
-            self._process.join(timeout=5.0)
-            raise RuntimeError(status)
+        try:
+            status = self._wait_until_ready(900.0)
+            if status:
+                raise RuntimeError(status)
+        except BaseException:
+            # A constructor exception otherwise loses the only process owner:
+            # evaluator assignment has not completed, so its finally sees None.
+            # Close only this spawned child before propagating startup failure.
+            self.close()
+            raise
 
     @property
     def busy(self) -> bool:
@@ -195,7 +201,7 @@ class ProcessInferenceWorker:
                 raise RuntimeError("inference worker exited while a request was in flight")
             return None
         self._busy = False
-        if not item.get('prepared_instruction'):
+        if not item.get('prepared_instruction') and not item.get('finished_episode'):
             self.calls += 1
             self.intervals.append((item["started"], item["finished"]))
         error = item["error"]
@@ -215,6 +221,30 @@ class ProcessInferenceWorker:
                 raise TimeoutError('instruction preparation timed out')
             time.sleep(.01)
 
+    def finish_episode(self, timeout_s: float = 120.0):
+        """Wait for all policy work before the cohort releases the next setup.
+
+        The caller first drains the ordinary fast request. A fast result alone
+        does not imply that its asynchronous Video producer has finished.
+        """
+        import math
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("episode drain timeout must be finite and positive")
+        if self.busy:
+            raise RuntimeError("drain the fast request before finishing its episode")
+        request_id = self.submit({'_finish_episode': True,
+                                  '_episode_drain_timeout_s': float(timeout_s)})
+        deadline = time.monotonic() + timeout_s
+        while True:
+            item = self.poll()
+            if item is not None:
+                if item.get('request_id') != request_id or item.get('finished_episode') is not True:
+                    raise RuntimeError("invalid episode drain acknowledgement")
+                return item
+            if time.monotonic() >= deadline:
+                raise TimeoutError('terminal episode slow producer did not drain')
+            time.sleep(.002)
+
     def close(self) -> None:
         if self._process.is_alive():
             self._requests.put(None)
@@ -225,6 +255,8 @@ class ProcessInferenceWorker:
         if self._process.is_alive():
             self._process.kill()
             self._process.join(timeout=5.0)
+        if self._process.is_alive():
+            raise RuntimeError("owned inference process did not exit after termination")
 
 
 def _die_when_parent_dies() -> None:
@@ -322,8 +354,15 @@ def _serve_policy(
             return
         request_id, packet = item
         started = time.perf_counter()
+        episode_drain = None
         try:
-            actions = np.asarray(infer(packet), dtype=np.float64).copy()
+            if packet.get('_finish_episode') is True:
+                if policy_mode != 'motionkv_rtc':
+                    raise RuntimeError('episode drain requires MotionKV RTC policy')
+                episode_drain = _drain_policy_episode(policy, packet['_episode_drain_timeout_s'])
+                actions = np.empty((0, 14), np.float64)
+            else:
+                actions = np.asarray(infer(packet), dtype=np.float64).copy()
             error = ""
         except BaseException as exc:
             traceback.print_exc()
@@ -337,9 +376,22 @@ def _serve_policy(
                 "started": started,
                 "finished": time.perf_counter(),
                 "prepared_instruction": '_prepare_instruction' in packet,
+                "finished_episode": packet.get('_finish_episode') is True,
+                "episode_drain": episode_drain,
                 "policy_timing": dict(getattr(policy, 'last_policy_timing', {})),
             }
         )
+
+
+def _drain_policy_episode(policy, timeout_s: float):
+    """An explicit producer acknowledgement; never infer idleness from fast IO."""
+    import math
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("episode drain timeout must be finite and positive")
+    drain = getattr(policy, 'drain_episode', None)
+    if drain is None:
+        raise RuntimeError('MotionKV policy does not implement episode draining')
+    return drain(timeout=float(timeout_s))
 
 
 def _copy_packet(packet: dict[str, Any]) -> dict[str, Any]:

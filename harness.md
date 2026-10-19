@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.8 · 2026-10-16 · 目标投稿：CVPR 2027
+版本：v1.9 · 2026-10-19 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -242,3 +242,12 @@ v1.6 补充（本轮历史能力审计）：可选 source_plan_completion=same_n
 The user requests an actual recipe/initialization audit and repair of Stage3 OOM. Preserve completed Stage2 (8x16x1=128,80k) and all failed evidence. New Stage3 uses 8 GPUs x microbatch8 x accumulation2 =128, retains objectives/LRs/40k and full data, and initializes only the audited formal Stage2 step80000. Four-update diagnostic smoke must exercise this exact microbatch/accumulation and formal data/initialization, including backward, Adam state creation and strict export reload; it may not initialize formal training. Same effective batch does not promise bitwise-identical stochastic training. Fresh health/guard/source/config identities apply to each run; old failed run may release resources cleanly but is not successful training. No driver recovery, allocator experiment, automatic retry or recurring health watcher.
 
 2026-10-18 correction: diagnostic warmup must be below its four-step budget; attempt01 failed before training with warmup1000 and closed cleanly. New explicit corrected attempt02 uses diagnostic warmup0/formal1000; status is /SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/stage3_memory_20261018_attempt02/status.json. Preserve attempt01 evidence.
+
+
+## 21. Stage3 step20000 independent deployment on .100 (2026-10-19)
+
+The user authorizes inference-only improvements in a separate .50 worktree, Git publication to Daisy-butter including the exact DOMINO source, migration of the completed Stage3 step20000 export and matching evaluation assets, and 8-GPU 35x20 evaluation on 10.12.208.100. The active .50 Stage3 training source, configuration, processes and shared runtime dependencies must remain untouched; no GPU evaluation or GPU probe on .50. Retain its original completed exports; immutable hardlink snapshots with hashes are permitted.
+
+This evaluation uses joint-v3, fixed H4/R4/K10, 0.16-second action grid, refresh16, maximum age31 and 1x continuous wall-clock simulation. Normalize raw state/prefix/plan in FP32 before model precision conversion. Bind the complete 20k source-time architecture with strict full/fast reload and matching normalization metadata; never substitute the old step12000 or official full backbone. Preserve the frozen35x20 scene bytes and all35 tasks, native eval_result reports and actual MP4s. Cross-host model/path changes require explicit scene compatibility evidence instead of rewriting the old manifest.
+
+Large files may be on verified SSD or HDD under wuruihan on .100 per the latest explicit instruction; this deployment selects SSD after capacity verification. Secrets are entered through a local masked prompt only and are excluded from Git, logs and receipts. User-approved kernel-log helper is restricted to fixed read-only dmesg requests, peer UID access and a finite lifetime; stop it after the evaluation terminates. No GPU reset, driver changes or recovery. Fresh local health, actual Graph/concurrency checks, 8-task x2 complete-episode smoke, MP4 decode and clean worker/guard exit gate the one-shot formal suite; no automatic retry or recurring inspection.

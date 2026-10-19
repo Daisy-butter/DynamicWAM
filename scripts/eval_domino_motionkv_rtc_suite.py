@@ -126,6 +126,7 @@ def parse():
     p.add_argument("--checkpoint-audit", type=Path)
     p.add_argument("--timing-contract", type=Path)
     p.add_argument("--replay-from", type=Path)
+    p.add_argument("--scene-compatibility", type=Path)
     p.add_argument("--result-stamp")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--probe-action-limit", type=int)
@@ -193,6 +194,9 @@ def main():
         if read(args.replay_from / "suite_completed.json").get("complete") is not True:
             raise ValueError("scene preparation is incomplete")
         frozen_sha = sha(args.replay_from / "frozen_manifest.json")
+        if args.scene_compatibility:
+            from scene_compatibility import validate_receipt
+            validate_receipt(args.scene_compatibility, repo=ROOT, config=args.config, frozen_scenes=args.replay_from)
     if replay_scope is not None:
         from dynamicwam.runtime.domino_continuous.development_replay import validate_requested_development_scenes
         validate_requested_development_scenes(replay_scope,args.replay_from,tasks,args.episodes)
@@ -218,6 +222,7 @@ def main():
         source_digest=source["source_digest"], checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
         checkpoint_sha256=checkpoint_sha, frozen_manifest_sha256=frozen_sha, replay_from=str(args.replay_from.resolve()) if args.replay_from else None,
         timing_contract_sha256=sha(args.timing_contract) if args.timing_contract else None,
+        scene_compatibility_sha256=sha(args.scene_compatibility) if args.scene_compatibility else None,
         action_interval_s=args.action_interval_s, history_frame_period_s=args.history_frame_period_s,
         simulation_rate=args.simulation_rate, max_backlog_s=args.max_backlog_s, infer_clock_tolerance_s=args.infer_clock_tolerance_s,
         probe_action_limit=args.probe_action_limit, shared_tmpdir=str(shared_tmp), virtual_delay=False,
@@ -294,6 +299,8 @@ def main():
                         command.extend(["--" + key.replace("_", "-"), str(getattr(args, key).resolve())])
                 if args.resume: command.append("--resume")
                 if args.joint_v3: command.append("--joint-v3")
+                if args.scene_compatibility:
+                    command.extend(["--scene-compatibility", str(args.scene_compatibility.resolve())])
                 if replay_scope is not None:
                     command.extend(["--development-replay-dir",str(args.development_replay_dir.resolve()),
                         "--development-scene-allowlist",str(args.development_scene_allowlist.resolve()),

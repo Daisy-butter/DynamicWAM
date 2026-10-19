@@ -137,6 +137,43 @@ class MotionKVPolicy(MultiratePolicy):
         self._queries = 0
         self.last_policy_timing = {}
 
+    def drain_episode(self, timeout=120.0):
+        """Quiesce owned slow work before the cohort enters scene teardown.
+
+        Call only after the episode stopped and its fast request was collected.
+        A generation reset alone discards a result but does not stop its CUDA
+        kernels. The producer returns only after its own completion event, so
+        waiting for ``active`` also drains those kernels without a device-wide
+        synchronize or interference with another process.
+        """
+        timeout = float(timeout)
+        if not np.isfinite(timeout) or timeout <= 0:
+            raise ValueError('episode drain timeout must be positive and finite')
+        started = time.monotonic()
+        worker = self._async_world.worker if self._async_world is not None else self.worker
+        cancelled_pending = False
+        waited_active = False
+        completed = self.actual_slow_builds
+        if worker is not None:
+            deadline = started + timeout
+            with worker.condition:
+                cancelled_pending = worker.pending is not None
+                worker.pending = None
+                waited_active = worker.active is not None
+                worker.condition.notify_all()
+                while worker.active is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('episode slow producer did not drain; scene teardown is unsafe')
+                    worker.condition.wait(remaining)
+                if worker.error is not None:
+                    raise RuntimeError('world producer failed during episode drain') from worker.error
+                completed = worker.published
+        self.reset()
+        return dict(cancelled_pending_slow=cancelled_pending, waited_active_slow=waited_active,
+            completed_slow_builds=int(completed), wait_ms=(time.monotonic()-started)*1000,
+            slow_quiescent=True)
+
     @property
     def actual_slow_builds(self):
         if self._async_world is not None:

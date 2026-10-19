@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-10-19T11:44:21.505584+00:00",
+  "purpose": "Minimal Route1 Stage3 step20000 35x20 continuous joint-v3 deployment; inventory is not a launch approval",
+  "source_host": "10.12.208.50",
+  "target_host": "10.12.208.100",
+  "destination_policy": "All large artifacts, caches, temporary files and outputs under a verified SSD or user-approved HDD wuruihan directory; never home. Target mount not assumed.",
+  "code": {
+    "dynamicwam_remote": "git@github.com:Daisy-butter/DynamicWAM.git",
+    "deployment_commit": "Bind after final commit; candidate still under implementation",
+    "domino_manifest": "manifests/external_assets_stage3_20k_20261019.json",
+    "domino_revision": "6c5a00db1bf9fbe496b19876f84d0189a7aaf86f",
+    "domino_patch": "third_party/domino/route1_continuous_20261019.patch",
+    "domino_patch_sha256": "0b455a087b4556587743f35fd5023e9ae48881dd2f918e0309d086535ca464ee",
+    "continuous_runtime": "src/dynamicwam/runtime/domino_continuous",
+    "native_reports": "eval_result/<task>/<policy>/<task_config>/<checkpoint_stem>/<stamp>/episodeN.mp4 and native reports"
+  },
+  "checkpoint_exports": [
+    {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_v33_stage3_mb8_20261018/exports/multirate_step_20000.pt",
+      "destination_relative": "checkpoints/stage3_step20000/multirate_step_20000.pt",
+      "bytes": 2009401904,
+      "required_validation": "Parent controller must bind SHA256, global_step=20000, strict full/fast equality and exported architecture/normalization before launch"
+    },
+    {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/joint_motionkv_v33_stage3_mb8_20261018/exports/multirate_fast_step_20000.pt",
+      "destination_relative": "checkpoints/stage3_step20000/multirate_fast_step_20000.pt",
+      "bytes": 310873771,
+      "required_validation": "Parent controller must bind SHA256, global_step=20000, strict full/fast equality and exported architecture/normalization before launch"
+    }
+  ],
+  "generated_artifacts": [
+    {
+      "name": "checkpoint-bound absolute-motion backbone export",
+      "note": "Derive with extract_multirate_backbone from the selected full multirate export; bind deployment profile to it. No official-full or historical step12000 initialization substitution."
+    },
+    {
+      "name": "checkpoint audit, timing contract, deployment profile and provenance",
+      "note": "Regenerate path bindings on target without modifying original source receipts; preserve source and target hashes."
+    }
+  ],
+  "wan": {
+    "source_root": "/SSD_DISK/users/wuruihan/DynamicWAM/external/Wan2.2-TI2V-5B",
+    "destination_relative": "external/Wan2.2-TI2V-5B",
+    "files": [
+      {
+        "path": "config.json",
+        "bytes": 251,
+        "sha256": "d1fea36899d00c2501b836c13ad65af56e2f9529ba622e50886d3f5c3e6c02bc"
+      },
+      {
+        "path": "Wan2.2_VAE.pth",
+        "bytes": 2818839170,
+        "sha256": "20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"
+      },
+      {
+        "path": "models_t5_umt5-xxl-enc-bf16.pth",
+        "bytes": 11361920418,
+        "sha256": "7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d"
+      },
+      {
+        "path": "google/umt5-xxl/tokenizer_config.json",
+        "bytes": 61728,
+        "sha256": "ed9a3a8b0faa71a70a32847e0435fe036e6e112d4df4edb7bb48a921e344dc05"
+      },
+      {
+        "path": "google/umt5-xxl/special_tokens_map.json",
+        "bytes": 6623,
+        "sha256": "7b8a9f5040adb67b5805abdfd42c1f8d0f3d0e711f10726580eb3789cd0ad61d"
+      },
+      {
+        "path": "google/umt5-xxl/spiece.model",
+        "bytes": 4548313,
+        "sha256": "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458"
+      },
+      {
+        "path": "google/umt5-xxl/tokenizer.json",
+        "bytes": 16837417,
+        "sha256": "6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b"
+      }
+    ],
+    "exclude": [
+      "diffusion_pytorch_model-*.safetensors",
+      "diffusion_pytorch_model.safetensors.index.json"
+    ],
+    "note": "Only VAE/T5/tokenizer/config needed; the current joint Video weights are in the 20k export."
+  },
+  "frozen_scenes": {
+    "source_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/evaluation/motionkv_rtc_20261014/formal35x20_prepare",
+    "destination_relative": "data/evaluation/frozen35x20_20261014",
+    "frozen_manifest_sha256": "cff71ba1b8bf17c58082e615016e20775077787b455746e87261eaaaf60b6fb2",
+    "tasks": 35,
+    "episodes_per_task": 20,
+    "verified_hash_pairs": 700,
+    "hash_mismatches": 0,
+    "manifest_and_motion_bytes": 9182883,
+    "required_patterns": [
+      "frozen_manifest.json",
+      "*/episode_*/manifest.json",
+      "*/episode_*/expert_motion.pkl"
+    ],
+    "recommended_receipt_patterns": [
+      "*/episode_*/prepared.json",
+      "summary.json",
+      "suite_started.json",
+      "*/source_manifest.json"
+    ],
+    "note": "Includes place_object_basket and place_container_plate. Preserve all bytes/seeds; no scene regeneration or relabeling old identities."
+  },
+  "assets": {
+    "source_root": "/SSD_DISK/users/wuruihan/relocated/DOMINO_assets",
+    "destination_relative": "external/robotwin-assets",
+    "approx_disk_gib": 16,
+    "directories": [
+      "background_texture",
+      "embodiments",
+      "objects"
+    ],
+    "archive_identity_records": [
+      {
+        "path": "background_texture.zip",
+        "sha256": "54ede0fb5b783e0faa2bc98720d3affd6ca3bb9280b225b48c1aafaf31473070",
+        "size_bytes": 10970687027,
+        "extracts_to": "background_texture",
+        "tree_sha256": "51580363ca7432ff191dac8ccd8358c77814e73fd9fd417c9181f8470a9f207a",
+        "file_count": 11000,
+        "extracted_size_bytes": 11025457080
+      },
+      {
+        "path": "embodiments.zip",
+        "sha256": "6b87d7d55e106d8ff25917e0538eb1e177fc549280e8a742a8cec3cb9f953fc6",
+        "size_bytes": 219859313,
+        "extracts_to": "embodiments",
+        "tree_sha256": "5eba4076ce908d5601b431795c001b9e7a804a9ed79dd44835d50e58ec4a7d60",
+        "file_count": 229,
+        "extracted_size_bytes": 943584504
+      },
+      {
+        "path": "objects.zip",
+        "sha256": "6aa56b3cf1e1064f7c809308144da36b00815f8b137fef2d7e4de856f8becf27",
+        "size_bytes": 3737778549,
+        "extracts_to": "objects",
+        "tree_sha256": "52915ccc33aaf4a6ffa81db181b8c508fb4ae51b91648c18b5b750175b5a0bce",
+        "file_count": 9368,
+        "extracted_size_bytes": 4636111726
+      }
+    ],
+    "note": "DOMINO/assets contains absolute symlinks to this directory. Transfer real content and create target-relative links; do not copy dangling source-host symlinks."
+  },
+  "runtime_choices": {
+    "preferred": "Reuse target Python3.10 environment only after exact package/source/ABI audit and GPU smoke; rebuild required extensions against target runtime. Do not overwrite a shared target environment.",
+    "reference_base_environment": {
+      "source": "/SSD_DISK/users/wuruihan/anaconda3/envs/domino",
+      "approx_disk_gib": 8.2
+    },
+    "reference_overlay": {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/external/robotwin",
+      "approx_disk_gib": 1.1,
+      "warning": "venv uses system site packages and old absolute Python/.pth paths; not independently portable."
+    },
+    "packages": {
+      "python": "3.10.x; source3.10.20",
+      "torch": "2.4.1+cu121",
+      "numpy": "1.26.4",
+      "sapien": "3.0.0b1",
+      "mplib": "0.2.1",
+      "flash-attn": "2.7.4.post1"
+    },
+    "patched_runtime_files": [
+      {
+        "distribution": "sapien",
+        "version": "3.0.0b1",
+        "wheel_filename": "sapien-3.0.0b1-cp310-cp310-manylinux2014_x86_64.whl",
+        "wheel_sha256": "9763215d52374e48db16d8c2e89fb385a5625690c0c88cf2c636c1abe99aef6c",
+        "relative_path": "sapien/wrapper/urdf_loader.py",
+        "pristine_sha256": "eabba86fe7d244ce8d469010f96914010a8883ea5835c86a8bc58be310510683",
+        "evaluated_sha256": "13aad693f05663472a4f1b59ea34fb313db6ee2f1416fce19ad4830cfa588059",
+        "replacements": [
+          {
+            "before": "with open(urdf_file, \"r\") as f:",
+            "after": "with open(urdf_file, \"r\", encoding=\"utf-8\") as f:"
+          },
+          {
+            "before": "with open(srdf_file, \"r\") as f:",
+            "after": "with open(srdf_file, \"r\", encoding=\"utf-8\") as f:"
+          }
+        ]
+      },
+      {
+        "distribution": "mplib",
+        "version": "0.2.1",
+        "wheel_filename": "mplib-0.2.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "wheel_sha256": "87cd73ce6974bbb4035ddf941b4d05b3eafb071faf217c860f262be65581cbb4",
+        "relative_path": "mplib/planner.py",
+        "pristine_sha256": "785f77233baf4159f3327b664fae2507572c189223a6075f42546c1133ddfa0e",
+        "evaluated_sha256": "23c51d083ce1892e5fbd0e1473df432d1c33609e50bfac8bdf9e8bfcf6c2cf3c",
+        "replacements": [
+          {
+            "before": "if np.linalg.norm(delta_twist) < 1e-4 or collide or not within_joint_limit:",
+            "after": "if np.linalg.norm(delta_twist) < 1e-4 or not within_joint_limit:"
+          }
+        ]
+      }
+    ]
+  },
+  "native_dependencies": [
+    {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/external/curobo",
+      "destination_relative": "external/curobo",
+      "revision": "d64c4b005459db10c5dd867d8b30a87d5bda9bdb",
+      "approx_disk_mib": 239,
+      "note": "Source clean; compiled kernels must match target Torch/CUDA ABI and GPU architecture."
+    },
+    {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/external/vulkan-conda",
+      "destination_relative": "external/vulkan-conda",
+      "approx_disk_mib": 46
+    },
+    {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/external/vulkan-icd",
+      "destination_relative": "external/vulkan-icd",
+      "note": "Validate target host libGLX_nvidia.so.0 and EGL vendor path; do not copy driver libraries."
+    },
+    {
+      "source": "/SSD_DISK/users/wuruihan/DynamicWAM/external/native_camera_deps",
+      "destination_relative": "external/native_camera_deps",
+      "approx_disk_mib": 189,
+      "note": "Build toolchain only; no sudo/system install."
+    }
+  ],
+  "native_camera": {
+    "source_binary": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/joint-motionkv-20261015/src/dynamicwam/runtime/domino_continuous/_sapien_color_reader.cpython-310-x86_64-linux-gnu.so",
+    "source_binary_sha256": "2e416b1fd7444ee7435807ebd41f6789a75338d557927bac4aa7505eace884ee",
+    "source_bytes": 2455944,
+    "build_script": "src/dynamicwam/runtime/domino_continuous/native_camera/build_color_reader.py",
+    "required_abi": {
+      "python": "cp310-x86_64-linux-gnu",
+      "cxx11_abi": 0,
+      "pybind_internals": "__pybind11_internals_v4_gcc_libstdcpp_cxxabi1014__"
+    },
+    "note": "Ignored binary is absent from Git checkout; old RPATH points to source home environment. Prefer target rebuild, CPU cast/import check with SAPIEN discovery disabled, then guarded same-frame RGB equality/physics-overlap smoke."
+  },
+  "normalization": {
+    "source_of_truth": "Selected checkpoint config.action_normalization and module motion metadata, audited against formal training receipts",
+    "small_optional_audit_files": [
+      "/SSD_DISK/users/wuruihan/DynamicWAM/data/packed/domino_absolute_motion_v2/action_stats.json",
+      "/SSD_DISK/users/wuruihan/DynamicWAM/data/packed/domino_absolute_motion_v2/motion_stats.json"
+    ],
+    "note": "Do not substitute later train-only-fit statistics or normalize BF16 before FP32."
+  },
+  "do_not_transfer": [
+    "raw/converted training episodes",
+    "packed training shards",
+    "training VAE caches",
+    "other optimizer states/checkpoints",
+    "historical eval videos/results",
+    "Wan teacher DiT shards",
+    "credentials/private keys/auth tokens"
+  ],
+  "launch_gates": [
+    "Fresh target storage/runtime/GPU identity and all-adapter guard before telemetry",
+    "Checkpoint-bound160ms joint-v3 profile; simulation_rate1",
+    "CPU source and temporal/normalization tests",
+    "Actual target GPU strict reload/graph and representative full native-limit continuous smoke with MP4 decode",
+    "Fresh eight-GPU suite smoke before full35x20; no automatic retry or driver recovery"
+  ],
+  "training_source_modified": false
+}

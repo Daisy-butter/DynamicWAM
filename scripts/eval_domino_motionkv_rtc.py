@@ -73,7 +73,8 @@ def provenance(config, simulation_rate=1., joint_v3=False):
                  "scripts/device_lifetime_guard.py",
                  "src/dynamicwam/runtime/domino_continuous/motionkv_policy.py",
                  "src/dynamicwam/runtime/domino_continuous/development_replay.py",
-                 "src/dynamicwam/runtime/domino_continuous/worker.py"):
+                 "src/dynamicwam/runtime/domino_continuous/worker.py",
+                 "scripts/scene_compatibility.py"):
         path = ROOT / name
         value["source_sha256"][name] = sha(path)
     for path in (ROOT / "src/dynamicwam/runtime/domino_continuous").glob("*rtc*.py"):
@@ -123,16 +124,23 @@ def validate_descriptor(item, task, episode, requested):
         raise ValueError("frozen scene task/index/seed chain mismatch")
 
 
-def load_frozen_task(run, task, episodes, seed, config_sha):
+def load_frozen_task(run, task, episodes, seed, config_sha, *, scene_compatibility=None, config_path=None):
     """Scene identity is independent of evaluated policy/checkpoint identity."""
     run = Path(run)
     suite = read(run / "suite_started.json")
     completed = read(run / "suite_completed.json")
     frozen = read(run / "frozen_manifest.json")
+    compatible_config = suite.get("config_sha256") == config_sha
+    if scene_compatibility is not None:
+        from scene_compatibility import validate_receipt
+        if config_path is None:
+            raise ValueError("scene compatibility requires the actual evaluation profile")
+        checked = validate_receipt(scene_compatibility, repo=ROOT, config=config_path, frozen_scenes=run)
+        compatible_config = checked["evaluation_config_sha256"] == config_sha
     if (suite.get("protocol") != PREPARE_PROTOCOL or completed.get("complete") is not True
             or frozen.get("complete") is not True or task not in suite["tasks"]
             or suite["seed"] != seed or suite["episodes_per_task"] < episodes
-            or suite["config_sha256"] != config_sha):
+            or not compatible_config):
         raise ValueError("reference is not a complete compatible frozen preparation suite")
     entries = [row for row in frozen["episodes"] if row["task"] == task]
     if len(entries) < episodes:
@@ -324,6 +332,7 @@ def parse():
     parser.add_argument("--checkpoint-audit", type=Path)
     parser.add_argument("--timing-contract", type=Path)
     parser.add_argument("--replay-from", type=Path)
+    parser.add_argument("--scene-compatibility", type=Path)
     parser.add_argument("--result-stamp")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cohort-dir", type=Path)
@@ -433,7 +442,8 @@ def main():
                 or not math.isclose(args.history_frame_period_s, expected["nominal_history_frame_interval_seconds"], abs_tol=1e-12)):
             raise ValueError("controller timing differs from the frozen audited training clock")
         timing_sha = sha(args.timing_contract)
-        references, frozen_sha = load_frozen_task(args.replay_from, args.task, args.episodes, args.seed, config_sha)
+        references, frozen_sha = load_frozen_task(args.replay_from, args.task, args.episodes, args.seed, config_sha,
+            scene_compatibility=args.scene_compatibility, config_path=args.config)
         if any(value in args.result_stamp for value in ("/", "\\")):
             raise ValueError("result stamp must be one directory name")
         native_dir = args.output_dir.resolve() / "eval_result" / args.task / POLICY_LABEL / benchmark["task_config"] / args.checkpoint.stem / args.result_stamp
@@ -441,6 +451,7 @@ def main():
     spec = dict(schema_version=1, protocol=PREPARE_PROTOCOL if args.prepare_only else protocol,
                 task=args.task, episodes=args.episodes, start_seed=args.seed, prepare_only=args.prepare_only,
                 config_sha256=config_sha, source_digest=source["source_digest"], code_root=str(ROOT),
+                scene_compatibility_sha256=sha(args.scene_compatibility) if args.scene_compatibility else None,
                 checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
                 checkpoint_sha256=checkpoint_sha, timing_contract_sha256=timing_sha,
                 frozen_manifest_sha256=frozen_sha, native_action_limit=native_limit, action_limit=action_limit,
@@ -592,6 +603,13 @@ def main():
                         raise RuntimeError("RTC rollout failed its protocol/clock gates")
                     report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
                     report["post_terminal_inference_drain_wall_s"] = drain_finished_episode(worker)
+                    # Fast idle is not slow idle in joint-v3. Quiesce the source
+                    # producer before any cohort member may initialize a scene.
+                    if args.joint_v3:
+                        drain_started = time.perf_counter()
+                        drain_ack = worker.finish_episode(timeout_s=120.)
+                        report["post_terminal_policy_drain_wall_s"] = time.perf_counter() - drain_started
+                        report["post_terminal_policy_drain"] = drain_ack["episode_drain"]
                     finished_barrier = cohort.wait(episode, "finished")
                     report["camera_equivalence"] = camera_equivalence
                     report["cohort_scheduling"] = dict(mode=COHORT_MODE, ready=ready_barrier, finished=finished_barrier,
@@ -603,6 +621,7 @@ def main():
                         "frozen_manifest_sha256": frozen_sha, "video_required": True, "probe_action_limit": args.probe_action_limit,
                         "worker_startup_metadata": worker.startup_metadata, "instruction_warmup": instruction_warmup,
                         "timing_contract_sha256": timing_sha,
+                        "scene_compatibility_sha256": sha(args.scene_compatibility) if args.scene_compatibility else None,
                         "native_result_dir": str(native_dir), "action_interval_s": args.action_interval_s,
                         "history_frame_period_s": args.history_frame_period_s})
                     video = session.head_video.finalize(native_dir / f"episode{episode}.mp4", episode_end_physics_s=session.physics_time())
