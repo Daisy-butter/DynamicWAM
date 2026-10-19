@@ -2,7 +2,7 @@
 
 The prior formal run stopped at POB episode0/origin84. Capture took371.900ms, leaving264.77ms until H4. Dispatch occurred before catch-up; the legacy submit_wall_s timestamp was after catch-up. Prior formal requests had dispatch-to-model-start up to139ms while median model compute remained near90ms. These observations motivate transport/service fixes; they do not prove a single exclusive root cause.
 
-- Use native held drive targets for bootstrap committed prefix. Keep measured qpos as proprioception and interpolation anchor.
+- Use native held drive targets for bootstrap committed prefix. Retain the native DOMINO drive-target model-state convention used in training; measured qpos remains the physical interpolation anchor and tracking diagnostic.
 - Anonymous shared request/result mailboxes eliminate Queue feeder serialization after dispatch. Full packet snapshots are unchanged, one request in flight, overflow rejected, stop never overwrites an outstanding request.
 - Fix child CPU pools at Torch1/1 and OpenCV1.
 - Distinct H4 phases replace refresh16/8 spacing, which aliased four peers per fast phase. Offsets precede each independent episode clock.
