@@ -19,6 +19,52 @@ except ImportError:  # Direct local CPU test execution.
     from camera_capture import AsyncCameraCapture, PendingCapture, _read_submitted_colors
 
 
+
+def completed_capture_timing(captured, *, owner_started, owner_consumed,
+                             video_done, history_done, owner_finished):
+    """Partition completed capture wall time without reading or changing pixels.
+
+    All timestamps are from the same process's monotonic perf_counter clock.
+    Reader dispatch includes metadata preparation and thread/GIL scheduling;
+    completion-to-consume includes Future publication and owner service. These
+    intervals alone cannot distinguish OS scheduling from GIL contention.
+    """
+    points = dict(capture_started=float(captured.capture_wall_perf_s),
+        render_submitted=float(captured.render_submitted_wall_perf_s),
+        readback_started=float(captured.readback_started_wall_perf_s),
+        readback_finished=float(captured.readback_finished_wall_perf_s),
+        owner_started=float(owner_started), capture_returned=float(captured.finished_wall_perf_s),
+        owner_consumed=float(owner_consumed), video_done=float(video_done),
+        history_done=float(history_done), owner_finished=float(owner_finished))
+    if any(not math.isfinite(value) for value in points.values()):
+        raise ValueError('capture timing requires finite monotonic timestamps')
+    order = ('capture_started', 'render_submitted', 'readback_started', 'readback_finished',
+             'capture_returned', 'owner_consumed', 'video_done', 'history_done', 'owner_finished')
+    if any(points[right] < points[left] for left,right in zip(order,order[1:])):
+        raise ValueError('capture timing timestamps moved backwards')
+    if not points['capture_started'] <= points['owner_started'] <= points['capture_returned']:
+        raise ValueError('capture owner interval is inconsistent')
+    ms = lambda start,end: 1000 * (points[end]-points[start])
+    parts = dict(render_submit_ms=ms('capture_started','render_submitted'),
+        render_to_readback_start_ms=ms('render_submitted','readback_started'),
+        native_readback_ms=ms('readback_started','readback_finished'),
+        readback_finished_to_owner_consumed_ms=ms('readback_finished','owner_consumed'),
+        video_append_ms=ms('owner_consumed','video_done'),
+        history_push_ms=ms('video_done','history_done'),
+        packet_and_flow_ms=ms('history_done','owner_finished'))
+    accounted = sum(parts.values())
+    total = ms('capture_started','owner_finished')
+    return dict(parts, camera_readback_seconds=dict(captured.camera_readback_seconds),
+        readback_finished_to_owner_start_ms=max(0.,ms('readback_finished','owner_started')),
+        owner_wait_for_readback_ms=max(0.,ms('owner_started','readback_finished')),
+        owner_consume_ms=ms('owner_started','owner_consumed'),
+        owner_finish_ms=ms('owner_started','owner_finished'),
+        completed_capture_wall_ms=total, accounted_capture_wall_ms=accounted,
+        unaccounted_capture_wall_ms=total-accounted,
+        timestamp_clock='process_monotonic_perf_counter', timestamps_s=points,
+        interval_semantics='render_and_readback_are_wall_intervals_not_gpu_kernel_durations')
+
+
 class SelectiveAsyncCameraCapture(AsyncCameraCapture):
     """Full frozen policy snapshots; head-only snapshots for motion history.
 

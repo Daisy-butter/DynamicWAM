@@ -468,16 +468,24 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                      actions_sha256=hashlib.sha256(actions.tobytes()).hexdigest(),
                      position_guard_clipped_coordinates=int(np.count_nonzero(actions != raw)),
                      policy_diagnostics=result.get("policy_timing", result.get("policy_diagnostics", result.get("metadata", {}))))
+            if "ipc_timing" in result:
+                r["ipc_timing"] = result["ipc_timing"]
             if reservation is None:
                 if joint_v3:
                     # Prime the source world under continuous hold. Do not
                     # execute predictions whose assumed times elapsed during
                     # bootstrap. A fresh observation replans while H4 hold rows
                     # execute on the now-established physical queue grid.
-                    hold = np.asarray(session.current_qpos(), dtype=np.float64)
+                    # A hold continues the native command, not measured qpos.
+                    # Tracking lag (especially a closing gripper) must not turn
+                    # an unchanged commitment into a different target prefix.
+                    hold = np.asarray(session.current_drive_targets(), dtype=np.float64)
                     if hold.shape != (14,) or not np.isfinite(hold).all():
-                        raise RuntimeError("invalid joint v3 bootstrap hold state")
-                    actions = np.repeat(hold[None], 16, axis=0)
+                        raise RuntimeError("invalid joint v3 bootstrap drive targets")
+                    held = np.repeat(hold[None], 16, axis=0)
+                    actions = guard_actions(held)
+                    r["bootstrap_hold_source"] = "native_drive_targets"
+                    r["bootstrap_hold_position_guard_clipped_coordinates"] = int(np.count_nonzero(actions != held))
                     r["bootstrap_actions_executed"] = False
                 queue.bootstrap(actions)
                 # Keep grid unset until the first track has been planned. All

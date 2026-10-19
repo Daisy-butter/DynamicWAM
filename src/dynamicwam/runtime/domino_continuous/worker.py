@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import pickle
+import struct
 import queue
 import threading
 import time
@@ -107,6 +109,109 @@ class InferenceWorker:
             )
 
 
+# The owner allows one outstanding request. Each direction therefore needs one
+# bounded shared snapshot and a tiny notification, not a Queue feeder thread.
+# The buffer is anonymous RawArray storage: no named-shm unlink/ownership race.
+_REQUEST_CAPACITY = 8 * 1024 * 1024
+_RESULT_CAPACITY = 1024 * 1024
+_IPC_TRANSPORT = "single_inflight_rawarray_pipe_v1"
+_NOTICE = struct.Struct("<QQQdddd")
+
+
+class _SharedMailbox:
+    """Single-producer/single-consumer snapshot slot with a 56-byte notice.
+
+    The caller must consume the previous value before reusing this slot. The
+    worker enforces this via its existing one-inflight request/result protocol.
+    A stop notice does not touch the slot, so shutdown cannot corrupt a pending
+    request. Serialization finishes on the caller before it resumes physics.
+    """
+
+    def __init__(self, buffer, connection, capacity, *, sending):
+        self._buffer, self._connection = buffer, connection
+        self.capacity, self.sending = int(capacity), bool(sending)
+        self._sequence, self._closed = 0, False
+        self.last_send_timing, self.last_receive_timing = {}, {}
+
+    @classmethod
+    def pair(cls, context, capacity):
+        if type(capacity) is not int or not 1024 <= capacity <= 64 * 1024 * 1024:
+            raise ValueError("mailbox capacity must be 1 KiB..64 MiB")
+        buffer = context.RawArray("B", capacity)
+        reader, writer = context.Pipe(duplex=False)
+        return (cls(buffer, writer, capacity, sending=True),
+                cls(buffer, reader, capacity, sending=False))
+
+    def put(self, value):
+        if self._closed or not self.sending:
+            raise RuntimeError("mailbox is not an open sender")
+        started = time.perf_counter()
+        payload = None if value is None else pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        serialized = time.perf_counter()
+        size = 0 if payload is None else len(payload)
+        if size > self.capacity:
+            raise ValueError(f"IPC snapshot {size} bytes exceeds mailbox capacity {self.capacity}")
+        if payload is not None:
+            with memoryview(self._buffer).cast("B") as target:
+                target[:size] = payload
+        copied = time.perf_counter()
+        sequence = self._sequence + 1
+        notifying = time.perf_counter()
+        self._connection.send_bytes(_NOTICE.pack(sequence, int(payload is None), size,
+                                                started, serialized, copied, notifying))
+        notified = time.perf_counter()
+        self._sequence = sequence
+        self.last_send_timing = dict(transport=_IPC_TRANSPORT, clock="time.perf_counter_absolute_same_host", sequence=sequence,
+            payload_bytes=size, capacity_bytes=self.capacity,
+            serialize_started_perf_s=started, serialize_finished_perf_s=serialized,
+            snapshot_written_perf_s=copied, notify_started_perf_s=notifying,
+            notify_finished_perf_s=notified, serialize_s=serialized-started,
+            snapshot_copy_s=copied-serialized, notify_s=notified-notifying)
+        return self.last_send_timing
+
+    def get(self, timeout=None):
+        if self._closed or self.sending:
+            raise RuntimeError("mailbox is not an open receiver")
+        if timeout is not None and not self._connection.poll(max(0., float(timeout))):
+            raise queue.Empty
+        notice = self._connection.recv_bytes(_NOTICE.size)
+        received = time.perf_counter()
+        if len(notice) != _NOTICE.size:
+            raise RuntimeError("invalid IPC notification size")
+        sequence, stop, size, started, serialized, copied, notifying = _NOTICE.unpack(notice)
+        if sequence != self._sequence + 1 or stop not in (0, 1) or size > self.capacity or (stop and size):
+            raise RuntimeError("invalid IPC sequence or snapshot size")
+        self._sequence = sequence
+        if stop:
+            value = None
+        else:
+            with memoryview(self._buffer).cast("B") as source:
+                # Own the bytes before decoding: no returned array can alias a
+                # mailbox slot reused after this request's result is consumed.
+                payload = bytes(source[:size])
+            value = pickle.loads(payload)
+        decoded = time.perf_counter()
+        self.last_receive_timing = dict(transport=_IPC_TRANSPORT, clock="time.perf_counter_absolute_same_host", sequence=sequence,
+            payload_bytes=size, capacity_bytes=self.capacity,
+            sender_serialize_started_perf_s=started, sender_serialize_finished_perf_s=serialized,
+            sender_snapshot_written_perf_s=copied, sender_notify_started_perf_s=notifying,
+            notification_received_perf_s=received, deserialized_perf_s=decoded,
+            sender_serialize_s=serialized-started,
+            sender_snapshot_copy_s=copied-serialized,
+            notification_wait_s=received-notifying,
+            receive_copy_deserialize_s=decoded-received)
+        return value
+
+    def get_nowait(self):
+        return self.get(timeout=0.)
+
+    def close(self):
+        if not self._closed:
+            self._connection.close()
+            self._buffer = None
+            self._closed = True
+
+
 class ProcessInferenceWorker:
     """Run the policy in a spawned process with at most one request in flight."""
 
@@ -121,9 +226,13 @@ class ProcessInferenceWorker:
         native_cuda_graph: bool = True,
     ) -> None:
         context = multiprocessing.get_context("spawn")
-        self._requests: multiprocessing.Queue = context.Queue()
-        self._results: multiprocessing.Queue = context.Queue()
-        self._ready: multiprocessing.Queue = context.Queue()
+        self._requests, child_requests = _SharedMailbox.pair(context, _REQUEST_CAPACITY)
+        child_results, self._results = _SharedMailbox.pair(context, _RESULT_CAPACITY)
+        # Startup is the first response; it is consumed before any request.
+        self._ready = self._results
+        self._closed = False
+        self._pending_ipc = {}
+        self._active_request_id = None
         self._process = context.Process(
             target=_serve_policy,
             args=(
@@ -133,9 +242,9 @@ class ProcessInferenceWorker:
                 int(infer_index),
                 policy_mode,
                 native_cuda_graph,
-                self._requests,
-                self._results,
-                self._ready,
+                child_requests,
+                child_results,
+                child_results,
             ),
             name="domino-rt-inference",
             daemon=True,
@@ -145,8 +254,14 @@ class ProcessInferenceWorker:
         self.calls = 0
         self.intervals: list[tuple[float, float]] = []
         self.startup_metadata = {}
-        self._process.start()
         try:
+            try:
+                self._process.start()
+            finally:
+                # Spawn owns separate duplicated handles; the parent must not
+                # retain the child's pipe ends (including on startup failure).
+                child_requests.close()
+                child_results.close()
             status = self._wait_until_ready(900.0)
             if status:
                 raise RuntimeError(status)
@@ -164,12 +279,20 @@ class ProcessInferenceWorker:
     def submit(self, packet: dict[str, Any]) -> int:
         if self._busy:
             raise RuntimeError("an inference request is already outstanding")
+        if getattr(self, '_closed', False):
+            raise RuntimeError("inference worker is closed")
         if not self._process.is_alive():
             raise RuntimeError("inference worker exited before the request was submitted")
         request_id = self._next_id
+        started = time.perf_counter()
+        # pickle owns an immutable snapshot before returning; no feeder can be
+        # starved by the simulator's subsequent tight catch-up loop.
+        timing = self._requests.put((request_id, packet))
+        self._pending_ipc = dict(submit_started_perf_s=started,
+            submit_returned_perf_s=time.perf_counter(), request_publish=dict(timing))
         self._next_id += 1
+        self._active_request_id = request_id
         self._busy = True
-        self._requests.put((request_id, _copy_packet(packet)))
         return request_id
 
     def _wait_until_ready(self, timeout_s: float) -> str | None:
@@ -200,7 +323,20 @@ class ProcessInferenceWorker:
                 self._busy = False
                 raise RuntimeError("inference worker exited while a request was in flight")
             return None
+        except (EOFError, OSError) as exc:
+            self._busy = False
+            raise RuntimeError("inference IPC closed before a complete response") from exc
+        expected = getattr(self, '_active_request_id', None)
+        if expected is not None and item.get('request_id') != expected:
+            raise RuntimeError("inference response does not match the outstanding request")
         self._busy = False
+        self._active_request_id = None
+        ipc = dict(item.get('ipc_timing', {}))
+        ipc.update(getattr(self, '_pending_ipc', {}))
+        ipc['parent_result_receive'] = dict(getattr(self._results, 'last_receive_timing', {}))
+        ipc['parent_poll_perf_s'] = time.perf_counter()
+        item['ipc_timing'] = ipc
+        item['policy_timing'] = dict(item.get('policy_timing', {}), worker_ipc=ipc)
         if not item.get('prepared_instruction') and not item.get('finished_episode'):
             self.calls += 1
             self.intervals.append((item["started"], item["finished"]))
@@ -246,17 +382,36 @@ class ProcessInferenceWorker:
             time.sleep(.002)
 
     def close(self) -> None:
-        if self._process.is_alive():
-            self._requests.put(None)
-            self._process.join(timeout=10.0)
-        if self._process.is_alive():
-            self._process.terminate()
-            self._process.join(timeout=5.0)
-        if self._process.is_alive():
-            self._process.kill()
-            self._process.join(timeout=5.0)
-        if self._process.is_alive():
-            raise RuntimeError("owned inference process did not exit after termination")
+        if getattr(self, '_closed', False):
+            return
+        process = self._process
+        exited = False
+        try:
+            if process.is_alive():
+                try:
+                    # Stop is a notice only: never overwrite an unreceived
+                    # shared request while the model is busy or starting up.
+                    if not getattr(self._requests, '_closed', False):
+                        self._requests.put(None)
+                except (BrokenPipeError, EOFError, OSError):
+                    pass
+                process.join(timeout=10.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5.0)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5.0)
+            if process.is_alive():
+                raise RuntimeError("owned inference process did not exit after termination")
+            exited = True
+            process.close()
+        finally:
+            for channel in (getattr(self, '_requests', None), getattr(self, '_results', None)):
+                if channel is not None:
+                    channel.close()
+            self._busy = False
+            self._closed = exited
 
 
 def _die_when_parent_dies() -> None:
@@ -278,16 +433,40 @@ def _die_when_parent_dies() -> None:
         raise SystemExit(1)
 
 
-def _serve_policy(
+def _serve_policy(*args):
+    requests, results, ready = args[-3:]
+    try:
+        _serve_policy_impl(*args)
+    finally:
+        requests.close()
+        results.close()
+
+
+def _configure_cpu_threads():
+    import torch
+    import cv2
+    # Set before model initialization / any parallel CPU work in this spawn.
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    cv2.setNumThreads(1)
+    return dict(torch_intra_threads=torch.get_num_threads(),
+                torch_interop_threads=torch.get_num_interop_threads(),
+                opencv_threads=cv2.getNumThreads(),
+                affinity=sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
+                environment={key: os.environ.get(key) for key in
+                    ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS','NUMEXPR_NUM_THREADS')})
+
+
+def _serve_policy_impl(
     project_root: str,
     config_path: str,
     checkpoint: str,
     infer_index: int,
     policy_mode: str,
     native_cuda_graph: bool,
-    requests: multiprocessing.Queue,
-    results: multiprocessing.Queue,
-    ready: multiprocessing.Queue,
+    requests: _SharedMailbox,
+    results: _SharedMailbox,
+    ready: _SharedMailbox,
 ) -> None:
     """Load DynamicWAM on ``infer_index`` and answer packets until shutdown."""
     _die_when_parent_dies()
@@ -300,6 +479,7 @@ def _serve_policy(
             if entry.is_dir() and str(entry) not in sys.path:
                 sys.path.insert(0, str(entry))
         import torch
+        cpu_runtime = _configure_cpu_threads()
 
         torch.cuda.set_device(infer_index)
         torch.cuda.init()
@@ -345,14 +525,24 @@ def _serve_policy(
         traceback.print_exc()
         ready.put(f"{type(exc).__name__}: {exc}")
         return
-    ready.put(dict(ready=True, metadata=getattr(policy, 'warmup_timing', {})))
+    ready.put(dict(ready=True, metadata=dict(getattr(policy, 'warmup_timing', {}),
+        cpu_runtime=cpu_runtime, ipc_transport=_IPC_TRANSPORT,
+        request_capacity_bytes=requests.capacity, result_capacity_bytes=results.capacity)))
+    try:
+        _run_policy_requests(policy, requests, results, policy_mode, infer)
+    finally:
+        if hasattr(policy, 'close'):
+            policy.close()
+
+
+def _run_policy_requests(policy, requests, results, policy_mode, infer):
+    """Shared CPU-testable service loop; transport never changes model inputs."""
     while True:
         item = requests.get()
         if item is None:
-            if hasattr(policy, 'close'):
-                policy.close()
             return
         request_id, packet = item
+        received = dict(requests.last_receive_timing)
         started = time.perf_counter()
         episode_drain = None
         try:
@@ -379,6 +569,8 @@ def _serve_policy(
                 "finished_episode": packet.get('_finish_episode') is True,
                 "episode_drain": episode_drain,
                 "policy_timing": dict(getattr(policy, 'last_policy_timing', {})),
+                "ipc_timing": dict(transport=_IPC_TRANSPORT, clock="time.perf_counter_absolute_same_host", child_request_receive=received,
+                    model_started_perf_s=started, result_publish_started_perf_s=time.perf_counter()),
             }
         )
 

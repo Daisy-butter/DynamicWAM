@@ -4,7 +4,7 @@ import time
 import numpy as np
 
 from .domino_session import DominoLevel1Session
-from .camera_stream import SelectiveAsyncCameraCapture, PhysicalTimeHeadHistory
+from .camera_stream import SelectiveAsyncCameraCapture, PhysicalTimeHeadHistory, completed_capture_timing
 from .continuous_track_v2 import ContinuousJointTrack
 from ..ciwam.adapters.domino.composite import head_camera_frame, composite_robotwin_frame
 
@@ -183,16 +183,9 @@ class ContinuousSyncSession(DominoLevel1Session):
             self.env.now_obs = deepcopy(captured.observation)
             packet = self._packet_from_observation(captured.observation)
         done = time.perf_counter()
-        self.last_capture_diagnostics = {
-            "render_submit_ms": 1000 * (captured.render_submitted_wall_perf_s - captured.capture_wall_perf_s),
-            "native_readback_ms": 1000 * (captured.readback_finished_wall_perf_s - captured.readback_started_wall_perf_s),
-            "camera_readback_seconds": captured.camera_readback_seconds,
-            "owner_consume_ms": 1000 * (consumed - before),
-            "video_append_ms": 1000 * (video_done - consumed),
-            "history_push_ms": 1000 * (history_done - video_done),
-            "packet_and_flow_ms": 1000 * (done - history_done),
-            "owner_finish_ms": 1000 * (done - before),
-        }
+        self.last_capture_diagnostics = completed_capture_timing(captured,
+            owner_started=before, owner_consumed=consumed, video_done=video_done,
+            history_done=history_done, owner_finished=done)
         return packet
 
     def _ensure_step_profile(self):

@@ -70,3 +70,20 @@ class EpisodeCohort:
                 self.abort(f"{self.task}: timeout at episode {episode} phase {phase}")
                 raise TimeoutError("RTC cohort rendezvous timeout")
             time.sleep(.02)
+
+
+def live_start_stagger(index, count, action_interval_s, simulation_rate=1.):
+    """Unique H4 phases, distributed across refresh16 before episode time zero.
+
+    Refresh16/N alone aliases four peers onto each H4 phase at N=8.
+    Preserve each independent episode clock/seed; only host scheduling changes.
+    """
+    import math
+    if (type(index) is not int or type(count) is not int
+            or not 1 <= count <= 8 or not 0 <= index < count
+            or not math.isfinite(action_interval_s) or action_interval_s <= 0
+            or not math.isfinite(simulation_rate) or not 0 < simulation_rate <= 1):
+        raise ValueError("invalid cohort phase parameters")
+    fast = 4 * float(action_interval_s) / simulation_rate
+    slow_bucket = (4 * index) // count
+    return slow_bucket * fast + index * fast / count

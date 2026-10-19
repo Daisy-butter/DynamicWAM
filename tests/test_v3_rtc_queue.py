@@ -87,6 +87,20 @@ class ProposalTests(unittest.TestCase):
             np.testing.assert_allclose(targets, expected, rtol=0, atol=1e-8)
         self.assertEqual(report['completed_targets'], 12)
 
+    def test_bootstrap_prefix_keeps_command_despite_tracking_lag(self):
+        clock = Clock()
+        session = Session(clock, interval_s=.16)
+        target = np.full(14, .3); target[[6, 13]] = 0.
+        session.current_drive_targets = lambda: target.copy()
+        session.q[:] = .6  # includes partly closed fingers, not a new target
+        worker = Worker(clock, durations=(.1, .05))
+        report = run_continuous_rtc_episode(session, worker, task='v3', episode_seed=2,
+            action_limit=12, action_interval_s=.16, frame_period_s=.16,
+            joint_v3=True, clock=clock, sleep=clock.sleep)
+        np.testing.assert_array_equal(worker.calls[1]['_rtc_prefix_actions'], np.repeat(target[None], 4, axis=0))
+        self.assertEqual(report['requests'][0]['bootstrap_hold_source'], 'native_drive_targets')
+        self.assertFalse(report['requests'][0]['bootstrap_actions_executed'])
+
     def test_v3_cannot_be_silently_scaled(self):
         clock = Clock()
         with self.assertRaisesRegex(ValueError, '1x'):

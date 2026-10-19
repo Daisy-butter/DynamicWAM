@@ -37,6 +37,7 @@ class Session:
     def object_position(self): return np.array([self.physics_time(), 0., 0.])
     def stop_reason(self): return "success" if self.terminal_tick is not None and self.ticks >= self.terminal_tick else None
     def current_qpos(self): return self.q.copy()
+    def current_drive_targets(self): return self.q.copy()
     def history_diagnostics(self): return {"count": len(self.frames)}
     def begin_native_action(self): self.native_actions += 1
     def record_target_metrics(self): self.metrics += 1

@@ -52,6 +52,17 @@ class CohortTests(unittest.TestCase):
             self.assertLessEqual(max(row[3] for row in events if row[:2] == ("live_end", 0)),
                 min(row[3] for row in events if row[:2] == ("setup_start", 1)))
 
+    def test_stagger_has_distinct_fast_phases_and_bounded_slow_period(self):
+        from rtc_episode_cohort import live_start_stagger
+        for count in range(1, 9):
+            values = [live_start_stagger(i, count, .16) for i in range(count)]
+            phases = sorted(v % .64 for v in values)
+            self.assertEqual(len({round(v, 9) for v in phases}), count)
+            self.assertTrue(all(0 <= v < 2.56 for v in values))
+            self.assertEqual(values[0], 0)
+            for a, b in zip(phases, phases[1:]):
+                self.assertAlmostEqual(b-a, .64/count)
+
     def test_abort_releases_waiter(self):
         with tempfile.TemporaryDirectory() as root:
             a, b = self.make(root)

@@ -580,18 +580,14 @@ def main():
                     if session.physics_time() != initial_clock:
                         raise RuntimeError("camera warmup advanced physics")
                     ready_barrier = cohort.wait(episode, "ready")
-                    # Desynchronize live episode clocks across cohort GPUs so
-                    # age-0 refresh@16 walls do not align. Spread starts evenly
-                    # across one world-refresh period (16 * action_interval):
-                    #   stagger = index * (16 * dt) / N_members
-                    # With N=8 and dt=0.16s => 0,0.32,...,2.24s. Sleep is BEFORE
-                    # wall0/phys0; RTC H/K/R/refresh period and physics unchanged.
+                    # Stagger both H4 capture and refresh16 across live peers.
+                    # This wait remains before each episode's wall0/phys0.
+                    from rtc_episode_cohort import live_start_stagger
                     members = list(cohort.members)
                     live_start_stagger_index = members.index(args.task)
                     refresh_period_s = float(args.action_interval_s) * 16 / args.simulation_rate
-                    live_start_stagger_s = (
-                        live_start_stagger_index * (refresh_period_s / max(1, len(members)))
-                    )
+                    live_start_stagger_s = live_start_stagger(
+                        live_start_stagger_index, len(members), args.action_interval_s, args.simulation_rate)
                     if live_start_stagger_s > 0:
                         time.sleep(live_start_stagger_s)
                     report = run_continuous_rtc_episode(session, worker, task=args.task, episode_seed=descriptor["seed"],
@@ -616,7 +612,7 @@ def main():
                         manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads(),
                         live_start_stagger_s=live_start_stagger_s, live_start_stagger_index=live_start_stagger_index,
                         live_start_refresh_period_s=refresh_period_s, live_start_cohort_size=len(members),
-                        live_start_stagger_policy="cohort_task_index * (16*action_interval_s/simulation_rate)/N_members  # desync refresh@16")
+                        live_start_stagger_policy="distinct_H4_phase_distributed_across_refresh16_v2")
                     report.update({**descriptor, **source, "checkpoint": str(args.checkpoint.resolve()), "checkpoint_sha256": checkpoint_sha,
                         "frozen_manifest_sha256": frozen_sha, "video_required": True, "probe_action_limit": args.probe_action_limit,
                         "worker_startup_metadata": worker.startup_metadata, "instruction_warmup": instruction_warmup,

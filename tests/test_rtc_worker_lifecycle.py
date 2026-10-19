@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from dynamicwam.runtime.domino_continuous.worker import (
-    ProcessInferenceWorker, _drain_policy_episode,
+    ProcessInferenceWorker, _drain_policy_episode, _SharedMailbox,
 )
 
 
@@ -17,7 +17,8 @@ class StartupOwnershipTests(unittest.TestCase):
                 context.Process.return_value = process
                 wait = ({"side_effect": result} if isinstance(result, BaseException)
                         else {"return_value": result})
-                with patch("dynamicwam.runtime.domino_continuous.worker.multiprocessing.get_context", return_value=context), \
+                with patch.object(_SharedMailbox, "pair", side_effect=[(Mock(), Mock()), (Mock(), Mock())]), \
+                        patch("dynamicwam.runtime.domino_continuous.worker.multiprocessing.get_context", return_value=context), \
                         patch.object(ProcessInferenceWorker, "_wait_until_ready", **wait), \
                         patch.object(ProcessInferenceWorker, "close") as close:
                     with self.assertRaises(RuntimeError):
@@ -28,7 +29,8 @@ class StartupOwnershipTests(unittest.TestCase):
 
     def test_successful_constructor_keeps_its_owner_alive(self):
         context = Mock()
-        with patch("dynamicwam.runtime.domino_continuous.worker.multiprocessing.get_context", return_value=context), \
+        with patch.object(_SharedMailbox, "pair", side_effect=[(Mock(), Mock()), (Mock(), Mock())]), \
+                        patch("dynamicwam.runtime.domino_continuous.worker.multiprocessing.get_context", return_value=context), \
                 patch.object(ProcessInferenceWorker, "_wait_until_ready", return_value=None), \
                 patch.object(ProcessInferenceWorker, "close") as close:
             ProcessInferenceWorker(project_root="/unused", config_path="/unused",
@@ -44,6 +46,7 @@ class StartupOwnershipTests(unittest.TestCase):
             worker.close()
         worker._process.terminate.assert_called_once()
         worker._process.kill.assert_called_once()
+        self.assertFalse(worker._closed)
 
 
 class EpisodeDrainTests(unittest.TestCase):

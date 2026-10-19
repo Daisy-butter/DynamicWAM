@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.9 · 2026-10-19 · 目标投稿：CVPR 2027
+版本：v1.10 · 2026-10-19 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -251,3 +251,6 @@ The user authorizes inference-only improvements in a separate .50 worktree, Git 
 This evaluation uses joint-v3, fixed H4/R4/K10, 0.16-second action grid, refresh16, maximum age31 and 1x continuous wall-clock simulation. Normalize raw state/prefix/plan in FP32 before model precision conversion. Bind the complete 20k source-time architecture with strict full/fast reload and matching normalization metadata; never substitute the old step12000 or official full backbone. Preserve the frozen35x20 scene bytes and all35 tasks, native eval_result reports and actual MP4s. Cross-host model/path changes require explicit scene compatibility evidence instead of rewriting the old manifest.
 
 Large files may be on verified SSD or HDD under wuruihan on .100 per the latest explicit instruction; this deployment selects SSD after capacity verification. Secrets are entered through a local masked prompt only and are excluded from Git, logs and receipts. User-approved kernel-log helper is restricted to fixed read-only dmesg requests, peer UID access and a finite lifetime; stop it after the evaluation terminates. No GPU reset, driver changes or recovery. Fresh local health, actual Graph/concurrency checks, 8-task x2 complete-episode smoke, MP4 decode and clean worker/guard exit gate the one-shot formal suite; no automatic retry or recurring inspection.
+
+
+2026-10-19 RTC service-latency correction: preserve failed formal35x20_02 (POB episode0 late suffix), prior accepted smoke, and clean guard exit. This is an inference-only repair: bootstrap hard prefix uses held native drive targets rather than measured qpos; measured proprioception remains measured. Replace the large Queue feeder with bounded single-inflight anonymous shared mailboxes and tiny Pipe notifications, preserving complete packet values. Bound child CPU threads, spread eight starts across distinct H4 phases before episode time zero, and record complete camera/IPC service timing. No H4 increase, time scaling, stale-suffix acceptance, task exclusion, model-output blending or training-source change. The remaining expert-versus-policy prefix distribution gap is not claimed solved. Revalidate actual graph/concurrency and eight-GPU full-episode smoke under a heavy cohort before a new formal attempt.
