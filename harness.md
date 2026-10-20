@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.11 · 2026-10-20 · 目标投稿：CVPR 2027
+版本：v1.12 · 2026-10-20 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -262,3 +262,10 @@ The user requests fixing the camera/backlog failure and restarting all35x20, per
 Use fixed simulation_rate=0.25 for the entire new smoke/formal run, never adaptive pauses/rate changes or automatic fallback. Physical dt0.004, action grid0.16, H4/R4/K10, refresh16 and maxcache31/4.96 remain unchanged. Scale pacing, wall deadlines, optional-history timing and bounded process timeouts consistently. Preserve actual wall/model/camera latency and original250ms physical-backlog validation. Scaled reports must set realtime_valid=false; clock_valid/continuous_valid reflect actual global clock limits. A completed scaled suite is a continuous-simulation policy diagnostic, not evidence of1x realtime performance or a like-for-like comparison with earlier1x results.
 
 Do not move mandatory observation time or recompute the committed H4 deadline to hide camera delay. Record the maximum-backlog event phase and timestamps, and validate reports before allowing cohort members to initialize their next episode. Preserve reports/MP4s for invalid attempts. The same exact20k checkpoint, full/fast model interface, native DOMINO outputs and immutable700scene hashes apply. Fresh guard-before-telemetry preflight, actual Graph/background check and8GPU8tasks x2full-episode smoke with16 decodedMP4s and clean final guard closure gate the one-shot formal35x20 launch. Include POB and PCP in smoke. Stop on error; no automatic retry, GPU recovery or recurring inspection. Initial formal stability and final exit checks remain required; no architecture changes before this evaluation finishes.
+
+
+## 23. Stage3 step30000 replacement (2026-10-20)
+
+The user explicitly replaces the running step20000 evaluation with the completed Stage3 step30000 export. This supersedes section22's exact20k requirement only. Stop only the identified .100 evaluation supervisor through its normal cleanup; preserve every20k report, MP4 and interruption receipt, and never merge20k episodes into30k results. The .50 training process/source/configuration remain protected; read and transfer completed exports only.
+
+Use the identical fixed0.25 continuous protocol, physicaldt0.004, actiongrid0.16, H4/R4/K10, source2+8, refresh16, age31/4.96, full35 frozen700scenes, normalization and output schema. The only policy artifact change is the exact30k full/fast/backbone weights, CPU-audited with identical runtime/data contracts. Rehash source/destination files and preserve learned source-time tensors. Fresh guard-before-telemetry health, actual30k Graph/background acceptance and8GPU8tasks x2full-episode smoke with16complete MP4decodes and clean exit gate a new formal35x20 directory. No retries or1xclaim. Initial-only CPU observer exits after300s health window plus first8validreports/8aliveworkers, or failure/timeout; no post-acceptance recurring inspection.
