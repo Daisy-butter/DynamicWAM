@@ -58,6 +58,8 @@ try:
         '--guard-gpus', gpus, '--authorization', str(auth_path), '--stage', 'smoke', '--preflight-only'])
     clean_guard('preflight40k')
     graph_command = json.loads((root / 'graph03/manifest.json').read_text())['command']
+    assert Path(graph_command[1]).name == 'check_motionkv_graph.py'
+    graph_command[1] = str(repo / 'scripts/check_motionkv_graph40k.py')
     for flag, value in [('--checkpoint', root / 'checkpoint40k/multirate_step_40000.pt'),
                         ('--output', root / 'graph40k/graph_parity.json'), ('--deploy-config', config)]:
         assert graph_command.count(flag) == 1

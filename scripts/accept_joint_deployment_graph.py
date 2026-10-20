@@ -25,6 +25,38 @@ REQUIRED_CASES={
     'source_publication_age_changed','source_completed_K10_plan_changed',
     'in_place_prefix_buffer_update',
 }
+PREVIOUS_SOURCE_CASES = {
+    *(f'training_previous_source_age_{age}' for age in (0, 4, 8, 12, 16, 31)),
+    'training_previous_source_fractional_time', 'source_clean_plan_changed',
+}
+
+
+def verify_previous_source_semantics(raw):
+    """Additional mandatory evidence for the dedicated 40k serving checker."""
+    detail = raw.get('previous_plan_semantics', {})
+    require(detail.get('mode') == 'training_aligned_source_early_v1'
+        and detail.get('passed') is True and detail.get('completed') is False
+        and detail.get('explicit_serving_helper') is True,
+        '40k graph lacks explicit early-source serving helper evidence')
+    require(detail.get('cuda_graph_values_and_masks_checked') is True
+        and detail.get('hard_prefix_unchanged') is True,
+        '40k graph lacks actual soft-plan buffer or hard-prefix checks')
+    checks = detail.get('consumer_checks', [])
+    names = [item.get('case') for item in checks]
+    require(len(names) == len(set(names)) and PREVIOUS_SOURCE_CASES <= set(names),
+        '40k graph misses physical-age/source-refresh consumer coverage')
+    require(PREVIOUS_SOURCE_CASES <= {item.get('name') for item in raw.get('cases', [])},
+        '40k previous-source cases were not actually compared eager versus graph')
+    for item in checks:
+        require(all(item.get(key) is True for key in
+            ('plan_innovation_passed', 'proposal_reference_passed', 'source_and_queue_delta_equal')),
+            '40k graph did not verify both soft previous-plan consumers')
+        if item['case'].startswith('training_previous_source_age_'):
+            age = int(item['case'].rsplit('_', 1)[1])
+            require(item.get('valid_rows') == [max(0, 16-age)],
+                '40k previous-source horizon was filled or aligned incorrectly')
+    require(raw.get('concurrent_slow', {}).get('previous_plan_helper_on_old_and_new_cache') is True,
+        '40k background fast calls bypassed source-plan helper')
 
 
 def finite(value):
@@ -63,7 +95,11 @@ def accept(*,raw_path,guard_dir,checkpoint,config):
         ==manifest.get('source_sha256'),'graph/guard/current source hash mismatch')
     command=manifest.get('command',[])
     require(isinstance(command,list) and all(isinstance(x,str) for x in command),'malformed guard command')
-    require(any(Path(x).name=='check_motionkv_graph.py' for x in command),'guard did not run the actual graph checker')
+    checker_names = {Path(x).name for x in command}
+    require(bool(checker_names & {'check_motionkv_graph.py', 'check_motionkv_graph40k.py'}),
+        'guard did not run the actual graph checker')
+    if 'check_motionkv_graph40k.py' in checker_names:
+        verify_previous_source_semantics(raw)
     for flag,path in [('--checkpoint',checkpoint),('--deploy-config',config),('--output',raw_path)]:
         require(Path(flag_value(command,flag)).resolve()==path,f'guard command {flag} differs')
     require('--concurrent-slow' in command and '--fast-steps-override' not in command,
