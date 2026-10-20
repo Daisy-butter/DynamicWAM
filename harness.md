@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.12 · 2026-10-20 · 目标投稿：CVPR 2027
+版本：v1.13 · 2026-10-20 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -269,3 +269,35 @@ Do not move mandatory observation time or recompute the committed H4 deadline to
 The user explicitly replaces the running step20000 evaluation with the completed Stage3 step30000 export. This supersedes section22's exact20k requirement only. Stop only the identified .100 evaluation supervisor through its normal cleanup; preserve every20k report, MP4 and interruption receipt, and never merge20k episodes into30k results. The .50 training process/source/configuration remain protected; read and transfer completed exports only.
 
 Use the identical fixed0.25 continuous protocol, physicaldt0.004, actiongrid0.16, H4/R4/K10, source2+8, refresh16, age31/4.96, full35 frozen700scenes, normalization and output schema. The only policy artifact change is the exact30k full/fast/backbone weights, CPU-audited with identical runtime/data contracts. Rehash source/destination files and preserve learned source-time tensors. Fresh guard-before-telemetry health, actual30k Graph/background acceptance and8GPU8tasks x2full-episode smoke with16complete MP4decodes and clean exit gate a new formal35x20 directory. No retries or1xclaim. Initial-only CPU observer exits after300s health window plus first8validreports/8aliveworkers, or failure/timeout; no post-acceptance recurring inspection.
+
+
+## 24. Stage3 step40000 and training-aligned soft previous plan (2026-10-21)
+
+The user's one-time scheduled instruction authorizes this run only after the
+current .100 evaluation and .50 Stage3 40000-step training have completed with
+saved artifacts and clean worker/guard exit. Both prerequisites were verified
+on 2026-10-21 Beijing. Preserve the completed30k run and all older results.
+
+In the v3 evaluation policy, soft previous_plan uses
+aligned_source_plan(current, bridge, completed=False) and its exact physical-time
+validity mask, matching this checkpoint's offline training fallback. It is
+already normalized and must not be normalized a second time. This early source
+plan is distinct from source_completed_plan. Do not pad expired targets or
+use None. The same tensors reach plan conditioning and proposal feedback,
+including CUDA Graph buffers. The real installed action queue, actual committed
+H4 prefix, deadlines, and suffix replacement remain unchanged.
+
+Use the exact formal40000 full/fast/backbone artifacts, with strict CPU reload,
+source-time and normalization identity checks. Keep the prior0.25 continuous
+protocol, all35 frozen tasks and700 scenes, seeds, H4/R4/K10, source2+8,
+refresh16, age31/4.96, acceleration, and native report/MP4 layout.
+This is not a1x realtime claim. The change includes both checkpoint advancement
+and the soft-plan semantic repair; comparisons cannot isolate either factor.
+
+Fresh all-adapter guard-before-telemetry preflight, actual40k Graph/background
+acceptance, and8x2 full-episode smoke with16 valid reports, complete MP4 decode,
+and clean release gate formal700. No GPU reset, driver/PCI changes, retries,
+or continuous patrol. Bounded initial acceptance checks at least300 seconds,
+8 live workers and first8 valid reports/videos, then exits; the necessary
+evaluation supervisor and final cleanup remain. Never modify .50 training
+source or .92 Route2. Store all artifacts under the verified SSD user tree.
