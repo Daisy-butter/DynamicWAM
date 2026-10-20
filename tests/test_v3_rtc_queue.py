@@ -101,11 +101,11 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(report['requests'][0]['bootstrap_hold_source'], 'native_drive_targets')
         self.assertFalse(report['requests'][0]['bootstrap_actions_executed'])
 
-    def test_v3_cannot_be_silently_scaled(self):
+    def test_v3_rejects_undeclared_scaling(self):
         clock = Clock()
-        with self.assertRaisesRegex(ValueError, '1x'):
+        with self.assertRaisesRegex(ValueError, 'fixed simulation_rate'):
             run_continuous_rtc_episode(Session(clock), Worker(clock), task='v3', episode_seed=3,
-                action_limit=8, joint_v3=True, simulation_rate=.25)
+                action_limit=8, joint_v3=True, simulation_rate=.5)
 
 
 if __name__ == '__main__':

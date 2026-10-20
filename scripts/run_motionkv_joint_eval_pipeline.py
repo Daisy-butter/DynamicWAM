@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot joint-v3 1x RTC: verified local graph -> 8x2 smoke -> 35x20.
+"""One-shot joint-v3 RTC: verified local graph -> 8x2 smoke -> 35x20.
 
 This coordinator never opens CUDA/NVML or queries a GPU. Each stage uses the
 existing temporary all-adapter guard supervisor, a 300s startup health window
@@ -27,8 +27,42 @@ from run_motionkv_scaled_eval_pipeline import (
 )
 
 PROTOCOL = 'continuous_world_actual_latency_joint_motionkv_async_v3'
+SCALED_PROTOCOL = 'continuous_world_scaled_wall_joint_motionkv_async_v3'
 GRAPH_KIND = 'joint_v3_deployment_graph_acceptance'
 REQUIRED_SMOKE_TASKS = ('place_object_basket', 'place_container_plate')
+
+
+def evaluation_clock(rate=1.):
+    """Explicit fixed protocol selection; never adapt rate after a failure."""
+    require(type(rate) in (int, float) and math.isfinite(rate) and rate in (1., .25),
+            'joint-v3 pipeline requires explicitly fixed simulation rate 1 or 0.25')
+    return PROTOCOL if rate == 1. else SCALED_PROTOCOL
+
+
+def wall_budgets(args):
+    """Scale task/barrier budgets; cap scaled stages below the 48h broker lifetime."""
+    rate = getattr(args, 'simulation_rate', 1.)
+    evaluation_clock(rate)
+    defaults = dict(task_timeout_s=14400. / rate, cohort_timeout_s=3600. / rate,
+                    smoke_max_runtime_s=21600., formal_max_runtime_s=172800. if rate == 1. else 144000.)
+    result = {}
+    for key, default in defaults.items():
+        value = getattr(args, key, None)
+        value = default if value is None else value
+        require(type(value) in (int, float) and math.isfinite(value) and value > 0,
+                'wall timeout must be finite and positive: ' + key)
+        result[key] = value
+    return result
+
+
+def verify_report_clock(report, *, simulation_rate):
+    require(report.get('protocol') == evaluation_clock(simulation_rate)
+            and report.get('simulation_rate') == simulation_rate
+            and report.get('clock') == ('actual_wall_clock' if simulation_rate == 1. else 'scaled_wall_clock')
+            and report.get('clock_valid') is True and report.get('continuous_valid') is True
+            and report.get('realtime_valid') is (simulation_rate == 1.)
+            and report.get('virtual_delay') is False,
+            'episode clock identity or declared realtime/scaled validity differs')
 
 
 def contained(path, storage):
@@ -114,32 +148,36 @@ def suite_command(args, *, stage, tasks):
     require(stage in ('smoke', 'formal'), 'unknown pipeline stage')
     repo = Path(args.repo).resolve()
     output = Path(args.run_root).resolve()/('smoke8x2' if stage == 'smoke' else 'formal35x20')
+    rate = getattr(args, 'simulation_rate', 1.)
+    evaluation_clock(rate)
+    budgets = wall_budgets(args)
     command = [str(repo/'external/robotwin/bin/python'), str(repo/'scripts/eval_domino_motionkv_rtc_suite.py'),
         '--config', str(Path(args.config).resolve()), '--output-dir', str(output), '--gpus', args.gpus,
         '--episodes', '2' if stage == 'smoke' else '20', '--seed', str(args.seed),
         '--checkpoint', str(Path(args.checkpoint).resolve()),
         '--checkpoint-audit', str(Path(args.checkpoint_audit).resolve()),
         '--timing-contract', str(Path(args.timing_contract).resolve()),
-        '--replay-from', str(Path(args.frozen_scenes).resolve()), '--joint-v3', '--simulation-rate', '1',
+        '--replay-from', str(Path(args.frozen_scenes).resolve()), '--joint-v3', '--simulation-rate', format(rate, 'g'),
         '--max-cohort-size', '8', '--action-interval-s', '0.16', '--history-frame-period-s', '0.16',
         '--max-backlog-s', '0.25', '--infer-clock-tolerance-s', '0.02',
-        '--task-timeout-s', str(args.task_timeout_s), '--cohort-timeout-s', str(args.cohort_timeout_s)]
+        '--task-timeout-s', str(budgets['task_timeout_s']), '--cohort-timeout-s', str(budgets['cohort_timeout_s'])]
     if stage == 'smoke': command += ['--tasks', ','.join(tasks)]
     if args.scene_compatibility:
         command += ['--scene-compatibility', str(Path(args.scene_compatibility).resolve())]
     return output, command
 
 
-def verify_stage(output, *, expected_tasks, episodes, uuids, hashes, frozen_sha, previous_source=None):
+def verify_stage(output, *, expected_tasks, episodes, uuids, hashes, frozen_sha, previous_source=None,
+                 simulation_rate=1.):
     # Recompute per-episode validity, seeds, numerical metrics and MP4 sidecars
     # with the same native checker, not merely a prewritten complete flag.
     from eval_domino_motionkv_rtc_suite import summarize
     output = Path(output)
     spec = read(output/'suite_started.json')
     expected = len(expected_tasks)*episodes
-    require(spec.get('protocol') == PROTOCOL and spec.get('simulation_rate') == 1.
+    require(spec.get('protocol') == evaluation_clock(simulation_rate) and spec.get('simulation_rate') == simulation_rate
             and spec.get('virtual_delay') is False and spec.get('prepare_only') is False,
-            'stage is not declared actual-wall joint-v3 RTC')
+            'stage is not the explicitly declared fixed-clock joint-v3 RTC protocol')
     require(set(spec.get('tasks', [])) == set(expected_tasks) and len(spec['tasks']) == len(expected_tasks)
             and spec.get('episodes_per_task') == episodes and spec.get('probe_action_limit') is None,
             'stage task/episode/native-action scope changed')
@@ -171,6 +209,7 @@ def verify_stage(output, *, expected_tasks, episodes, uuids, hashes, frozen_sha,
     for task in expected_tasks:
         for episode in range(episodes):
             report = read(output/task/f'episode_{episode:04d}'/'report.json')
+            verify_report_clock(report, simulation_rate=simulation_rate)
             require(report.get('camera_equivalence', {}).get('passed') is True,
                     'native same-frame RGB equivalence missing')
             require(report.get('post_terminal_policy_drain', {}).get('slow_quiescent') is True,
@@ -242,6 +281,8 @@ def close_kernel_broker(status, *, enabled, launched, socket_path, stopper=None)
 
 
 def main(args):
+    rate = getattr(args, 'simulation_rate', 1.)
+    protocol, budgets = evaluation_clock(rate), wall_budgets(args)
     repo, storage = Path(args.repo).resolve(), Path(args.storage_root).resolve()
     require(repo == Path(__file__).resolve().parents[1], 'run the pipeline from the selected frozen repo')
     require('wuruihan' in storage.parts and storage.is_dir(), 'storage must be a verified wuruihan directory')
@@ -250,7 +291,8 @@ def main(args):
     root.mkdir(parents=True, exist_ok=True)
     directory = root/'pipeline'; directory.mkdir(exist_ok=False)
     status = dict(state='validating', created_at=utc(), pipeline_pid=os.getpid(), phases=[],
-                  retry_policy='none', recurring_gpu_polling=False, startup_health_seconds=300, protocol=PROTOCOL)
+                  retry_policy='none', recurring_gpu_polling=False, startup_health_seconds=300,
+                  protocol=protocol, simulation_rate=rate, realtime_claim=(rate == 1.), wall_budgets=budgets)
     status_path, active = directory/'pipeline_status.json', None
     launched = False
     def persist():
@@ -335,9 +377,10 @@ def main(args):
             command=[sys.executable,str(repo/'scripts/supervise_motionkv_eval.py'),'--stage',stage,
                 '--run-dir',str(guard),'--gpus',args.gpus,'--guard-gpus',args.gpus,
                 '--authorization',str(paths['authorization']),'--startup-seconds','300',
-                '--max-runtime-seconds',str(21600 if stage=='smoke' else 172800),'--',*child]
+                '--max-runtime-seconds',str(budgets[stage+'_max_runtime_s']),'--',*child]
             commands.append(dict(stage=stage,guard_dir=str(guard),output_dir=str(output),command=command))
-        save(directory/'pipeline_manifest.json', dict(created_at=utc(), protocol=PROTOCOL,
+        save(directory/'pipeline_manifest.json', dict(created_at=utc(), protocol=protocol,
+            simulation_rate=rate, realtime_claim=(rate == 1.), wall_budgets=budgets, adaptive_simulation_rate=False,
             pipeline_script_sha256=sha(__file__), git_head=args.expected_head, **hashes,
             inputs=frozen_files, gpu_uuids=uuids, smoke_tasks=selected,
             storage_root=str(storage), frozen_scene_manifest_sha256=args.frozen_scenes_sha256,
@@ -360,7 +403,7 @@ def main(args):
             active=None
             spec,summary=verify_stage(output,expected_tasks=selected if stage=='smoke' else tasks,
                 episodes=2 if stage=='smoke' else 20,uuids=uuids,hashes=hashes,
-                frozen_sha=args.frozen_scenes_sha256,previous_source=previous_source)
+                frozen_sha=args.frozen_scenes_sha256,previous_source=previous_source,simulation_rate=rate)
             status.update(state='verifying_'+stage+'_videos');persist()
             decode_stage(output,directory/(stage+'_video_decode.json'),storage)
             unchanged(); previous_source=spec['source_digest']
@@ -398,16 +441,22 @@ def parse(argv=None):
         parser.add_argument('--'+name)
     parser.add_argument('--seed',type=int,default=100000)
     parser.add_argument('--smoke-tasks',default='')
-    parser.add_argument('--task-timeout-s',type=float,default=14400.)
-    parser.add_argument('--cohort-timeout-s',type=float,default=3600.)
+    parser.add_argument('--simulation-rate', type=float, choices=(1., .25), default=1.,
+        help='Explicit fixed continuous clock; 0.25 is a separate non-realtime protocol, never a fallback')
+    for name, description in [('task-timeout-s','14400/simulation_rate'),
+                              ('cohort-timeout-s','3600/simulation_rate'),
+                              ('smoke-max-runtime-s','21600 (6h)'),
+                              ('formal-max-runtime-s','172800 (48h) at 1x; 144000 (40h) at 0.25x')]:
+        parser.add_argument('--'+name,type=float,default=None,
+            help=f'Actual wall seconds; default {description}, no automatic retry')
     args=parser.parse_args(argv)
     if not args.self_test:
         for name in ('repo','run_root','storage_root','config','checkpoint','checkpoint_audit','timing_contract',
                      'frozen_scenes','authorization','preflight_guard','graph_guard','graph_receipt',
                      'gpus','expected_head','expected_source_sha256','frozen_scenes_sha256'):
             if getattr(args,name) is None:parser.error('--'+name.replace('_','-')+' is required')
-        for value in (args.task_timeout_s,args.cohort_timeout_s):
-            if not math.isfinite(value) or value<=0:parser.error('timeouts must be finite and positive')
+        try: wall_budgets(args)
+        except RuntimeError as error: parser.error(str(error))
     return args
 
 
@@ -416,11 +465,13 @@ if __name__=='__main__':
     if args.self_test:
         import unittest
         suite=unittest.defaultTestLoader.discover(str(Path(__file__).resolve().parents[1]/'tests'),
-                                               pattern='test_joint_eval_pipeline.py')
+                                               pattern='test_joint*eval_pipeline.py')
         require(suite.countTestCases() > 0, 'CPU self-test suite is missing')
         raise SystemExit(0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)
     if args.print_plan:
         selected=args.smoke_tasks.split(',') if args.smoke_tasks else ['<eight tasks including POB and PCP>']
-        print(json.dumps({'validated':False,'commands':{stage:suite_command(args,stage=stage,tasks=selected)[1]
+        print(json.dumps({'validated':False,'protocol':evaluation_clock(args.simulation_rate),
+            'simulation_rate':args.simulation_rate,'wall_budgets':wall_budgets(args),
+            'commands':{stage:suite_command(args,stage=stage,tasks=selected)[1]
             for stage in ('smoke','formal')}},indent=2));raise SystemExit(0)
     raise SystemExit(main(args))

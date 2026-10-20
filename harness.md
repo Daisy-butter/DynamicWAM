@@ -1,6 +1,6 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.10 · 2026-10-19 · 目标投稿：CVPR 2027
+版本：v1.11 · 2026-10-20 · 目标投稿：CVPR 2027
 
 本文件是后续模型、推理、训练及评测改动的共同约束。每次开始工作先阅读本文件及仓库 AGENTS.md，检查实际代码、配置和运行状态，再实施修改。新的人类指令优先；发现冲突应说明并记录。本文件不表示已完成远程代码审计，不保证模型达到 SOTA。约束通过仓库入口、启动前检查和运行清单落实；仅有文档或入口文件不能保证未来每次操作自动合规。
 
@@ -254,3 +254,11 @@ Large files may be on verified SSD or HDD under wuruihan on .100 per the latest 
 
 
 2026-10-19 RTC service-latency correction: preserve failed formal35x20_02 (POB episode0 late suffix), prior accepted smoke, and clean guard exit. This is an inference-only repair: bootstrap hard prefix uses held native drive targets rather than measured qpos; native drive-target model-state semantics remain training-consistent; measured qpos remains the physical trajectory anchor and tracking diagnostic. Replace the large Queue feeder with bounded single-inflight anonymous shared mailboxes and tiny Pipe notifications, preserving complete packet values. Bound child CPU threads, spread eight starts across distinct H4 phases before episode time zero, and record complete camera/IPC service timing. No H4 increase, time scaling, stale-suffix acceptance, task exclusion, model-output blending or training-source change. The remaining expert-versus-policy prefix distribution gap is not claimed solved. Revalidate actual graph/concurrency and eight-GPU full-episode smoke under a heavy cohort before a new formal attempt.
+
+## 22. Stage3 step20000 camera-backlog restart (2026-10-20)
+
+The user requests fixing the camera/backlog failure and restarting all35x20, permitting the historical hardware concession to obtain a complete result before further model changes. This supersedes section21's no-time-scaling restriction only for the new explicitly named fixed0.25 joint-v3 protocol. Preserve failed formal35x20_03 and its135 valid/1 invalid saved episodes; do not reuse them as results of the new protocol. Restart all700 frozen scenes in a new output directory on .100. Do not touch .50 training, checkpoint, model architecture, weights or normalization.
+
+Use fixed simulation_rate=0.25 for the entire new smoke/formal run, never adaptive pauses/rate changes or automatic fallback. Physical dt0.004, action grid0.16, H4/R4/K10, refresh16 and maxcache31/4.96 remain unchanged. Scale pacing, wall deadlines, optional-history timing and bounded process timeouts consistently. Preserve actual wall/model/camera latency and original250ms physical-backlog validation. Scaled reports must set realtime_valid=false; clock_valid/continuous_valid reflect actual global clock limits. A completed scaled suite is a continuous-simulation policy diagnostic, not evidence of1x realtime performance or a like-for-like comparison with earlier1x results.
+
+Do not move mandatory observation time or recompute the committed H4 deadline to hide camera delay. Record the maximum-backlog event phase and timestamps, and validate reports before allowing cohort members to initialize their next episode. Preserve reports/MP4s for invalid attempts. The same exact20k checkpoint, full/fast model interface, native DOMINO outputs and immutable700scene hashes apply. Fresh guard-before-telemetry preflight, actual Graph/background check and8GPU8tasks x2full-episode smoke with16 decodedMP4s and clean final guard closure gate the one-shot formal35x20 launch. Include POB and PCP in smoke. Stop on error; no automatic retry, GPU recovery or recurring inspection. Initial formal stability and final exit checks remain required; no architecture changes before this evaluation finishes.

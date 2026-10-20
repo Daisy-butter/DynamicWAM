@@ -23,12 +23,17 @@ except ImportError:
 PROTOCOL = "continuous_world_actual_latency_motionkv_rtc_h4r4_v1"
 SCALED_PROTOCOL = "continuous_world_scaled_wall_motionkv_rtc_h4r4_v1"
 JOINT_V3_PROTOCOL = "continuous_world_actual_latency_joint_motionkv_async_v3"
+JOINT_V3_SCALED_PROTOCOL = "continuous_world_scaled_wall_joint_motionkv_async_v3"
 
 
-def protocol_for_rate(simulation_rate):
+def protocol_for_rate(simulation_rate, *, joint_v3=False):
     """Select a declared wall/physics clock; never adapt the rate mid-episode."""
     if not math.isfinite(simulation_rate) or not 0 < simulation_rate <= 1:
         raise ValueError("simulation_rate must be finite and within (0,1]")
+    if joint_v3:
+        if simulation_rate not in (1., .25):
+            raise ValueError("joint v3 requires an explicit fixed simulation_rate of 1 or .25")
+        return JOINT_V3_PROTOCOL if simulation_rate == 1 else JOINT_V3_SCALED_PROTOCOL
     return PROTOCOL if simulation_rate == 1 else SCALED_PROTOCOL
 
 
@@ -136,11 +141,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
     retime actions, move deadlines or freeze the world during computation;
     this separate protocol cannot claim actual-1x realtime validity.
     """
-    protocol = protocol_for_rate(simulation_rate)
-    if joint_v3:
-        if simulation_rate != 1.:
-            raise ValueError("joint v3 requires the declared 1x continuous clock")
-        protocol = JOINT_V3_PROTOCOL
+    protocol = protocol_for_rate(simulation_rate, joint_v3=joint_v3)
     simulation_rate = float(simulation_rate)
     if worker.busy:
         raise RuntimeError("inference worker must be drained before an episode")
@@ -151,6 +152,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
     if any(not math.isfinite(v) or v <= 0 for v in
            (max_backlog_s, infer_clock_tolerance_s, frame_period_s, request_timeout_s)):
         raise ValueError("timing limits must be finite and positive")
+    if max_backlog_s > .25 or infer_clock_tolerance_s > .02:
+        raise ValueError("RTC clock limits cannot exceed .25s backlog or .02s inference error")
     if getattr(session, "limit_retiming", True):
         raise ValueError("RTC requires nominal_training_timing; joint retiming changes trained prefix clock")
     if not np.isclose(float(session.action_interval_s), action_interval_s, atol=1e-10):
@@ -178,6 +181,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
     skipped_history_slots = 0
     terminal_reason = None
     max_lag = max_gap = overlap_ticks = 0.
+    max_backlog_event = first_backlog_violation = None
     last_tick = wall0
     phase_ticks = {"capture": 0, "inference": 0, "execution": 0, "execution_and_inference": 0}
 
@@ -192,13 +196,31 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
                        "completed_requests": requests, "completed_captures": captures,
                        "physics_runtime_timing": getattr(session, "runtime_timing_summary", lambda: {})(),
                        "simulation_rate": simulation_rate, "initial_physics_s": phys0,
-                       "scaled_wall_elapsed_s": simulation_rate * wall(), **details}
+                       "scaled_wall_elapsed_s": simulation_rate * wall(),
+                       "observed_max_backlog_s": max_lag, "max_backlog_event": max_backlog_event,
+                       "first_backlog_violation": first_backlog_violation, **details}
         raise RealtimeViolation(message, diagnostics=diagnostics)
 
-    def lag():
-        nonlocal max_lag
-        value = simulation_rate * wall() - (physical() - phys0)
-        max_lag = max(max_lag, value)
+    def lag(phase=None):
+        nonlocal max_lag, max_backlog_event, first_backlog_violation
+        now_wall, now_physics = wall(), physical()
+        value = simulation_rate * now_wall - (now_physics - phys0)
+        if value > max_lag:
+            max_lag = value
+            event = {"backlog_s": value, "wall_s": now_wall, "physics_s": now_physics,
+                     "scaled_wall_elapsed_s": simulation_rate * now_wall,
+                     "phase": phase or ("camera_pending" if pending is not None else
+                         "inference_pending" if active is not None else
+                         "execution" if track is not None else "hold_or_handoff"),
+                     "query_index": pending.get("query_index") if pending is not None else
+                         active.get("query_index") if active is not None else query,
+                     "action_origin": pending["action_origin"] if pending is not None else
+                         active["action_origin"] if active is not None else completed,
+                     "completed_targets": completed, "started_targets": started,
+                     "pending_capture": pending is not None, "worker_busy": bool(worker.busy)}
+            max_backlog_event = event
+            if value > max_backlog_s + 1e-8 and first_backlog_violation is None:
+                first_backlog_violation = dict(event)
         return value
 
     def guard_actions(actions):
@@ -305,8 +327,13 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         pending = {"physics_s": frozen, "wall_s": wall(), "for_inference": for_inference,
                    "delivered": False, "asynchronous_readback": True,
                    "action_origin": completed, "query_index": query if for_inference else None}
+        # Keep the exposure and reservation on the immutable action boundary.
+        # Catching up here would move the observation and extend frozen+H4;
+        # rendering overhead remains real lag, never hidden by re-labelling.
+        pending["pre_submit_backlog_s"] = lag("camera_before_submit")
         session.begin_capture(for_inference=for_inference)
         pending["submit_duration_s"] = wall() - pending["wall_s"]
+        pending["post_submit_backlog_s"] = lag("camera_submit")
         next_head = frozen + frame_period_s
 
     def finish_capture():
@@ -316,6 +343,7 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         record.update(duration_s=wall() - record["wall_s"], delivered=True,
                       physics_ticks_during_capture=int(round((physical() - record["physics_s"]) / dt)))
         record["capture_stages"] = getattr(session, "last_capture_diagnostics", {})
+        record["finish_backlog_s"] = lag("camera_finish")
         captures.append(record)
         pending = None
         if not record["for_inference"] or stopped() is not None:
@@ -610,7 +638,16 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
         pending.update(duration_s=wall() - pending["wall_s"], delivered=False,
                        physics_ticks_during_capture=int(round((physical() - pending["physics_s"]) / dt)))
         captures.append(pending)
+    lag("episode_complete")
     duration, sim_duration = wall(), physical() - phys0
+    max_infer_error = max((abs(r.get("inference_clock_error_s", 0.)) for r in requests
+        if r.get("inference_clock_check") == "complete_interval"), default=0.)
+    clock_failures = []
+    if not 0 <= max_lag <= max_backlog_s + 1e-8:
+        clock_failures.append("max_backlog_s")
+    if simulation_rate == 1 and not 0 <= max_infer_error <= infer_clock_tolerance_s + 1e-8:
+        clock_failures.append("max_inference_clock_error_s")
+    clock_valid = not clock_failures
     feedback = np.asarray(tracking)
     capture_gaps = np.diff([r["physics_s"] for r in captures if r["delivered"]])
     return {"protocol": protocol, "controller": "committed_clean_prefix_rtc_fixed_grid_h4r4",
@@ -619,7 +656,8 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             "timing_mode": "nominal_training_timing", "limit_retiming": False,
             "clock": "actual_wall_clock" if simulation_rate == 1 else "scaled_wall_clock",
             "simulation_rate": simulation_rate, "initial_physics_s": phys0,
-            "clock_valid": True, "continuous_valid": True,
+            "clock_valid": clock_valid, "continuous_valid": clock_valid,
+            "clock_validation_failures": clock_failures,
             "clock_semantics": "physics_elapsed_target=simulation_rate*actual_wall_elapsed",
             "virtual_delay": False, "startup_delay_excluded": False,
             "rtc_strategy": "trained_clean_prefix_conditioning", "rtc_prefix_max": prefix_max,
@@ -628,16 +666,16 @@ def run_continuous_rtc_episode(session, worker, *, task, episode_seed, action_li
             "action_limit": action_limit, "started_targets": started, "completed_targets": completed,
             "inference_calls": len(requests), "physics_time_s": sim_duration, "wall_time_s": duration,
             "realtime_factor": sim_duration / duration if duration else 1., "max_backlog_s": max_lag,
-            "max_tick_gap_wall_s": max_gap,
-            "max_inference_clock_error_s": max((abs(r.get("inference_clock_error_s", 0.)) for r in requests
-                if r.get("inference_clock_check") == "complete_interval"), default=0.),
+            "max_tick_gap_wall_s": max_gap, "max_backlog_event": max_backlog_event,
+            "first_backlog_violation": first_backlog_violation,
+            "max_inference_clock_error_s": max_infer_error,
             "max_scaled_inference_clock_error_s": max((abs(r.get("scaled_inference_clock_error_s", 0.)) for r in requests
                 if r.get("inference_clock_check") == "complete_interval"), default=0.),
             "max_dispatch_to_receive_wall_s": max((r.get("dispatch_to_receive_wall_s", 0.) for r in requests), default=0.),
             "clock_limits": {"max_backlog_s": max_backlog_s, "inference_clock_error_s": infer_clock_tolerance_s,
                 "inference_clock_gate": "strict_actual_interval" if simulation_rate == 1 else "declared_scaled_wall_global_bound"},
             "phase_physics_seconds": {key: value * dt for key, value in phase_ticks.items()},
-            "realtime_valid": simulation_rate == 1, "rows_dropped": 0, "guided_requests": 0,
+            "realtime_valid": simulation_rate == 1 and clock_valid, "rows_dropped": 0, "guided_requests": 0,
             "execution_inference_overlap": overlap_ticks > 0, "execution_inference_overlap_s": overlap_ticks * dt,
             "asynchronous_camera_readback": True, "history_frame_period_s": frame_period_s,
             "history_frame_period_semantics": "requested grid; missed frames are not fabricated",

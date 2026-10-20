@@ -144,6 +144,8 @@ class StageAcceptanceTests(unittest.TestCase):
         for task in self.tasks:
             for episode in range(2):
                 save(self.root/task/f'episode_{episode:04d}'/'report.json',dict(
+                    protocol=PROTOCOL,simulation_rate=1.,clock='actual_wall_clock',
+                    clock_valid=True,continuous_valid=True,realtime_valid=True,virtual_delay=False,
                     camera_equivalence=dict(passed=True),post_terminal_policy_drain=dict(slow_quiescent=True),
                     probe_action_limit=None,joint_v3=True,scene_compatibility_sha256='scenes'))
 

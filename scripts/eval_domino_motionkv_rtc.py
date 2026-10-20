@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = "continuous_world_actual_latency_motionkv_rtc_h4r4_v1"
 SCALED_PROTOCOL = "continuous_world_scaled_wall_motionkv_rtc_h4r4_v1"
 JOINT_V3_PROTOCOL = "continuous_world_actual_latency_joint_motionkv_async_v3"
+JOINT_V3_SCALED_PROTOCOL = "continuous_world_scaled_wall_joint_motionkv_async_v3"
 PREPARE_PROTOCOL = "domino_level1_policy_independent_scene_manifest_v1"
 POLICY_LABEL = "motionkv_rtc"
 for entry in (ROOT / "external/flash_attn_runtime", ROOT / "src"):
@@ -50,13 +51,12 @@ def read(path):
 
 
 def evaluation_protocol(rate=1., joint_v3=False):
+    # Use the controller's selector so deployment and saved-report validation
+    # cannot silently name the same clock differently.
+    from dynamicwam.runtime.domino_continuous.continuous_rtc import protocol_for_rate
     if not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 0 < rate <= 1:
         raise ValueError("simulation rate must be finite in (0,1]")
-    if joint_v3:
-        if rate != 1.:
-            raise ValueError("joint v3 requires 1x continuous evaluation")
-        return JOINT_V3_PROTOCOL
-    return PROTOCOL if rate == 1. else SCALED_PROTOCOL
+    return protocol_for_rate(rate, joint_v3=joint_v3)
 
 
 def valid_clock_identity(report):
@@ -320,6 +320,24 @@ def validate_rtc_report(report):
         previous_end = block.get("end_physics_s")
 
 
+def finish_checked_episode(directory, task, episode, simulation_rate, *, protocol,
+                           report, cohort, replay_recorder=None):
+    """Release peers only after saved artifacts pass the complete acceptance.
+
+    The controller has already stopped its clocks and all camera/slow work has
+    drained. Validation/encoding/barrier wall time must not modify the rollout
+    clocks. On failure leave the saved report, metrics and MP4 intact; main's
+    exception path aborts the cohort before another scene may initialize.
+    """
+    checked_episode(directory, task, episode, simulation_rate, expected_protocol=protocol)
+    if replay_recorder is not None:
+        replay_recorder.finalize(success=report["success"], complete=True)
+        report["development_replay_manifest"] = str(replay_recorder.directory / "manifest.json")
+        save(directory / "report.json", report)
+    report["cohort_scheduling"]["finished"] = cohort.wait(episode, "finished")
+    save(directory / "report.json", report)
+
+
 def parse():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=ROOT / "configs/absolute_motion_v2.yaml")
@@ -339,7 +357,7 @@ def parse():
     parser.add_argument("--probe-action-limit", type=int)
     parser.add_argument("--simulation-rate", type=float, default=1.)
     parser.add_argument("--joint-v3", action="store_true",
-                        help="require v3 joint checkpoint, background world and prime-then-hold at 1x")
+                        help="require v3 joint checkpoint and prime-then-hold; default 1x or explicit fixed .25x")
     parser.add_argument("--development-replay-dir", type=Path,
                         help="opt-in raw same-trajectory collection on excluded development scenes only")
     parser.add_argument("--development-scene-allowlist", type=Path)
@@ -595,8 +613,9 @@ def main():
                         infer_clock_tolerance_s=args.infer_clock_tolerance_s, frame_period_s=args.history_frame_period_s,
                         action_interval_s=args.action_interval_s, simulation_rate=args.simulation_rate,
                         joint_v3=args.joint_v3,replay_recorder=replay_recorder)
-                    if report.get("protocol") != protocol or not valid_clock_identity(report):
-                        raise RuntimeError("RTC rollout failed its protocol/clock gates")
+                    # Freeze the physical endpoint before post-terminal drains,
+                    # CPU video encoding, full acceptance and the cohort barrier.
+                    episode_end_physics_s = session.physics_time()
                     report["post_terminal_camera_drain_wall_s"] = close_episode_camera(session)
                     report["post_terminal_inference_drain_wall_s"] = drain_finished_episode(worker)
                     # Fast idle is not slow idle in joint-v3. Quiesce the source
@@ -606,9 +625,8 @@ def main():
                         drain_ack = worker.finish_episode(timeout_s=120.)
                         report["post_terminal_policy_drain_wall_s"] = time.perf_counter() - drain_started
                         report["post_terminal_policy_drain"] = drain_ack["episode_drain"]
-                    finished_barrier = cohort.wait(episode, "finished")
                     report["camera_equivalence"] = camera_equivalence
-                    report["cohort_scheduling"] = dict(mode=COHORT_MODE, ready=ready_barrier, finished=finished_barrier,
+                    report["cohort_scheduling"] = dict(mode=COHORT_MODE, ready=ready_barrier, finished=None,
                         manifest_sha256=spec["cohort_manifest_sha256"], opencv_threads=cv2.getNumThreads(),
                         live_start_stagger_s=live_start_stagger_s, live_start_stagger_index=live_start_stagger_index,
                         live_start_refresh_period_s=refresh_period_s, live_start_cohort_size=len(members),
@@ -620,7 +638,7 @@ def main():
                         "scene_compatibility_sha256": sha(args.scene_compatibility) if args.scene_compatibility else None,
                         "native_result_dir": str(native_dir), "action_interval_s": args.action_interval_s,
                         "history_frame_period_s": args.history_frame_period_s})
-                    video = session.head_video.finalize(native_dir / f"episode{episode}.mp4", episode_end_physics_s=session.physics_time())
+                    video = session.head_video.finalize(native_dir / f"episode{episode}.mp4", episode_end_physics_s=episode_end_physics_s)
                     report.update(video); report.update(publish_episode_video_links(directory, video))
                     tracker = session.metrics_tracker
                     if report["stop_reason"] == "out_of_bounds":
@@ -628,11 +646,8 @@ def main():
                     metric = tracker.get_episode_metrics(bool(report["success"]), None if report["stop_reason"] in {"success", "action_budget_exhausted"} else report["stop_reason"], seed=descriptor["seed"])
                     save(directory / "metrics.json", asdict(metric) if is_dataclass(metric) else vars(metric))
                     save(directory / "report.json", report)
-                    checked_episode(directory, args.task, episode, args.simulation_rate, expected_protocol=protocol)
-                    if replay_recorder is not None:
-                        replay_recorder.finalize(success=report["success"],complete=True)
-                        report["development_replay_manifest"] = str(replay_recorder.directory / "manifest.json")
-                        save(directory / "report.json",report)
+                    finish_checked_episode(directory, args.task, episode, args.simulation_rate,
+                        protocol=protocol, report=report, cohort=cohort, replay_recorder=replay_recorder)
                     completed.append(dict(seed=descriptor["seed"], success=report["success"]))
                     publish_native_task_results(output, native_dir, count=len(completed), planned=args.episodes,
                         stamp=args.result_stamp, instruction_type=str(benchmark["instruction_type"]), checkpoint=args.checkpoint,
