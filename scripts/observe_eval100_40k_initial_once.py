@@ -40,7 +40,8 @@ def main():
     root, run = ROOT, ROOT / 'outputs' / RUN_NAME
     out = root / 'launch40k/initial_observer_status.json'
     deadline = time.monotonic() + 7200
-    out.parent.mkdir(parents=True, exist_ok=True)
+    if not (out.parent / 'status.json').is_file():
+        raise RuntimeError('Start the controller first; observer must not create its launch directory')
     # Exclusive ownership prevents two initial observers from being launched.
     with (out.parent / 'initial_observer_owner.json').open('x') as stream:
         json.dump(dict(pid=os.getpid(), no_retry=True), stream)
