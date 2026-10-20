@@ -1,10 +1,12 @@
 """CPU regression of actual deployment input normalization, without model/GPU."""
 from types import SimpleNamespace
+from functools import partial
 from unittest.mock import patch
 import unittest
 import numpy as np
 import torch
 from dynamicwam.action_normalization import RoboTwinQposNormalizer
+from dynamicwam.models.joint_motion_kv_conditioner import JointMotionKVConditioner
 from dynamicwam.runtime.ciwam.wam.flow_runner import HeadFlowRunner
 from dynamicwam.runtime.ciwam.wam.multirate_policy import normalize_source_rtc_prefix
 from dynamicwam.runtime.domino_continuous.motionkv_policy import MotionKVPolicy
@@ -40,11 +42,20 @@ class DeploymentNormalizationParity(unittest.TestCase):
         empty,d=normalize_source_rtc_prefix({'_rtc_prefix_length':0,'_rtc_prefix_actions':np.empty((0,14),np.float32)},self.normalizer,reference)
         self.assertEqual(int(d[0]),0);self.assertEqual(int(torch.count_nonzero(empty)),0)
 
-    def test_actual_fast_packet_normalizes_state_prefix_and_queue_in_fp32(self):
+    def test_actual_fast_packet_normalizes_raw_inputs_once_keeps_source_plan_and_queue(self):
         policy=object.__new__(MotionKVPolicy)
         policy.base=SimpleNamespace(runtime=self.runner.runtime,runner=self.runner,_state_tensor=lambda x:torch.as_tensor(x,dtype=torch.float32).reshape(1,-1))
-        policy.bridge_sim_time=1.;policy.bridge_state=self.expected(self.raw[:,0]);policy.bridge=object()
-        policy.fast_model=SimpleNamespace(fast_conditioner=SimpleNamespace(interface_version=3))
+        policy.bridge_sim_time=1.;policy.bridge_state=self.expected(self.raw[:,0])
+        # Distinct already-normalized source plan, distinct from both the real
+        # queue and the completed slow plan. It must never be normalized again.
+        source=self.expected(self.raw)+2
+        policy.bridge=SimpleNamespace(source_action_plan=source,
+            source_completed_plan=source+100,
+            source_action_target_offsets=torch.arange(1,17,dtype=torch.float64)[None]*.16)
+        conditioner=SimpleNamespace(interface_version=3,action_dim=14,
+            _column=JointMotionKVConditioner._column)
+        conditioner.aligned_source_plan=partial(JointMotionKVConditioner.aligned_source_plan,conditioner)
+        policy.fast_model=SimpleNamespace(fast_conditioner=conditioner)
         captured={}
         def sample(current,bridge,text,mask,noise,*,prefix):
             captured.update(current=current,prefix=prefix)
@@ -61,11 +72,17 @@ class DeploymentNormalizationParity(unittest.TestCase):
         current=captured['current'];prefix=captured['prefix']
         torch.testing.assert_close(current.state,self.expected(self.raw[:,0]),rtol=0,atol=0)
         torch.testing.assert_close(prefix.actions[:,:4],self.expected(self.raw[:,:4]),rtol=0,atol=0)
-        torch.testing.assert_close(current.previous_plan[:,:15],self.expected(self.raw[:,:15]),rtol=0,atol=0)
-        self.assertFalse(bool(current.previous_plan_valid[0,-1]));self.assertTrue(bool(torch.isfinite(current.previous_plan).all()))
+        torch.testing.assert_close(current.previous_plan[:,:12],source[:,4:],rtol=0,atol=0)
+        self.assertTrue(bool(current.previous_plan_valid[:,:12].all()))
+        self.assertFalse(bool(current.previous_plan_valid[:,12:].any()))
+        self.assertEqual(int(current.previous_plan[:,12:].count_nonzero()),0)
+        self.assertTrue(bool(torch.isfinite(current.previous_plan).all()))
         # Numeric motion already enters in raw FP32; do not renormalize twice.
         self.assertEqual(current.motion.dtype,torch.float32)
         torch.testing.assert_close(current.motion,torch.from_numpy(packet['motion_features'])[None],rtol=0,atol=0)
         np.testing.assert_array_equal(previous[:15],self.raw[0,:15].numpy())
+        self.assertTrue(np.isnan(previous[-1]).all())
+        np.testing.assert_array_equal(valid,np.arange(16)<15)
+        torch.testing.assert_close(policy.bridge.source_action_plan,source,rtol=0,atol=0)
 
 if __name__=='__main__':unittest.main()

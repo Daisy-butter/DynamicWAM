@@ -8,6 +8,7 @@ returns the full 16-action plan without retiming or trimming any prefix.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import numpy as np
 import torch
@@ -18,6 +19,25 @@ from dynamicwam.models.rtc_prefix import PrefixCondition
 from dynamicwam.observations.multiview import fast_views_from_composite
 from dynamicwam.runtime.ciwam.wam.multirate_policy import MultiratePolicy, packet_noise_generator, capture_observation_packet
 from dynamicwam.runtime.ciwam.wam.async_world_schedule import AsyncWorldScheduler, ASYNC_WORLD_SCHEDULE
+
+
+# This checkpoint family was trained without real previous-fast-plan replay:
+# its soft previous_plan falls back to the physically aligned EARLY source plan.
+# This identity is inference provenance, not a new model/checkpoint contract.
+PREVIOUS_PLAN_MODE = "training_aligned_source_early_v1"
+
+
+def with_training_previous_plan(current, bridge, conditioner):
+    """Bind the same soft reference as training, independently of the RTC queue.
+
+    Source actions already live in normalized model coordinates. Do not
+    normalize them again, substitute the 2+8 completed plan, or pad an expired
+    source horizon. The real execution queue and hard prefix are untouched.
+    Explicit tensors are needed by both routing/proposal feedback and Graph
+    static input copies; passing None would only work in training's fallback.
+    """
+    previous, valid = conditioner.aligned_source_plan(current, bridge, completed=False)
+    return replace(current, previous_plan=previous.detach(), previous_plan_valid=valid)
 
 
 def pad_rtc_text(text_rows):
@@ -326,6 +346,7 @@ class MotionKVPolicy(MultiratePolicy):
             prefix_length=length, fast_steps=10,
             source_bridge=self.contract['native_multirate']['source_bridge'],
             motion_interface_version=getattr(self.fast_model.fast_conditioner, 'interface_version', 1),
+            previous_plan_mode=PREVIOUS_PLAN_MODE if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) == 3 else None,
             rtc_controller=RTC_TIMESTAMPED_CONTROLLER, total_policy_ms=(time.perf_counter()-started)*1000,
             action_interval_seconds=float(self.runtime.action_interval_seconds),
             graph={key: value for key, value in self.fast_graph.stats.items() if key != 'last_signature'},
@@ -364,15 +385,12 @@ class MotionKVPolicy(MultiratePolicy):
             device=device, dtype=noise.dtype)[None] * float(packet['_rtc_action_interval_s']))
         current.observation_delay_seconds = noise.new_tensor([length * float(packet['_rtc_action_interval_s'])])
         if getattr(self.fast_model.fast_conditioner, 'interface_version', 1) == 3:
-            offsets, previous, previous_valid = validate_v3_packet_context(packet)
+            offsets, _, _ = validate_v3_packet_context(packet)
             current.action_target_offsets = torch.from_numpy(offsets.copy()).to(device=device,dtype=torch.float64)[None]
             current.age.delta_sim_seconds = torch.tensor(float(packet['sim_time'])-self.bridge_sim_time,
                 device=device,dtype=torch.float64)
             current.observation_delay_seconds = current.action_target_offsets[:,length-1] if length else current.action_target_offsets.new_zeros(1)
-            safe = np.where(previous_valid[:,None],previous,0.)
-            previous_tensor = torch.from_numpy(safe).to(device=device,dtype=torch.float32)[None]
-            current.previous_plan = self.runtime.action_normalizer.normalize(previous_tensor).to(dtype=noise.dtype)
-            current.previous_plan_valid = torch.from_numpy(previous_valid.copy()).to(device)[None]
+            current = with_training_previous_plan(current, self.bridge, self.fast_model.fast_conditioner)
         self._sync_current_stream(device)
         preprocess_ms = (time.perf_counter()-started)*1000
         sampled = time.perf_counter()
