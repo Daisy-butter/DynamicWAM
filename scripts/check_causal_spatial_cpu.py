@@ -10,7 +10,7 @@ def main():
  import torch
  from dynamicwam.training.train.causal_spatial_trainer import build_dataset,align_proposal
  from dynamicwam.training.data.causal_spatial_dataset import collate_causal_spatial,audit_causal_spatial_coverage
- from dynamicwam.inference.causal_spatial_loader import build_from_initialization,native_payload
+ from dynamicwam.inference.causal_spatial_loader import build_from_initialization,build_native,native_payload
  r=load_recipe(a.config);out=dict(started_at=utc(),passed=False,gpu_used=False,
   source_sha256=source_files_and_hash(ROOT)[1],config_sha256=file_digest(a.config))
  try:
@@ -30,6 +30,8 @@ def main():
   teacher=native_payload(r['teacher_checkpoint'])
   out['teacher_normalization_equal']=all(teacher['config']['action_normalization']['stats'][k]==cfg['action_normalization']['stats'][k] for k in ['mean','std'])
   assert out['teacher_normalization_equal']
+  teacher_model=build_native(teacher['config'],'cpu');teacher_model.load_state_dict(teacher['model'],strict=True)
+  out['teacher_actual_strict_reload']=True
   out['passed']=True
  except BaseException:
   out['error']=traceback.format_exc();raise

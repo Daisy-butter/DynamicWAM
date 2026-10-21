@@ -20,6 +20,12 @@ def sha256(path):
 def build_native(config,device='cpu'):
  """Reconstruct the exact Stage1/wo-motion geometry, without loading Wan5B."""
  m=config['model'];w=dict(m['compact_wan']);a=m['action_expert'];motion=m['absolute_motion']
+ if not (Path(w['config_path'])/'config.json').is_file():
+  # Published checkpoints contain the author's original absolute asset path.
+  # Relocate architecture metadata only; all model tensors still load strictly.
+  local=Path(__file__).resolve().parents[3]/'external/Wan2.2-TI2V-5B/config.json'
+  if not local.is_file():raise FileNotFoundError('verified local Wan architecture config unavailable: '+str(local))
+  w['config_path']=str(local.parent)
  w['future_video_size']=tuple(w['future_video_size'])
  compact=CompactWANModel.from_config(CompactWANConfig(**w),device=device)
  return SmallWAMActionModel(SmallWAMActionConfig(compact_wan=compact.config,

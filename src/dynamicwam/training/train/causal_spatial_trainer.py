@@ -328,5 +328,8 @@ class CausalSpatialTrainer:
    (self.run/f'rank_{self.acc.process_index}_resources.json').write_text(json.dumps(receipt,indent=2))
 
  def release_training_resources(self):
+  for handle in self.gradient_hooks:handle.remove()
+  self.gradient_hooks=[];self.gradient_evidence.clear()
+  self.scheduler=None;self.timesteps=None;self.sigmas=None
   self.objective=None;self.optimizer=None;self.teacher=None;self.loader=None;self.val_loader=None
   gc.collect()
