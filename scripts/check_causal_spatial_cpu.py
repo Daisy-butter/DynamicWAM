@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse,json,sys,traceback,gc
 ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT/'src'),str(ROOT/'scripts')]
 from train_causal_spatial import load_recipe
-from supervise_motionkv_training import atomic_json,utc
+from supervise_motionkv_training import atomic_json,utc,source_files_and_hash,file_digest
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
@@ -11,7 +11,8 @@ def main():
  from dynamicwam.training.train.causal_spatial_trainer import build_dataset,align_proposal
  from dynamicwam.training.data.causal_spatial_dataset import collate_causal_spatial,audit_causal_spatial_coverage
  from dynamicwam.inference.causal_spatial_loader import build_from_initialization,native_payload
- r=load_recipe(a.config);out=dict(started_at=utc(),passed=False,gpu_used=False)
+ r=load_recipe(a.config);out=dict(started_at=utc(),passed=False,gpu_used=False,
+  source_sha256=source_files_and_hash(ROOT)[1],config_sha256=file_digest(a.config))
  try:
   out['coverage']=audit_causal_spatial_coverage(r['data']['physical_grid_root'],r['data']['future_latent_root'])
   ds=build_dataset(r);rows=[ds[i] for i in [0,len(ds)//2,len(ds)-1]];b=collate_causal_spatial(rows)

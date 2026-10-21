@@ -96,7 +96,9 @@ The finite window is replayed identically in training and deployment.
             pixel_valid = valid[:,i].bool()
             # Flow is displacement in input-image pixels over dt, not a color map.
             velocity = flow[:,i].float() / safe_dt[:,None,None,None,None]
-            velocity = velocity / velocity.new_tensor([w,h]).view(1,1,2,1,1)
+            # Scalar divisors stay CUDA kernel arguments. Building a tensor
+            # from a Python list here performs forbidden H2D during capture.
+            velocity = torch.stack((velocity[:,:,0] / w, velocity[:,:,1] / h),dim=2)
             motion_valid = flow_valid[:,i].bool() & pixel_valid & temporal_valid[:,None,None,None,None]
             velocity = torch.where(motion_valid, velocity, 0.)
             observed = torch.cat((rgb[:,i].float(),velocity),2)

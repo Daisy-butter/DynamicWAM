@@ -51,6 +51,8 @@ def main():
     parser.add_argument("--task", default="adjust_bottle")
     parser.add_argument("--seed", type=int, default=1610021)
     parser.add_argument("--allow-diagnostic", action="store_true")
+    parser.add_argument("--cuda-graph", action="store_true",
+        help="use the independently accepted shared production Graph implementation")
     parser.add_argument("--formal-scene-manifest", type=Path)
     parser.add_argument("--probe-action-limit", type=int)
     args = parser.parse_args()
@@ -71,14 +73,14 @@ def main():
     import numpy as np
     import yaml
     cv2.setNumThreads(1)
-    from dynamicwam.config.loader import load_profile
+    from dynamicwam.inference.causal_spatial_config import load_deployment
     from dynamicwam.runtime.domino_continuous.domino_session import prepare_level1_env
     import sapien
     from dynamicwam.runtime.domino_continuous.gpu_binding import install_gpu_binding
     binding = install_gpu_binding()
     if binding is None: raise RuntimeError("DYNAMICWAM_GPU_PCI and UUID pinning are required")
-    profile = load_profile(config_path)
-    benchmark, inference = profile.benchmark_config(), profile.inference_config()
+    deploy, profile, inference = load_deployment(config_path)
+    benchmark = profile.benchmark_config()
     if args.task not in benchmark["tasks"]: raise ValueError("task outside configured DOMINO Level-1")
     domino = (ROOT / benchmark["domino_root"]).resolve()
     sys.path.insert(0, str(domino / "script"))
@@ -104,7 +106,7 @@ def main():
     try:
         from dynamicwam.inference.causal_spatial_policy import CausalSpatialProcessWorker
         worker = CausalSpatialProcessWorker(project_root=str(ROOT), config_path=str(config_path),
-            checkpoint=str(checkpoint), allow_diagnostic=args.allow_diagnostic)
+            checkpoint=str(checkpoint), allow_diagnostic=args.allow_diagnostic, cuda_graph=args.cuda_graph)
         env, prepared = prepare_level1_env(domino, task_name=args.task, task_config=benchmark["task_config"],
             start_seed=args.seed, instruction_type=str(benchmark["instruction_type"]))
         if (args.task, int(prepared["seed"])) in formal_scenes:
@@ -133,7 +135,10 @@ def main():
         equivalence = session.validate_camera_reader(env.get_obs())
         if session.physics_time() != initial_clock: raise RuntimeError("camera warmup advanced physics")
         save(episode_dir / "camera_equivalence.json", equivalence)
-        provenance = source_provenance(semantics_id=PROTOCOL, config_path=config_path)
+        provenance = source_provenance(semantics_id=PROTOCOL, config_path=profile.path)
+        provenance["deployment_config"] = str(config_path)
+        provenance["deployment_sha256"] = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        provenance["deployment_runtime_contract"] = deploy["runtime_contract"]
         # Include the newly separated controller/preprocessing contracts.
         for relative in ("src/dynamicwam/runtime/continuous_causal_spatial.py", "src/dynamicwam/runtime/causal_spatial_contract.py",
                          "src/dynamicwam/observations/causal_spatial_window.py", "scripts/smoke_causal_spatial_domino.py"):
@@ -172,10 +177,9 @@ def main():
             instruction_type=str(benchmark["instruction_type"]), checkpoint=checkpoint,
             generation=provenance["source_generation"], protocol=PROTOCOL, timing_mode="nominal_training_timing")
         completed = True
-        save(output / "completed.json", dict(passed=True, full_native_episode=args.probe_action_limit is None,
+        completed_receipt = dict(passed=True, full_native_episode=args.probe_action_limit is None,
             report=str(episode_dir / "report.json"), video=report["video"], success=report["success"],
-            realtime_valid=True, performance_claim=False))
-        print(json.dumps(dict(passed=True, report=str(episode_dir / "report.json"), video=report["video"])), flush=True)
+            realtime_valid=True, performance_claim=False)
     except BaseException as exc:
         save(output / "failure.json", dict(error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc(),
             diagnostics=getattr(exc, "diagnostics", None), passed=False))
@@ -195,6 +199,10 @@ def main():
             cleanup_episode(session, env, episode_dir, events)
             save(output / "cleanup.json", dict(completed=completed, owned_worker_closed=worker is None or worker._closed,
                 outer_guard_owner_pid=args.guard_owner_pid, final_driver_health_owned_by_supervisor=True))
+    # Success is published only after the owned inference child and scene close.
+    if completed:
+        save(output / "completed.json", completed_receipt)
+        print(json.dumps(completed_receipt), flush=True)
 
 
 if __name__ == "__main__": main()

@@ -22,20 +22,7 @@ from dynamicwam.runtime.domino_continuous.worker import (
 )
 
 
-EXPECTED_RUNTIME_CONTRACT = {
-    "version": "causal_spatial_v4_h2r2", "dt": .16, "H": 2, "R": 2,
-    "chunk_size": 16, "K": 10, "simulation_rate": 1.,
-    "window_size": 4, "window_stride_seconds": .32,
-    "max_memory_age_seconds": 4.96, "memory_refresh_actions": 16,
-    "memory": "observation_only_native_video", "belief": "finite_causal_spatial_window",
-    "future": "fresh_joint_action_conditioned_FM",
-    "previous_plan": "time_aligned_policy_proposal_valid_overlap_only",
-    "prefix_source_training": "expert_demonstration",
-    "soft_plan_training": "frozen_native_teacher_on_previous_fast_query_observation",
-    "on_policy_ready": False,
-    "command_history": "recorded_capture_drive_targets_not_dense_executed_control",
-    "normalization": "FP32_before_BF16",
-}
+from dynamicwam.inference.causal_spatial_config import EXPECTED_RUNTIME_CONTRACT, load_deployment
 
 
 def capture_metadata(packet):
@@ -84,17 +71,16 @@ def validate_packet(packet):
 
 
 class CausalSpatialPolicy:
-    def __init__(self, config_path, checkpoint, *, device="cuda:0", allow_diagnostic=False):
+    def __init__(self, config_path, checkpoint, *, device="cuda:0", allow_diagnostic=False, cuda_graph=False):
         import torch
         from dynamicwam.inference.causal_spatial_loader import load_full, sha256
-        from dynamicwam.inference.model_loader import load_deploy_config
         from dynamicwam.action_normalization import RoboTwinQposNormalizer
         from dynamicwam.models.flow_schedule import BridgeSchedule
         from dynamicwam.runtime.causal_spatial_contract import CausalSpatialContract
         self.device = torch.device(device)
         self.model, payload = load_full(checkpoint, self.device, allow_diagnostic=allow_diagnostic)
         self.model.eval().requires_grad_(False)
-        self.config = load_deploy_config(config_path)
+        self.deployment, self.native_profile, self.config = load_deployment(config_path)
         self.contract = CausalSpatialContract()
         self.checkpoint_sha256 = sha256(checkpoint)
         self.checkpoint_runtime_contract = payload["runtime_contract"]
@@ -120,6 +106,8 @@ class CausalSpatialPolicy:
         self._text = None
         self._instruction = None
         self._warm = False
+        self._graph_requested = bool(cuda_graph)
+        self._graph = None
         self.vae = None
         self._source_origin = -1
         self.last_policy_timing = {}
@@ -166,6 +154,7 @@ class CausalSpatialPolicy:
         self.warmup_timing.update(instruction_prepare_ms=1000 * (time.perf_counter() - started),
             cuda_peak_memory_allocated_bytes=int(torch.cuda.max_memory_allocated(self.device)),
             cuda_peak_memory_reserved_bytes=int(torch.cuda.max_memory_reserved(self.device)))
+        self.last_policy_timing = dict(self.warmup_timing, prepared_instruction=True)
         return self.warmup_timing
 
     def _condition_latent(self, packet):
@@ -276,10 +265,21 @@ class CausalSpatialPolicy:
         memory = self.memories.snapshot(observation_physics_s=0., request_wall_s=time.perf_counter())
         batch = self._model_batch(packet, observation, memory, np.zeros((2, 14), np.float32),
             np.arange(1, 17) * .16, np.zeros((16, 14), np.float32), np.zeros(16, bool))
+        noise = (torch.randn((1, 16, 14), device=self.device),
+                 torch.randn((1, 48, 2, 12, 10), device=self.device))
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
             for _ in range(2):
-                self.model.sample(batch, action_noise=torch.randn((1, 16, 14), device=self.device),
-                    future_noise=torch.randn((1, 48, 2, 12, 10), device=self.device), sigmas=self.sigmas, memory=memory.payload)
+                baseline = self.model.sample(batch, action_noise=noise[0], future_noise=noise[1],
+                                             sigmas=self.sigmas, memory=memory.payload)
+            if self._graph_requested:
+                from dynamicwam.inference.causal_spatial_graph import JointGraph
+                # Producer has completed and no live physical clock has begun.
+                self._graph = JointGraph(self.model, batch, memory.payload, noise, self.sigmas)
+                replay = self._graph.replay(batch, memory.payload, noise)
+                for name in ("actions", "future_latent", "belief_state"):
+                    torch.testing.assert_close(replay[name], baseline[name], atol=.002, rtol=.002)
+                self.warmup_timing.update(cuda_graph=True, graph_captures=self._graph.captures,
+                    graph_eager_parity=True, shared_graph_module="dynamicwam.inference.causal_spatial_graph")
         self._sync_stream()
         self._new_episode()
 
@@ -297,7 +297,8 @@ class CausalSpatialPolicy:
             self._submit_memory(packet, observation, origin)
             self._future.result(timeout=120.); self._slow_status()
             self.last_policy_timing = dict(bootstrap_only=True, bootstrap_actions_executed=False,
-                memory=self._last_slow, cuda_graph=False, complete_request_ms=1000 * (time.perf_counter() - started))
+                memory=self._last_slow, cuda_graph=self._graph is not None,
+                complete_request_ms=1000 * (time.perf_counter() - started))
             return np.repeat(np.asarray(packet["_rtc_capture_drive_targets"], np.float64)[None], 16, axis=0)
         memory = self.memories.snapshot(observation_physics_s=float(packet["sim_time"]), request_wall_s=time.perf_counter())
         launched = False
@@ -309,8 +310,11 @@ class CausalSpatialPolicy:
         future_noise = torch.randn((1, 48, 2, 12, 10), device=self.device, generator=generator)
         fast_started = time.perf_counter()
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-            outputs = self.model.sample(batch, action_noise=action_noise, future_noise=future_noise,
-                sigmas=self.sigmas, memory=memory.payload)
+            if self._graph is None:
+                outputs = self.model.sample(batch, action_noise=action_noise, future_noise=future_noise,
+                    sigmas=self.sigmas, memory=memory.payload)
+            else:
+                outputs = self._graph.replay(batch, memory.payload, (action_noise, future_noise))
         self._sync_stream()
         # Match training coordinates exactly: denormalize in FP32, never raw BF16.
         actions = self.normalizer.denormalize(outputs["actions"].float()).squeeze(0).cpu().numpy().astype(np.float64)
@@ -318,7 +322,9 @@ class CausalSpatialPolicy:
             raise RuntimeError("nonfinite or malformed causal-spatial action plan")
         actions[:len(prefix)] = prefix  # preserve controller-owned original targets exactly
         finished = time.perf_counter()
-        self.last_policy_timing = dict(policy="causal_spatial", cuda_graph=False, H=2, R=2, K=10,
+        self.last_policy_timing = dict(policy="causal_spatial", cuda_graph=self._graph is not None, H=2, R=2, K=10,
+            graph_captures=0 if self._graph is None else self._graph.captures,
+            graph_replays=0 if self._graph is None else self._graph.replays,
             source_event_id=memory.source.event_id, source_sim_time=memory.source.observation_physics_s,
             source_publication=memory.publication, source_completed_wall_s=memory.completed_wall_s,
             source_consumed_wall_s=fast_started, memory_age_seconds=float(packet["sim_time"]) - memory.source.observation_physics_s,
@@ -343,10 +349,14 @@ class CausalSpatialPolicy:
             self.drain_episode()
         finally:
             self._executor.shutdown(wait=True, cancel_futures=True)
+            if self._graph is not None:
+                self._sync_stream()
+                self._graph.graph.reset()
+                self._graph = None
             self._closed = True
 
 
-def _serve_causal_policy(root, config, checkpoint, infer_index, allow_diagnostic, requests, results):
+def _serve_causal_policy(root, config, checkpoint, infer_index, allow_diagnostic, cuda_graph, requests, results):
     policy = None
     try:
         _die_when_parent_dies()
@@ -354,11 +364,13 @@ def _serve_causal_policy(root, config, checkpoint, infer_index, allow_diagnostic
         cpu_runtime = _configure_cpu_threads()
         torch.cuda.set_device(infer_index)
         try:
-            policy = CausalSpatialPolicy(config, checkpoint, device=f"cuda:{infer_index}", allow_diagnostic=allow_diagnostic)
+            policy = CausalSpatialPolicy(config, checkpoint, device=f"cuda:{infer_index}",
+                                         allow_diagnostic=allow_diagnostic, cuda_graph=cuda_graph)
         except BaseException as exc:
             results.put(f"{type(exc).__name__}: {exc}"); traceback.print_exc(); return
         results.put(dict(ready=True, metadata=dict(policy="causal_spatial", cpu_runtime=cpu_runtime,
-            checkpoint_sha256=policy.checkpoint_sha256, cuda_graph=False)))
+            runtime=dict(torch=torch.__version__,cuda=torch.version.cuda,python=__import__('sys').version.split()[0]),
+            checkpoint_sha256=policy.checkpoint_sha256, cuda_graph=False, cuda_graph_requested=bool(cuda_graph))))
         def infer(packet):
             if "_prepare_instruction" in packet:
                 policy.prepare_instruction(packet["_prepare_instruction"])
@@ -376,7 +388,7 @@ def _serve_causal_policy(root, config, checkpoint, infer_index, allow_diagnostic
 
 class CausalSpatialProcessWorker(ProcessInferenceWorker):
     """Reuse the tested owned-process/shared-mailbox lifecycle, new policy only."""
-    def __init__(self, *, project_root, config_path, checkpoint, infer_index=0, allow_diagnostic=False):
+    def __init__(self, *, project_root, config_path, checkpoint, infer_index=0, allow_diagnostic=False, cuda_graph=False):
         context = multiprocessing.get_context("spawn")
         self._requests, child_requests = _SharedMailbox.pair(context, _REQUEST_CAPACITY)
         child_results, self._results = _SharedMailbox.pair(context, _RESULT_CAPACITY)
@@ -390,7 +402,7 @@ class CausalSpatialProcessWorker(ProcessInferenceWorker):
         self.intervals = []
         self.startup_metadata = {}
         self._process = context.Process(target=_serve_causal_policy,
-            args=(str(project_root), str(config_path), str(checkpoint), int(infer_index), bool(allow_diagnostic), child_requests, child_results),
+            args=(str(project_root), str(config_path), str(checkpoint), int(infer_index), bool(allow_diagnostic), bool(cuda_graph), child_requests, child_results),
             name="causal-spatial-inference", daemon=True)
         try:
             try:
@@ -401,3 +413,14 @@ class CausalSpatialProcessWorker(ProcessInferenceWorker):
             if status: raise RuntimeError(status)
         except BaseException:
             self.close(); raise
+
+    def prepare_instruction(self, instruction, timeout_s=120.):
+        result = super().prepare_instruction(instruction, timeout_s)
+        measured = result["policy_timing"]
+        for key in ("cuda_graph", "graph_captures", "graph_eager_parity", "shared_graph_module"):
+            if key in measured: self.startup_metadata[key] = measured[key]
+        if self.startup_metadata.get("cuda_graph_requested") and not (
+                measured.get("cuda_graph") is True and measured.get("graph_captures") == 1
+                and measured.get("graph_eager_parity") is True):
+            raise RuntimeError("requested production Graph was not captured and parity checked")
+        return result

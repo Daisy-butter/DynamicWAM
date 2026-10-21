@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Receipt-gated, one-shot formal phase sequence; CPU waiting, no retries/polls.
+
+Acceptance schema: causal_spatial_formal_acceptance_v1; passed=true; git_head,
+source_sha256; configs[phase]={path,sha256}; evidence.data/cpu={path,sha256};
+evidence.smokes[phase]={audit,guard_status,guard_manifest}; evidence.graph=
+{result,guard_status,guard_manifest}; evidence.domino={completed,report,
+guard_status,guard_manifest}. Every artifact reference is {path,sha256}.
+The root writes acceptance only after actual acceptance, never this controller.
+"""
+from __future__ import annotations
+import argparse
+from datetime import datetime,timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import traceback
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path[:0]=[str(ROOT/"scripts"),str(ROOT/"src")]
+SSD=Path("/SSD_DISK/users/wuruihan/DynamicWAM")
+OUT=SSD/"outputs/diagnostics/causal_spatial_v4_20261021"
+PHASES=("interface_adapt","policy_pretrain","joint")
+STEPS=dict(zip(PHASES,(2000,30000,20000)))
+FORMAT="causal_spatial_formal_acceptance_v1"
+
+
+def require(value,message):
+    if not value:raise RuntimeError(message)
+
+
+def read(path):return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def digest(path):
+    h=hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda:stream.read(8*1024*1024),b""):h.update(block)
+    return h.hexdigest()
+
+
+def save(path,value):
+    path=Path(path);temporary=path.with_suffix(path.suffix+".tmp")
+    temporary.write_text(json.dumps(value,indent=2,allow_nan=False),encoding="utf-8")
+    temporary.replace(path)
+
+
+def artifact(ref,*,json_value=True):
+    require(isinstance(ref,dict) and set(ref)>={"path","sha256"},"artifact requires path and SHA256")
+    path=Path(ref["path"]).resolve(strict=True)
+    require(path.is_file() and digest(path)==ref["sha256"],"artifact changed: "+str(path))
+    return read(path) if json_value else path
+
+
+def source_identity():
+    from supervise_motionkv_training import source_files_and_hash
+    require(not subprocess.check_output(["git","status","--porcelain"],cwd=ROOT,text=True).strip(),
+            "freeze and commit the source before formal sequence")
+    return dict(git_head=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),
+                source_sha256=source_files_and_hash(ROOT)[1])
+
+
+def check_guard(bundle,identity,*,expected_stage,workers):
+    status=artifact(bundle["guard_status"]);manifest=artifact(bundle["guard_manifest"])
+    path=Path(bundle["guard_status"]["path"]).resolve()
+    require(path.name=="status.json" and Path(bundle["guard_manifest"]["path"]).resolve()==path.parent/"manifest.json",
+            "guard status/manifest must belong to one lifecycle")
+    require(bool(status.get("ended_at")) and status.get("final_exit_code")==0 and
+            all(status.get(key) is True for key in ("driver_exit_clean","guard_workers_exited","guard_all_handles_closed")),
+            "acceptance lifecycle workers and guards have not cleanly closed")
+    for key in ("git_head","source_sha256"):require(manifest[key]==identity[key],"guard source identity mismatch")
+    require(manifest.get("stage")==expected_stage and manifest.get("preflight_only") is False,"wrong guard stage")
+    require(manifest.get("device_lifetime_mode")=="fds_before_telemetry_v1","wrong device lifetime mode")
+    ids=manifest.get("guard_gpu_uuids",[]);selected=manifest.get("worker_gpu_uuids",[])
+    require(len(ids)==len(set(ids))==8 and len(selected)==len(set(selected))==workers and set(selected)<=set(ids),
+            "guard or compute GPU coverage mismatch")
+    require(set(ids)=={row["uuid"] for row in manifest["proc_gpu_inventory"]},"guard differs from actual inventory")
+    require(manifest["device_guard_sha256"]==digest(ROOT/"scripts/device_lifetime_guard.py"),"guard helper changed")
+    require(not status.get("stop_reason"),"lifecycle stopped with a failure")
+    return path.parent,manifest
+
+
+def check_export(value,recipe,*,diagnostic):
+    require(value.get("format")=="causal_spatial_export_audit_v1" and value.get("passed") is True,"strict export audit failed")
+    require(value.get("phase")==recipe["phase"] and value.get("diagnostic") is diagnostic,"audit phase/diagnostic mismatch")
+    for key in ("full_strict_reload","fast_strict_reload","full_fast_equal"):
+        require(value.get(key,{}).get("passed") is True,"audit missing/failed "+key)
+    require(bool(value.get("saved_state")),"audit missing saved optimizer/RNG state")
+    ranks=value.get("ranks",[])
+    require(len(ranks)==8 and {r["rank"] for r in ranks}==set(range(8)),"audit needs all eight ranks")
+    for row in ranks:
+        require(row.get("world_size")==8 and row.get("completed") is True and row.get("error_type") is None,
+                "rank incomplete")
+        require(row.get("step")==row.get("optimizer_updates")==recipe["steps"],"rank update budget mismatch")
+        require(all(row.get(k)==0 for k in ("oom_count","nonfinite_loss_count","nonfinite_grad_count")),"rank numerical/OOM failure")
+        require(row.get("finite_grad_checks")==recipe["steps"] and
+                row.get("finite_loss_checks",0)>=recipe["steps"]*recipe["accumulation"],"rank finite-check coverage missing")
+    canonical=Path(recipe["run_dir"]).resolve()/"exports"/f"causal_spatial_step_{recipe['steps']}.pt"
+    require(Path(value["full_checkpoint"]["path"]).resolve()==canonical,"export is not the canonical final checkpoint")
+    artifact(value["full_checkpoint"],json_value=False)
+    artifact(value["fast_checkpoint"],json_value=False)
+    return value["full_checkpoint"]
+
+
+def check_domino(bundle,checkpoint):
+    from dynamicwam.runtime.continuous_causal_spatial import validate_causal_spatial_report
+    from video_artifacts import validate_video_artifacts
+    complete=artifact(bundle["completed"]);report=artifact(bundle["report"])
+    require(complete.get("passed") is True and complete.get("full_native_episode") is True,
+            "complete full native DOMINO episode is required")
+    require(Path(complete["report"]).resolve()==Path(bundle["report"]["path"]).resolve(),"DOMINO report reference mismatch")
+    require(report.get("full_native_episode") is True and report.get("realtime_valid") is True and
+            report.get("continuous_valid") is True,"DOMINO is not full 1x continuous acceptance")
+    require(report.get("completed_targets",0)>0 and report.get("inference_calls",0)>=2,"no actual policy handoff")
+    require(report["checkpoint_sha256"]==checkpoint["sha256"] and
+            Path(report["checkpoint"]).resolve()==Path(checkpoint["path"]).resolve(),"DOMINO tested a different checkpoint")
+    startup=report.get("worker_startup_metadata",{})
+    require(startup.get("cuda_graph") is True and startup.get("graph_captures")==1 and
+            startup.get("graph_eager_parity") is True and
+            startup.get("shared_graph_module")=="dynamicwam.inference.causal_spatial_graph",
+            "DOMINO did not run the parity-checked production Graph")
+    fast=[row for row in report["requests"] if row.get("installed") and not row.get("bootstrap_only")]
+    require(bool(fast) and all(row.get("policy_diagnostics",{}).get("cuda_graph") is True and
+            row["policy_diagnostics"].get("graph_captures")==1 for row in fast),"DOMINO fast path used a fallback or recapture")
+    validate_causal_spatial_report(report)
+    # The committed sidecar binds the complete ffprobe frame decode to MP4 SHA.
+    # Revalidate those hashes and timestamps; no GPU access or repeated decode.
+    require(validate_video_artifacts(report),"native MP4/full-decode sidecar validation failed")
+    require(complete["video"]==report["video"],"DOMINO completion video mismatch")
+    return report
+
+
+def validate_acceptance(path,*,identity=None):
+    a=read(path);identity=source_identity() if identity is None else identity
+    require(a.get("format")==FORMAT and a.get("passed") is True,"root complete acceptance is required")
+    for key in ("git_head","source_sha256"):require(a.get(key)==identity[key],"acceptance source identity mismatch")
+    require(set(a["configs"])==set(PHASES),"all three formal recipes must be bound")
+    recipes={};prior=None
+    for phase in PHASES:
+        ref=a["configs"][phase];config=ROOT/"configs/causal_spatial"/(phase+".yaml")
+        require(Path(ref["path"]).resolve()==config.resolve(),"unexpected formal recipe path")
+        recipe=artifact(ref)
+        require(recipe["phase"]==phase and recipe["steps"]==STEPS[phase] and recipe["diagnostic"] is False,
+                "formal phase/budget/diagnostic contract mismatch")
+        require(recipe["microbatch"]*recipe["accumulation"]*8==128,"formal global batch must be 128")
+        require(Path(recipe["run_dir"]).resolve().is_relative_to(SSD.resolve()),"formal training output outside SSD")
+        require(not Path(recipe["run_dir"]).exists(),"preserve existing formal training output")
+        if prior is None:require(not recipe.get("continue_from"),"first formal phase must use independent audited initialization")
+        else:
+            expected=Path(prior["run_dir"])/"exports"/f"causal_spatial_step_{prior['steps']}.pt"
+            require(Path(recipe["continue_from"]).resolve()==expected.resolve(),"phase continuation must use exact previous formal final export")
+            for key in ("model","runtime_contract","data","initial_checkpoint"):
+                require(recipe[key]==prior[key],"phase contract/data/initialization changed")
+        recipes[phase]=recipe;prior=recipe
+    evidence=a["evidence"]
+    for key in ("data","cpu"):
+        value=artifact(evidence[key]);require(value.get("passed") is True and value.get("gpu_used") is False,key+" gate failed")
+    cpu=artifact(evidence["cpu"])
+    require(cpu.get("fast_strict_roundtrip") is True and cpu.get("teacher_normalization_equal") is True,"actual CPU model/data gate incomplete")
+    require(set(evidence["smokes"])==set(PHASES),"all three actual training smokes required")
+    checkpoint=None
+    for phase in PHASES:
+        bundle=evidence["smokes"][phase];value=artifact(bundle["audit"])
+        smoke_config=ROOT/"configs/causal_spatial"/(phase+"_smoke.yaml")
+        smoke=artifact(value["config"])
+        require(Path(value["config"]["path"]).resolve()==smoke_config.resolve(),"wrong smoke recipe")
+        require(smoke["steps"]==4 and smoke["diagnostic"] is True,"smoke must have four actual updates")
+        for key in ("model","runtime_contract","data","microbatch","accumulation","lr","loss","teacher_checkpoint"):
+            require(smoke[key]==recipes[phase][key],"smoke differs from formal recipe: "+key)
+        checkpoint=check_export(value,smoke,diagnostic=True)
+        check_guard(bundle,identity,expected_stage="smoke",workers=8)
+    graph=evidence["graph"];result=artifact(graph["result"])
+    check_guard(graph,identity,expected_stage="graph",workers=1)
+    require(result.get("passed") is True and result.get("source_sha256")==identity["source_sha256"],"actual Graph gate failed or stale")
+    require(result["checkpoint"]["sha256"]==checkpoint["sha256"],"Graph must test actual final joint-smoke export")
+    require(result["cpu_strict_reload"].get("artifact_roundtrip") is True and
+            result["full_fast_gpu_parity"].get("passed") is True and result["background_memory"].get("passed") is True,
+            "Graph full/fast/actual-memory acceptance incomplete")
+    require(result["graph"].get("captures")==1 and result["graph"].get("replays",0)>=20,"actual Graph mutation coverage incomplete")
+    require(result["graph"].get("production_shared_graph") is True and
+            result["graph"].get("shared_graph_module")=="dynamicwam.inference.causal_spatial_graph",
+            "Graph acceptance must use the production shared implementation")
+    require(result["plan_causality"].get("belief_invariant") is True and
+            result["plan_causality"].get("invalid_or_outside_overlap_exact_noop") is True,"plan causality acceptance missing")
+    require(result["peak_memory"].get("num_ooms")==0,"Graph OOM receipt failed")
+    domino=evidence["domino"];last_guard,_=check_guard(domino,identity,expected_stage="smoke",workers=1)
+    check_domino(domino,checkpoint)
+    return dict(acceptance_sha256=digest(path),identity=identity,recipes=recipes,previous_guard=str(last_guard))
+
+
+def check_unchanged(acceptance,context):
+    require(digest(acceptance)==context["acceptance_sha256"],"acceptance changed during sequence")
+    require(source_identity()==context["identity"],"source changed during sequence")
+    value=read(acceptance)
+    for phase in PHASES:artifact(value["configs"][phase])
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--acceptance",type=Path,required=True)
+    parser.add_argument("--label",required=True)
+    parser.add_argument("--detach",action="store_true")
+    parser.add_argument("--worker",action="store_true",help=argparse.SUPPRESS)
+    args=parser.parse_args()
+    require(bool(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}",args.label)),"invalid unique sequence label")
+    directory=OUT/(args.label+"_sequence")
+    if args.detach:
+        require(not args.worker,"detach and worker conflict")
+        # Validation is CPU-only; no training controller exists before this gate.
+        validate_acceptance(args.acceptance)
+        directory.mkdir(parents=True,exist_ok=False)
+        command=[sys.executable,str(Path(__file__).resolve()),"--acceptance",str(args.acceptance.resolve()),
+                 "--label",args.label,"--worker"]
+        with (directory/"controller.log").open("x") as log:
+            child=subprocess.Popen(command,cwd=ROOT,env=dict(os.environ,CUDA_VISIBLE_DEVICES="",PYTHONDONTWRITEBYTECODE="1"),
+                                   stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+        save(directory/"launch.json",dict(pid=child.pid,command=command));print(json.dumps(dict(pid=child.pid,status=str(directory/"status.json"))))
+        return
+    require(args.worker and directory.is_dir(),"use --detach for a fresh durable sequence")
+    status=dict(format="causal_spatial_formal_sequence_v1",state="validating",passed=False,pid=os.getpid(),
+                retry_policy="none",recurring_inspection=False,phases=[])
+    active=None
+    def update(**values):
+        status.update(values,updated_at=datetime.now(timezone.utc).isoformat());save(directory/"status.json",status)
+    def stop(number,_frame):raise RuntimeError("sequence interrupted: "+str(number))
+    signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
+    try:
+        update();context=validate_acceptance(args.acceptance)
+        update(acceptance=str(args.acceptance.resolve()),acceptance_sha256=context["acceptance_sha256"],**context["identity"])
+        previous=context["previous_guard"];last_export=None
+        for phase in PHASES:
+            check_unchanged(args.acceptance,context);recipe=context["recipes"][phase]
+            require(not Path(recipe["run_dir"]).exists(),"formal training output appeared before launch")
+            if last_export is not None:
+                require(Path(recipe["continue_from"]).resolve()==Path(last_export["path"]).resolve(),"previous formal export path changed")
+                artifact(last_export,json_value=False)
+            label=args.label+"_"+phase;run=OUT/label
+            run.mkdir(exist_ok=False)
+            command=[sys.executable,str(ROOT/"scripts/run_causal_spatial_guarded.py"),"--mode","training",
+                     "--label",label,"--config",str(ROOT/"configs/causal_spatial"/(phase+".yaml")),
+                     "--previous-guard",previous,"--worker"]
+            update(state="phase_running",active_phase=phase)
+            with (run/"controller.log").open("x") as log:
+                active=subprocess.Popen(command,cwd=ROOT,env=dict(os.environ,CUDA_VISIBLE_DEVICES="",PYTHONDONTWRITEBYTECODE="1",
+                                        CAUSAL_SPATIAL_FORMAL_ACCEPTANCE=str(args.acceptance.resolve())),
+                                        stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                update(active_controller_pid=active.pid)
+                code=active.wait();active=None
+            require(code==0,"formal controller failed; no retry or later phase")
+            controller=read(run/"status.json")
+            require(controller.get("state")=="completed" and controller.get("passed") is True,"formal controller is not complete")
+            bundle={key:dict(path=str(run/"guard"/filename),sha256=digest(run/"guard"/filename))
+                    for key,filename in (("guard_status","status.json"),("guard_manifest","manifest.json"))}
+            check_guard(bundle,context["identity"],expected_stage="formal",workers=8)
+            audit=read(run/"export_audit.json")
+            require(audit["config"]["sha256"]==read(args.acceptance)["configs"][phase]["sha256"],"formal export audit recipe mismatch")
+            last_export=check_export(audit,recipe,diagnostic=False)
+            if recipe.get("continue_from"):
+                require(audit["continue_from"]["sha256"]==status["phases"][-1]["export"]["sha256"],"formal export lineage mismatch")
+            check_unchanged(args.acceptance,context)
+            status["phases"].append(dict(phase=phase,guard=str(run/"guard"),audit=str(run/"export_audit.json"),export=last_export))
+            previous=str(run/"guard");update(state="phase_accepted")
+        update(state="completed",passed=True,active_phase=None,active_controller_pid=None)
+    except BaseException:
+        update(state="failed_no_retry",error=traceback.format_exc())
+        if active is not None and active.poll() is None:
+            active.terminate()
+            try:active.wait(timeout=180.)
+            except subprocess.TimeoutExpired:update(cleanup_pending=True)
+        raise
+
+
+if __name__=="__main__":main()

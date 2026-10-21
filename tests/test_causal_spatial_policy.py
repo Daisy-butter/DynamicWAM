@@ -2,12 +2,14 @@
 from pathlib import Path
 import sys
 import json
+import importlib.util
 from types import SimpleNamespace
 import unittest
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from dynamicwam.inference.causal_spatial_policy import (
     validate_packet, capture_metadata, CausalSpatialPolicy, EXPECTED_RUNTIME_CONTRACT)
+from dynamicwam.inference.causal_spatial_config import read_deployment
 
 
 class PolicyPacketTests(unittest.TestCase):
@@ -80,6 +82,46 @@ class PolicyPacketTests(unittest.TestCase):
     def test_training_recipe_runtime_contract_is_exact(self):
         config = Path(__file__).resolve().parents[1] / "configs/causal_spatial/interface_adapt_smoke.yaml"
         self.assertEqual(json.loads(config.read_text())["runtime_contract"], EXPECTED_RUNTIME_CONTRACT)
+
+    def test_deployment_wrapper_separates_native_assets_from_checkpoint(self):
+        root = Path(__file__).resolve().parents[1]
+        deploy, native = read_deployment(root / "configs/causal_spatial/deploy.yaml")
+        self.assertEqual(native.name, "motionkv_stage3_20k_eval_20261019.yaml")
+        self.assertEqual(deploy["runtime_contract"], EXPECTED_RUNTIME_CONTRACT)
+        with self.assertRaises(ValueError): read_deployment(root / "configs/causal_spatial/interface_adapt_smoke.yaml")
+
+    @unittest.skipUnless(importlib.util.find_spec("torch") and importlib.util.find_spec("cv2"),
+                         "actual CPU serving geometry requires torch and OpenCV")
+    def test_actual_warmup_and_live_window_have_identical_tensor_geometry(self):
+        from dynamicwam.runtime.causal_spatial_contract import FiniteObservationWindow
+        policy = object.__new__(CausalSpatialPolicy)
+        policy._event = 0
+        policy.device = "cpu"
+        policy.window = FiniteObservationWindow("shape-audit")
+        policy.normalizer = SimpleNamespace(normalize=lambda value: value)
+        memory = SimpleNamespace(source=SimpleNamespace(observation_physics_s=0.))
+        packet = self.packet()
+        packet.update(frame=np.zeros((360, 320, 3), np.uint8),
+            motion_features=np.zeros((4, 12), np.float32),
+            motion_interval_valid_mask=np.zeros(4, bool), motion_acceleration_valid_mask=np.zeros(4, bool))
+        expected = {"initial_state": (1, 14), "absolute_motion_features": (1, 4, 12),
+            "spatial_rgb": (1, 4, 3, 3, 160, 160), "spatial_flow": (1, 4, 3, 2, 160, 160),
+            "spatial_valid": (1, 4, 3, 1, 160, 160), "spatial_dt": (1, 4),
+            "recorded_capture_commands": (1, 4, 14), "command_valid": (1, 4),
+            "previous_plan": (1, 16, 14), "previous_plan_valid": (1, 16),
+            "future_target_offsets": (1, 2), "action_target_offsets": (1, 16)}
+        for index in range(4):
+            packet["sim_time"] = .32 * index
+            packet["_rtc_capture_wall_perf_s"] = 10 + .32 * index
+            packet["_rtc_capture_available_wall_perf_s"] = 10.1 + .32 * index
+            observation = policy._observe(packet)
+            batch = policy._model_batch(packet, observation, memory,
+                packet["_rtc_prefix_actions"], packet["_rtc_action_target_offsets"],
+                packet["_rtc_previous_actions"], packet["_rtc_previous_valid"])
+            for name, shape in expected.items(): self.assertEqual(tuple(batch[name].shape), shape)
+            self.assertEqual(tuple(batch["rtc_prefix"].actions.shape), (1, 16, 14))
+            self.assertEqual(batch["rtc_prefix"].lengths.tolist(), [2])
+            np.testing.assert_array_equal(batch["initial_state"][0].numpy(), packet["_rtc_capture_drive_targets"])
 
 
 if __name__ == "__main__": unittest.main()

@@ -16,6 +16,8 @@ def main():
  p=argparse.ArgumentParser();p.add_argument('--mode',choices=['training','graph','domino'],required=True)
  p.add_argument('--label',required=True);p.add_argument('--config',required=True);p.add_argument('--checkpoint')
  p.add_argument('--previous-guard',required=True);p.add_argument('--detach',action='store_true');p.add_argument('--worker',action='store_true')
+ p.add_argument('--deploy-config',default=str(ROOT/'configs/causal_spatial/deploy.yaml'))
+ p.add_argument('--software-fix-reason',default='')
  a=p.parse_args();run=OUT/a.label
  if not a.label.replace('_','').replace('-','').isalnum():raise ValueError('invalid label')
  if a.detach:
@@ -34,7 +36,7 @@ def main():
  signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
  try:
   update();previous=Path(a.previous_guard)
-  require_release(previous/'status.json',require_success=True,label='previous GPU lifecycle')
+  require_release(previous/'status.json',require_success=not bool(a.software_fix_reason),label='previous GPU lifecycle')
   now=driver_evidence();old=json.loads((previous/'driver_postexit.json').read_text())
   if driver_identity(now)!=driver_identity(old):raise RuntimeError('driver evidence changed since clean release; stop for investigation')
   ids=[x['uuid'] for x in proc_gpu_inventory()]
@@ -42,6 +44,19 @@ def main():
   source=source_files_and_hash(ROOT)[1];head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
   dirty=subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True)
   if dirty:raise RuntimeError('freeze and commit candidate source before GPU execution')
+  if a.software_fix_reason:
+   prior=json.loads((previous/'manifest.json').read_text())
+   if prior['git_head']==head:raise RuntimeError('a failed lifecycle needs a specific new software fix, not a retry')
+   update(previous_failure_fix_reason=a.software_fix_reason,previous_source=prior['git_head'],current_source=head)
+  if a.mode=='training' and not r['diagnostic']:
+   acceptance_path=os.environ.get('CAUSAL_SPATIAL_FORMAL_ACCEPTANCE')
+   if not acceptance_path:raise RuntimeError('formal training requires verified one-shot sequence acceptance')
+   acceptance=json.loads(Path(acceptance_path).read_text())
+   if acceptance.get('format')!='causal_spatial_formal_acceptance_v1' or acceptance.get('passed') is not True:
+    raise RuntimeError('formal acceptance absent or invalid')
+   if acceptance.get('source_sha256')!=source or acceptance.get('git_head')!=head:
+    raise RuntimeError('formal acceptance source identity mismatch')
+   if acceptance['configs'][r['phase']]['sha256']!=file_digest(a.config):raise RuntimeError('formal recipe changed')
   audit=json.loads((OUT/'data_audit.json').read_text());cpu=json.loads((OUT/'cpu_integration.json').read_text())
   if not audit['passed'] or not cpu['passed']:raise RuntimeError('full data and actual CPU integration gates required')
   auth=run/'authorization.json'
@@ -54,12 +69,12 @@ def main():
     PYTHON,'-m','torch.distributed.run','--standalone','--nproc_per_node=8',str(ROOT/'scripts/train_causal_spatial.py'),'--config',str(Path(a.config).resolve())]
    kind='smoke' if r['diagnostic'] else 'formal';compute=ids
   elif a.mode=='graph':
-   cmd=[PYTHON,str(ROOT/'scripts/check_causal_spatial_gpu.py'),'--config',str(Path(a.config).resolve()),'--output',str(run/'graph.json')]
+   cmd=[str(ROOT/'external/robotwin/bin/python'),str(ROOT/'scripts/check_causal_spatial_gpu.py'),'--config',str(Path(a.config).resolve()),'--output',str(run/'graph.json')]
    if a.checkpoint:cmd+=['--checkpoint',a.checkpoint]
    kind='graph';compute=ids[:1]
   else:
-   cmd=[str(ROOT/'external/robotwin/bin/python'),str(ROOT/'scripts/smoke_causal_spatial_domino.py'),'--config',str(Path(a.config).resolve()),
-    '--checkpoint',a.checkpoint,'--output-dir',str(run/'domino'),'--allow-diagnostic']
+   cmd=[str(ROOT/'external/robotwin/bin/python'),str(ROOT/'scripts/smoke_causal_spatial_domino.py'),'--config',str(Path(a.deploy_config).resolve()),
+    '--checkpoint',a.checkpoint,'--output-dir',str(run/'domino'),'--allow-diagnostic','--cuda-graph']
    kind='smoke';compute=ids[:1]
   command=[PYTHON,str(ROOT/'scripts/supervise_motionkv_eval.py'),'--stage',kind,'--run-dir',str(run/'guard'),
    '--gpus',','.join(compute),'--guard-gpus',','.join(ids),'--authorization',str(auth),

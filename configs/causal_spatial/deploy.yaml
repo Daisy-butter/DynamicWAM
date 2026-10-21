@@ -1,0 +1,27 @@
+{
+  "format": "causal_spatial_deployment_v1",
+  "native_profile": "../motionkv_stage3_20k_eval_20261019.yaml",
+  "model_loader": "causal_spatial_strict_checkpoint",
+  "runtime_contract": {
+    "version": "causal_spatial_v4_h2r2",
+    "dt": 0.16,
+    "H": 2,
+    "R": 2,
+    "chunk_size": 16,
+    "K": 10,
+    "simulation_rate": 1.0,
+    "window_size": 4,
+    "window_stride_seconds": 0.32,
+    "max_memory_age_seconds": 4.96,
+    "memory_refresh_actions": 16,
+    "memory": "observation_only_native_video",
+    "belief": "finite_causal_spatial_window",
+    "future": "fresh_joint_action_conditioned_FM",
+    "previous_plan": "time_aligned_policy_proposal_valid_overlap_only",
+    "prefix_source_training": "expert_demonstration",
+    "soft_plan_training": "frozen_native_teacher_on_previous_fast_query_observation",
+    "on_policy_ready": false,
+    "command_history": "recorded_capture_drive_targets_not_dense_executed_control",
+    "normalization": "FP32_before_BF16"
+  }
+}

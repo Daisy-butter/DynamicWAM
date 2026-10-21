@@ -226,6 +226,7 @@ def concurrent_probe(model,graph,packet,memory,next_packet,noise,encode,eager,ar
 
 def run(args, report):
     import torch
+    report['runtime']={'torch':torch.__version__,'cuda':torch.version.cuda,'python':sys.version.split()[0]}
     import yaml
     from dynamicwam.inference.causal_spatial_loader import build_from_initialization,load_full,load_fast
     from dynamicwam.training.train.causal_spatial_trainer import build_dataset
@@ -313,7 +314,8 @@ def run(args, report):
         report["background_memory"]=concurrent_probe(model,graph,packet,memory,packets[1],noise,encode,eager,args)
         require(fingerprint((packet,memory,noise))==inputs_before,"caller-owned inputs changed")
         report["inputs_unchanged"]=True
-        report["graph"]={"captures":graph.captures,"replays":graph.replays,"new_memory_recaptured":False}
+        report["graph"]={"captures":graph.captures,"replays":graph.replays,"new_memory_recaptured":False,
+            "shared_graph_module":"dynamicwam.inference.causal_spatial_graph", "production_shared_graph":True}
         require(graph.captures==1,"refresh must reuse the actual captured graph")
         # Release the full model's GPU allocation before testing the actual fast
         # export. The externally published M remains valid and owned separately.

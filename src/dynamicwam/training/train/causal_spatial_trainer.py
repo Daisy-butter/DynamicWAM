@@ -127,6 +127,7 @@ class CausalSpatialTrainer:
   self.optimizer=torch.optim.AdamW(groups,weight_decay=.001)
   self.teacher=None
   if recipe.get('teacher_checkpoint'):
+   self.initialization['teacher_sha256']=sha256(recipe['teacher_checkpoint'])
    p=native_payload(recipe['teacher_checkpoint']);self.teacher=build_native(p['config'],self.device)
    self.teacher.load_state_dict(p['model'],strict=True);self.teacher.eval().requires_grad_(False)
    # Teacher actions share the exact action coordinate system; motion tokens

@@ -60,6 +60,17 @@ def finite_metrics(values, label):
         require(isinstance(value, (int, float)) and math.isfinite(value), f"{label}: nonfinite/non-numeric {key}")
 
 
+def audit_teacher_identity(recipe, initialization):
+    path = recipe.get("teacher_checkpoint")
+    require(bool(path), "this recipe requires its frozen native teacher")
+    expected = initialization.get("teacher_sha256")
+    require(isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected),
+            "training-time teacher SHA256 is missing or malformed")
+    actual = identity(path)
+    require(actual["sha256"] == expected, "frozen teacher checkpoint changed since training initialization")
+    return dict(**actual, training_time_identity_bound=True)
+
+
 def audit_ranks(run, recipe):
     expected = {f"rank_{rank}_resources.json" for rank in range(8)}
     found = {p.name for p in Path(run).glob("rank_*_resources.json")}
@@ -198,6 +209,20 @@ def audit_saved_state(run, recipe, data_identity, full_state):
     require(rng == set(range(8)), "saved state lacks exact RNG files for all eight ranks")
     scheduler = [name for name in files if re.fullmatch(r"custom_checkpoint_\d+\.pkl", name) or Path(name).name.startswith("scheduler")]
     require(scheduler, "saved custom LR scheduler state is missing")
+    scheduler_states = []
+    for name in scheduler:
+        value = torch.load(files[name], map_location="cpu", weights_only=True)
+        require(isinstance(value, dict), "scheduler state is not a mapping")
+        if "step_count" not in value:
+            continue
+        expected_lrs = [recipe["lr"]["video"]]
+        if recipe["phase"] != "interface_adapt":
+            expected_lrs += [recipe["lr"]["action"], recipe["lr"]["action"]]
+        expected_lrs += [recipe["lr"]["new"]]
+        same(value, dict(step_count=recipe["steps"], total_steps=recipe["steps"],
+            warmup_steps=recipe["warmup_steps"], min_lr_ratio=.01, base_lrs=expected_lrs), "saved cosine scheduler")
+        scheduler_states.append(value)
+    require(len(scheduler_states) == 1, "exactly one complete native cosine scheduler state is required")
     optimizer = [name for name in files if "optim_states" in Path(name).name or Path(name).name.startswith("optimizer")]
     model_files = [name for name in files if name.endswith("model_states.pt")]
     model_equal = []
@@ -216,7 +241,7 @@ def audit_saved_state(run, recipe, data_identity, full_state):
     require(optimizer or embedded_optimizer, "saved optimizer state is missing")
     return dict(directory=str(state_dir), manifest=identity(state_dir / "state_manifest.json"),
         files=len(files), bytes=sum(path.stat().st_size for path in files.values()),
-        rng_ranks=sorted(rng), scheduler_files=scheduler, optimizer_files=optimizer,
+        rng_ranks=sorted(rng), scheduler_files=scheduler, scheduler_states=scheduler_states, optimizer_files=optimizer,
         embedded_optimizer=embedded_optimizer, model_equals_export=model_equal,
         progress=progress, resume_execution_tested=False)
 
@@ -268,6 +293,7 @@ def audit(config, result):
     require(Path(init["path"]).resolve() == Path(recipe["initial_checkpoint"]).resolve(), "initial checkpoint path differs")
     result["initialization"] = identity(init["path"])
     require(result["initialization"]["sha256"] == INIT_SHA, "actual initialization checkpoint changed")
+    result["teacher"] = audit_teacher_identity(recipe, init)
     initial = torch.load(init["path"], map_location="cpu", weights_only=True, mmap=True)
     same(initial["config"], full["native_config"], "native architecture/normalization lineage")
     del initial
