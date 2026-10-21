@@ -1,0 +1,75 @@
+{
+  "format": "causal_spatial_training_v1",
+  "initial_checkpoint": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/checkpoint_init/absolute_motion_init.pt",
+  "teacher_checkpoint": "/SSD_DISK/users/wuruihan/DynamicWAM/external/checkpoints/DynamicWAM_full.pt",
+  "teacher_plan_interval": 2,
+  "microbatch": 4,
+  "accumulation": 4,
+  "workers": 0,
+  "warmup_steps": 0,
+  "log_interval": 1,
+  "validation_interval": 4,
+  "validation_batches": 1,
+  "checkpoint_interval": 4,
+  "diagnostic": true,
+  "runtime_contract": {
+    "version": "causal_spatial_v4_h2r2",
+    "dt": 0.16,
+    "H": 2,
+    "R": 2,
+    "chunk_size": 16,
+    "K": 10,
+    "simulation_rate": 1.0,
+    "window_size": 4,
+    "window_stride_seconds": 0.32,
+    "max_memory_age_seconds": 4.96,
+    "memory_refresh_actions": 16,
+    "memory": "observation_only_native_video",
+    "belief": "finite_causal_spatial_window",
+    "future": "fresh_joint_action_conditioned_FM",
+    "previous_plan": "time_aligned_policy_proposal_valid_overlap_only",
+    "prefix_source_training": "expert_demonstration",
+    "soft_plan_training": "frozen_native_teacher_on_previous_fast_query_observation",
+    "on_policy_ready": false,
+    "command_history": "recorded_capture_drive_targets_not_dense_executed_control",
+    "normalization": "FP32_before_BF16"
+  },
+  "model": {
+    "z_dim": 768,
+    "z_ffn_ratio": 2,
+    "belief_dim": 192,
+    "belief_grid": [
+      8,
+      8
+    ],
+    "views": 3,
+    "latent_channels": 48,
+    "history_length": 4,
+    "gradient_checkpointing": true,
+    "attention_precision": "bfloat16",
+    "model_version": "causal_spatial_v4",
+    "command_history_kind": "recorded_capture_commands"
+  },
+  "loss": {
+    "future": 0.1,
+    "belief": 0.05,
+    "native_video": 0.05,
+    "teacher_action": 0.05,
+    "continuity": 0.01
+  },
+  "data": {
+    "packed_root": "/SSD_DISK/users/wuruihan/DynamicWAM/data/packed/domino_absolute_motion_v2",
+    "source_root": "/SSD_DISK/users/wuruihan/DynamicWAM/data/converted/domino_exact_time",
+    "physical_grid_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015",
+    "future_latent_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/data/joint_motionkv_physical_grid_20261015/future_latents"
+  },
+  "phase": "interface_adapt",
+  "steps": 4,
+  "lr": {
+    "video": 1e-06,
+    "action": 0.0,
+    "new": 0.0001
+  },
+  "continue_from": "",
+  "run_dir": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/causal_spatial_v4_20261021/interface_adapt_smoke"
+}
