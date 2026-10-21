@@ -144,6 +144,13 @@ class CausalSpatialTrainer:
     num_workers=recipe.get('workers',0),pin_memory=True,drop_last=True)
   self.loader=loader(self.train,'train');self.val_loader=loader(self.val,'validation')
   self.objective,self.optimizer,self.loader=accelerator.prepare(self.objective,self.optimizer,self.loader)
+  # DeepSpeed casts module buffers as well as parameters to BF16. Keep the
+  # fixed normalization statistics exact, so normalization precedes precision
+  # reduction in training and in the strict exported inference module.
+  module=accelerator.unwrap_model(self.objective).student.backbone.absolute_motion_tokens
+  cfg=self.native_config['model']['absolute_motion']
+  module.feature_mean=torch.tensor(cfg['feature_mean'],device=self.device,dtype=torch.float32).reshape_as(module.feature_mean)
+  module.feature_scale=torch.tensor(cfg['feature_scale'],device=self.device,dtype=torch.float32).reshape_as(module.feature_scale)
   self.val_loader=accelerator.prepare_data_loader(self.val_loader)
   self.scheduler=create_scheduler(self.optimizer,total_steps=recipe['steps'],warmup_steps=recipe['warmup_steps'],min_lr_ratio=.01)
   accelerator.register_for_checkpointing(self.scheduler)
@@ -275,6 +282,10 @@ class CausalSpatialTrainer:
     self.train.set_epoch(self.epoch);self.samplers['train'].set_epoch(self.epoch)
     for sample in self.loader:
      with self.acc.accumulate(self.objective):
+      # DeepSpeed may perform the optimizer update inside accelerator.backward.
+      # Set this update's LR before any microbatch, including the first one.
+      for group,base_lr in zip(self.optimizer.param_groups,self.scheduler.base_lrs,strict=True):
+       group['lr']=self.scheduler._lr_at(min(self.step+1,self.recipe['steps']),base_lr)
       batch,targets,teacher=self.prepare(sample)
       with self.acc.autocast():loss,metrics=self.objective(batch,targets,teacher)
       if not torch.isfinite(loss):

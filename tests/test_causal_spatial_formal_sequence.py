@@ -16,6 +16,7 @@ sequence=importlib.util.module_from_spec(spec);spec.loader.exec_module(sequence)
 
 class FormalSequenceGateTests(unittest.TestCase):
     def setUp(self):
+        from dynamicwam.inference.causal_spatial_policy import EXPECTED_RUNTIME_CONTRACT
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name);self.ssd=self.root/"ssd";self.ssd.mkdir()
         (self.root/"scripts").mkdir();(self.root/"scripts/device_lifetime_guard.py").write_text("fixture guard")
@@ -25,12 +26,12 @@ class FormalSequenceGateTests(unittest.TestCase):
         self.identity=dict(git_head="a"*40,source_sha256="b"*64)
         self.acceptance=dict(format=sequence.FORMAT,passed=True,**self.identity,configs={},
             evidence=dict(smokes={},data=self.emit("data.json",dict(passed=True,gpu_used=False)),
-                          cpu=self.emit("cpu.json",dict(passed=True,gpu_used=False,fast_strict_roundtrip=True,teacher_normalization_equal=True))))
+                          cpu=self.emit("cpu.json",dict(passed=True,gpu_used=False,source_sha256=self.identity['source_sha256'],fast_strict_roundtrip=True,teacher_normalization_equal=True))))
         previous=None
         for phase in sequence.PHASES:
             recipe=dict(phase=phase,steps=sequence.STEPS[phase],diagnostic=False,microbatch=4,accumulation=4,
                 run_dir=str(self.ssd/phase),initial_checkpoint="audited-native-init",teacher_checkpoint="native-teacher",
-                model={"contract":"model"},runtime_contract={"dt":.16,"H":2,"R":2},data={"dataset":"actual"},
+                model={"contract":"model"},runtime_contract=copy.deepcopy(EXPECTED_RUNTIME_CONTRACT),data={"dataset":"actual"},
                 lr={"new":1e-4},loss={"future":.1},continue_from="" if previous is None else
                 str(Path(previous["run_dir"])/"exports"/f"causal_spatial_step_{previous['steps']}.pt"))
             config=self.emit(self.configdir/(phase+".yaml"),recipe);self.acceptance["configs"][phase]=config
@@ -47,6 +48,7 @@ class FormalSequenceGateTests(unittest.TestCase):
             bundle=self.guard(phase,"smoke",8);bundle["audit"]=self.emit(phase+"_audit.json",audit)
             self.acceptance["evidence"]["smokes"][phase]=bundle;previous=recipe
         graph=dict(passed=True,source_sha256=self.identity["source_sha256"],checkpoint=full,
+            runtime=dict(torch="fixture-torch",python="fixture-python",cuda="fixture-cuda"),
             cpu_strict_reload=dict(artifact_roundtrip=True),full_fast_gpu_parity=dict(passed=True),
             background_memory=dict(passed=True),graph=dict(captures=1,replays=22,production_shared_graph=True,
                 shared_graph_module="dynamicwam.inference.causal_spatial_graph"),
@@ -159,19 +161,30 @@ class FormalSequenceGateTests(unittest.TestCase):
         sidecar.write_text(json.dumps(metadata))
         report.update(full_native_episode=True,checkpoint=checkpoint["path"],checkpoint_sha256=checkpoint["sha256"],
             worker_startup_metadata=dict(cuda_graph=True,graph_captures=1,graph_eager_parity=True,
-                shared_graph_module="dynamicwam.inference.causal_spatial_graph"),
+                shared_graph_module="dynamicwam.inference.causal_spatial_graph",
+                runtime=dict(torch="fixture-torch",python="fixture-python",cuda="fixture-cuda")),
             video=str(video),video_timestamps=str(sidecar),video_sha256=sequence.digest(video),video_bytes=video.stat().st_size,
             video_timestamps_sha256=sequence.digest(sidecar),video_timestamps_bytes=sidecar.stat().st_size,
             video_frames=2,video_fps=10.,video_continuous_physics=False,video_probe=probe)
-        for row in report["requests"]:row["policy_diagnostics"]=dict(cuda_graph=True,graph_captures=1)
+        for index,row in enumerate(report["requests"]):
+            row["policy_diagnostics"]=dict(cuda_graph=True,graph_captures=1,slow_launched=index==1,
+                source_publication=1 if index<=1 else 2,source_sim_time=row["observation_physics_s"])
         bundle=dict(report=self.emit("domino-report.json",report))
         bundle["completed"]=self.emit("domino-complete.json",dict(passed=True,full_native_episode=True,
             report=bundle["report"]["path"],video=str(video)))
-        self.real_domino(bundle,checkpoint)
+        runtime=report["worker_startup_metadata"]["runtime"]
+        self.real_domino(bundle,checkpoint,runtime)
+        with self.assertRaisesRegex(RuntimeError,"runtime differ"):
+            self.real_domino(bundle,checkpoint,dict(torch="other",python="fixture-python",cuda="fixture-cuda"))
+        original=copy.deepcopy(report)
+        for row in report["requests"]:row["policy_diagnostics"]["source_publication"]=1
+        bundle["report"].update(self.emit(bundle["report"]["path"],report))
+        with self.assertRaisesRegex(RuntimeError,"live slow-memory"):self.real_domino(bundle,checkpoint,runtime)
+        bundle["report"].update(self.emit(bundle["report"]["path"],original))
         video.write_bytes(b"corrupt")
-        with self.assertRaisesRegex(RuntimeError,"MP4"):self.real_domino(bundle,checkpoint)
+        with self.assertRaisesRegex(RuntimeError,"MP4"):self.real_domino(bundle,checkpoint,runtime)
         self.mutate(bundle["completed"],full_native_episode=False)
-        with self.assertRaisesRegex(RuntimeError,"full native"):self.real_domino(bundle,checkpoint)
+        with self.assertRaisesRegex(RuntimeError,"full native"):self.real_domino(bundle,checkpoint,runtime)
 
 
 if __name__=="__main__":unittest.main()

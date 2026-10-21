@@ -229,6 +229,35 @@ class CausalSpatialTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             model(dict(batch,future_target_offsets=torch.zeros(2,3)),memory)
 
+    def test_sampling_validates_once_and_restores_native_training_checks(self):
+        model,batch = fixture()
+        model.eval()
+        memory = model.encode_memory(batch["source_condition_latent"],batch["source_text_embeddings"])
+        args = dict(action_noise=batch["noisy_actions"],future_noise=batch["future_latent"],
+                    sigmas=torch.linspace(1,0,11),memory=memory)
+        motion = model.backbone.absolute_motion_tokens
+        with patch.object(motion,"validate_inputs",wraps=motion.validate_inputs) as check:
+            eager = model.sample(batch,**args)
+            self.assertEqual(check.call_count,1)
+            check.reset_mock()
+            captured = model.sample(batch,**args,validate_input=False)
+            self.assertEqual(check.call_count,0)
+        self.assertTrue(torch.equal(eager["actions"],captured["actions"]))
+        self.assertTrue(torch.equal(eager["future_latent"],captured["future_latent"]))
+        self.assertFalse(model.backbone._motion_inputs_prevalidated)
+        with patch.object(model,"_sample_prevalidated",side_effect=RuntimeError("injected")):
+            with self.assertRaisesRegex(RuntimeError,"injected"):
+                model.sample(batch,**args,validate_input=False)
+        self.assertFalse(model.backbone._motion_inputs_prevalidated)
+        invalid = dict(batch,absolute_motion_interval_valid_mask=torch.zeros_like(batch["absolute_motion_interval_valid_mask"]))
+        with self.assertRaisesRegex(ValueError,"acceleration"):
+            model.sample(invalid,**args)
+        model.train()
+        with self.assertRaisesRegex(ValueError,"eval Graph"):
+            model.sample(batch,**args,validate_input=False)
+        with self.assertRaisesRegex(ValueError,"acceleration"):
+            model(invalid,memory)
+
     def test_real_native_wrapper_bf16_observation_path(self):
         from dynamicwam.training.models.wan_model import WanVideoModel
         from dynamicwam.training.models.compact_wan import CompactWANModel

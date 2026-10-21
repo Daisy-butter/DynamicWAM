@@ -107,7 +107,7 @@ def check_export(value,recipe,*,diagnostic):
     return value["full_checkpoint"]
 
 
-def check_domino(bundle,checkpoint):
+def check_domino(bundle,checkpoint,runtime):
     from dynamicwam.runtime.continuous_causal_spatial import validate_causal_spatial_report
     from video_artifacts import validate_video_artifacts
     complete=artifact(bundle["completed"]);report=artifact(bundle["report"])
@@ -120,6 +120,9 @@ def check_domino(bundle,checkpoint):
     require(report["checkpoint_sha256"]==checkpoint["sha256"] and
             Path(report["checkpoint"]).resolve()==Path(checkpoint["path"]).resolve(),"DOMINO tested a different checkpoint")
     startup=report.get("worker_startup_metadata",{})
+    measured_runtime=startup.get("runtime",{})
+    require(all(isinstance(runtime.get(key),str) and bool(runtime[key]) and measured_runtime.get(key)==runtime[key]
+                for key in ("torch","python","cuda")),"Graph and DOMINO Python/Torch runtime differ or are missing")
     require(startup.get("cuda_graph") is True and startup.get("graph_captures")==1 and
             startup.get("graph_eager_parity") is True and
             startup.get("shared_graph_module")=="dynamicwam.inference.causal_spatial_graph",
@@ -127,6 +130,16 @@ def check_domino(bundle,checkpoint):
     fast=[row for row in report["requests"] if row.get("installed") and not row.get("bootstrap_only")]
     require(bool(fast) and all(row.get("policy_diagnostics",{}).get("cuda_graph") is True and
             row["policy_diagnostics"].get("graph_captures")==1 for row in fast),"DOMINO fast path used a fallback or recapture")
+    refreshed=False
+    for index,row in enumerate(fast):
+        source=row["policy_diagnostics"]
+        if source.get("slow_launched") is not True:continue
+        for later in fast[index+1:]:
+            consumed=later["policy_diagnostics"]
+            if (consumed.get("source_publication",-1)>source.get("source_publication",-1)>=0 and
+                    consumed.get("source_sim_time",float("-inf"))>=row["observation_physics_s"]-1e-8):
+                refreshed=True;break
+    require(refreshed,"DOMINO lacks a live slow-memory launch followed by a newly consumed publication")
     validate_causal_spatial_report(report)
     # The committed sidecar binds the complete ffprobe frame decode to MP4 SHA.
     # Revalidate those hashes and timestamps; no GPU access or repeated decode.
@@ -136,6 +149,7 @@ def check_domino(bundle,checkpoint):
 
 
 def validate_acceptance(path,*,identity=None):
+    from dynamicwam.inference.causal_spatial_policy import EXPECTED_RUNTIME_CONTRACT
     a=read(path);identity=source_identity() if identity is None else identity
     require(a.get("format")==FORMAT and a.get("passed") is True,"root complete acceptance is required")
     for key in ("git_head","source_sha256"):require(a.get(key)==identity[key],"acceptance source identity mismatch")
@@ -148,6 +162,7 @@ def validate_acceptance(path,*,identity=None):
         require(recipe["phase"]==phase and recipe["steps"]==STEPS[phase] and recipe["diagnostic"] is False,
                 "formal phase/budget/diagnostic contract mismatch")
         require(recipe["microbatch"]*recipe["accumulation"]*8==128,"formal global batch must be 128")
+        require(recipe["runtime_contract"]==EXPECTED_RUNTIME_CONTRACT,"formal recipe differs from the production runtime contract")
         require(Path(recipe["run_dir"]).resolve().is_relative_to(SSD.resolve()),"formal training output outside SSD")
         require(not Path(recipe["run_dir"]).exists(),"preserve existing formal training output")
         if prior is None:require(not recipe.get("continue_from"),"first formal phase must use independent audited initialization")
@@ -161,6 +176,7 @@ def validate_acceptance(path,*,identity=None):
     for key in ("data","cpu"):
         value=artifact(evidence[key]);require(value.get("passed") is True and value.get("gpu_used") is False,key+" gate failed")
     cpu=artifact(evidence["cpu"])
+    require(cpu.get('source_sha256')==identity['source_sha256'],'actual CPU model/data acceptance is stale')
     require(cpu.get("fast_strict_roundtrip") is True and cpu.get("teacher_normalization_equal") is True,"actual CPU model/data gate incomplete")
     require(set(evidence["smokes"])==set(PHASES),"all three actual training smokes required")
     checkpoint=None
@@ -189,7 +205,7 @@ def validate_acceptance(path,*,identity=None):
             result["plan_causality"].get("invalid_or_outside_overlap_exact_noop") is True,"plan causality acceptance missing")
     require(result["peak_memory"].get("num_ooms")==0,"Graph OOM receipt failed")
     domino=evidence["domino"];last_guard,_=check_guard(domino,identity,expected_stage="smoke",workers=1)
-    check_domino(domino,checkpoint)
+    check_domino(domino,checkpoint,result.get("runtime",{}))
     return dict(acceptance_sha256=digest(path),identity=identity,recipes=recipes,previous_guard=str(last_guard))
 
 

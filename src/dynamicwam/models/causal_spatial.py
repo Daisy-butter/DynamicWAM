@@ -314,8 +314,63 @@ class CausalSpatialModel(nn.Module):
             belief_state=belief["tokens"],belief_prediction=belief["prediction"],
             belief_target=belief["target"],belief_logvar=belief["logvar"],belief_valid=belief["prediction_valid"])
 
-    def sample(self,batch,*,action_noise,future_noise,sigmas,memory=None):
-        """One jointly integrated trajectory, with fresh noise supplied per call."""
+    def validate_sampling_inputs(self,batch,*,action_noise,future_noise,sigmas,memory=None):
+        """Value checks outside CUDA capture; training forward keeps its checks.
+
+        The native motion validator synchronizes to reject nonfinite features
+        and invalid acceleration masks. Do this once per request, never inside
+        the captured native Action layers or their ten denoising iterations.
+        """
+        from dynamicwam.models.rtc_prefix import validate_prefix_condition
+        if action_noise.ndim != 3 or tuple(action_noise.shape[1:]) != (16,self.backbone.config.action_dim):
+            raise ValueError("sampling action noise must be [B,16,action_dim]")
+        if future_noise.ndim != 5 or future_noise.shape[0] != action_noise.shape[0] or future_noise.shape[1] != self.config.latent_channels:
+            raise ValueError("sampling future noise geometry differs")
+        if future_noise.device != action_noise.device or sigmas.device != action_noise.device:
+            raise ValueError("sampling noise/schedule must share one device before invocation")
+        if sigmas.ndim != 1 or len(sigmas) != 11 or not bool(torch.isfinite(sigmas).all()):
+            raise ValueError("K10 requires eleven finite schedule endpoints")
+        if not bool((sigmas[:-1] > sigmas[1:]).all()) or not bool((sigmas[0] == 1) & (sigmas[-1] == 0)):
+            raise ValueError("sampling schedule must decrease strictly from noise 1 to clean 0")
+        for name,value in (("action",action_noise),("future",future_noise)):
+            if not bool(torch.isfinite(value).all()):
+                raise ValueError(name+" sampling noise is nonfinite")
+        prefix = batch.get("rtc_prefix")
+        if prefix is not None:
+            validate_prefix_condition(prefix,max_prefix=2,reference=action_noise)
+        motion = self.backbone.absolute_motion_tokens
+        features = batch["absolute_motion_features"]
+        interval = batch["absolute_motion_interval_valid_mask"]
+        acceleration = batch["absolute_motion_acceleration_valid_mask"]
+        if features.device != action_noise.device or interval.device != action_noise.device or acceleration.device != action_noise.device:
+            raise ValueError("native motion inputs must be on the sampling device")
+        if interval.dtype != torch.bool or acceleration.dtype != torch.bool:
+            raise TypeError("native motion validity masks must be boolean")
+        motion.validate_inputs(features,interval,acceleration)
+        if memory is not None and (memory.version != 1 or memory.model_version != self.config.model_version):
+            raise ValueError("observation memory version differs from model export")
+
+    def sample(self,batch,*,action_noise,future_noise,sigmas,memory=None,validate_input=True):
+        """Fresh joint trajectory; only a prevalidated eval Graph may skip checks."""
+        if type(validate_input) is not bool:
+            raise TypeError("validate_input must be a Python bool")
+        if not validate_input and self.training:
+            raise ValueError("unchecked sampling is only permitted for an eval Graph")
+        if validate_input:
+            sigmas = torch.as_tensor(sigmas,device=action_noise.device,dtype=torch.float32)
+            self.validate_sampling_inputs(batch,action_noise=action_noise,future_noise=future_noise,
+                                          sigmas=sigmas,memory=memory)
+        # Follow the existing native Graph convention. A finally clause keeps
+        # regular training/forward validation enabled even when sampling fails.
+        previous = getattr(self.backbone,"_motion_inputs_prevalidated",False)
+        self.backbone._motion_inputs_prevalidated = True
+        try:
+            return self._sample_prevalidated(batch,action_noise=action_noise,future_noise=future_noise,
+                                             sigmas=sigmas,memory=memory)
+        finally:
+            self.backbone._motion_inputs_prevalidated = previous
+
+    def _sample_prevalidated(self,batch,*,action_noise,future_noise,sigmas,memory=None):
         if len(sigmas) != 11:
             raise ValueError("V4 deployment requires K10 with eleven sigma endpoints")
         if memory is None:

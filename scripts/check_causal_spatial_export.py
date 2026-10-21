@@ -273,6 +273,13 @@ def audit(config, result):
                          ("data_identity", read_json(run / "data_identity.json"))):
         same(full[field], value, field)
     result["full_strict_reload"] = compare_tensor_states(model.state_dict(), full["model"], "production full loader")
+    motion_config = full["native_config"]["model"]["absolute_motion"]
+    for name in ("feature_mean", "feature_scale"):
+        value = full["model"]["backbone.absolute_motion_tokens." + name]
+        expected_motion = torch.tensor(motion_config[name], dtype=torch.float32)
+        require(value.dtype == torch.float32 and torch.equal(value,expected_motion),
+                "native motion normalization buffer lost exact FP32 values: " + name)
+    result["native_motion_buffers_exact_fp32"] = True
     require(hasattr(model.backbone, "compact_wan"), "full production loader lacks native Video backbone")
     del model
     gc.collect()

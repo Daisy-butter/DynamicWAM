@@ -51,17 +51,20 @@ class JointGraph:
         import torch
         require(not model.training, "CUDA Graph serving requires an eval model")
         self.model = model
+        self._validate_inputs(packet,memory,noise,sigmas)
+        require(all(t.device==noise[0].device for t in (*model.parameters(),*model.buffers())),
+                "model parameters and buffers must reside on the Graph device before warmup")
         self.packet = map_tensors(packet, lambda t: t.clone())
         self.memory = map_tensors(memory, lambda t: t.clone())
         self.noise = map_tensors(noise, lambda t: t.clone())
         self.sigmas = sigmas.clone()
         self.captures = 0
         self.replays = 0
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
+        stream = torch.cuda.Stream(device=self.noise[0].device)
+        stream.wait_stream(torch.cuda.current_stream(self.noise[0].device))
         with torch.cuda.stream(stream), torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
             for _ in range(3): self.output = self._sample()
-        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.current_stream(self.noise[0].device).wait_stream(stream)
         stream.synchronize()
         self.graph = torch.cuda.CUDAGraph()
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
@@ -70,12 +73,33 @@ class JointGraph:
 
     def _sample(self):
         return self.model.sample(self.packet, action_noise=self.noise[0], future_noise=self.noise[1],
-                                 sigmas=self.sigmas, memory=self.memory)
+                                 sigmas=self.sigmas, memory=self.memory,validate_input=False)
+
+    def _validate_inputs(self,packet,memory,noise,sigmas):
+        """Fail before warmup/capture/replay, never during captured execution."""
+        import torch
+        require(not self.model.training,"CUDA Graph serving requires an eval model")
+        require(isinstance(noise,(tuple,list)) and len(noise)==2,"Action/Z noise pair required")
+        require(torch.is_tensor(noise[0]) and noise[0].is_cuda,"CUDA Graph noise must already be on CUDA")
+        device=noise[0].device
+        require(memory is not None,"Graph requires an already published observation memory")
+        require("rtc_prefix" in packet and packet["rtc_prefix"] is not None,"Graph requires explicit committed prefix")
+        require(type(packet.get("source_query",False)) is bool,"source_query must be static Python metadata")
+        # as_tensor on a Python scalar/list or CPU tensor is an H2D copy under
+        # capture. Require every supplied tensor, including age and schedule,
+        # to have its final device before any static storage is allocated.
+        def resident(tensor):
+            require(tensor.device==device,"all Graph tensors must already share the noise CUDA device")
+            return tensor
+        map_tensors((packet,memory,noise,sigmas),resident)
+        require(torch.is_tensor(packet.get("observation_age")),"Graph observation_age must be a resident tensor")
+        require(torch.is_tensor(sigmas),"Graph schedule must be a resident tensor")
+        self.model.validate_sampling_inputs(packet,action_noise=noise[0],future_noise=noise[1],
+                                            sigmas=sigmas,memory=memory)
 
     def replay(self, packet, memory, noise):
         import torch
-        from dynamicwam.models.rtc_prefix import validate_prefix_condition
-        validate_prefix_condition(packet["rtc_prefix"], max_prefix=2)
+        self._validate_inputs(packet,memory,noise,self.sigmas)
         with torch.inference_mode():
             copy_tensors(self.packet, packet)
             copy_tensors(self.memory, memory)
