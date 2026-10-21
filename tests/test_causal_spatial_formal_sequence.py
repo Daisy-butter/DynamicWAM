@@ -3,6 +3,7 @@ from pathlib import Path
 import copy
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -185,6 +186,83 @@ class FormalSequenceGateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"MP4"):self.real_domino(bundle,checkpoint,runtime)
         self.mutate(bundle["completed"],full_native_episode=False)
         with self.assertRaisesRegex(RuntimeError,"full native"):self.real_domino(bundle,checkpoint,runtime)
+
+
+class TrainingSourceCompatibilityTests(unittest.TestCase):
+    """Real local Git objects; no Torch, GPU, receipt rewriting or launches."""
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name)
+        override=patch.object(sequence,"ROOT",self.root);override.start();self.addCleanup(override.stop)
+        self.git("init","-q")
+        self.write("src/dynamicwam/runtime/causal_spatial_contract.py",
+            "from collections import deque\ndef unchanged(x): return x\nclass FiniteObservationWindow:\n    capacity=4\n")
+        self.write("src/dynamicwam/inference/causal_spatial_policy.py","def infer(): return 1\n")
+        self.write("src/dynamicwam/training/data/causal_spatial_dataset.py",
+            "from dynamicwam.observations.causal_spatial_window import select\n")
+        self.write("src/dynamicwam/observations/causal_spatial_window.py","def select(): return 4\n")
+        self.write("src/dynamicwam/models/causal_spatial.py","MODEL_DIM=768\n")
+        self.write("configs/causal_spatial/joint.yaml",'{"lr": 0.00003}\n')
+        self.base=self.commit()
+        override=patch.object(sequence,"TRAINING_SMOKE_BASE_HEAD",self.base["git_head"])
+        override.start();self.addCleanup(override.stop)
+
+    def git(self,*args):
+        return subprocess.check_output(["git","-c","core.autocrlf=false","-c","user.name=CPU Regression",
+            "-c","user.email=cpu@example.invalid",*args],cwd=self.root,text=True).strip()
+
+    def write(self,path,value):
+        target=self.root/path;target.parent.mkdir(parents=True,exist_ok=True);target.write_text(value,encoding="utf-8",newline="\n")
+
+    def commit(self):
+        self.git("add",".");self.git("commit","-qm","CPU compatibility fixture")
+        head=self.git("rev-parse","HEAD");tree=sequence._git_tree(head)
+        paths={p for p in tree if p.startswith(("src/","scripts/")) and p.endswith(".py")}
+        return dict(git_head=head,source_sha256=sequence._source_hash(sequence._git_blobs(head,paths)))
+
+    def test_actual_git_deployment_only_changes_have_exact_hashes(self):
+        self.write("src/dynamicwam/inference/causal_spatial_policy.py","def infer(): return 2\n")
+        self.write("src/dynamicwam/runtime/causal_spatial_contract.py",
+            "from collections import deque, OrderedDict\nfrom concurrent.futures import ThreadPoolExecutor\n"
+            "def unchanged(x): return x\nclass FiniteObservationWindow:\n    capacity=8\n")
+        target=self.commit();receipt=sequence.build_training_source_compatibility(self.base,target)
+        self.assertEqual(len(receipt["changed_files"]),2)
+        self.assertTrue(receipt["window_noncache_ast_unchanged"])
+        self.assertTrue(receipt["current_cpu_graph_domino_required"])
+        for row in receipt["changed_files"]:
+            self.assertEqual(row["after_sha256"],sequence.digest(self.root/row["path"]))
+            self.assertNotEqual(row["before_sha256"],row["after_sha256"])
+        path=self.root/"compatibility.json";path.write_text(json.dumps(receipt))
+        acceptance=dict(training_source_compatibility=dict(path=str(path),sha256=sequence.digest(path)))
+        self.assertEqual(sequence.training_smoke_identity(acceptance,target),self.base)
+        receipt["protected_tracked_files"]+=1;path.write_text(json.dumps(receipt))
+        acceptance["training_source_compatibility"]["sha256"]=sequence.digest(path)
+        with self.assertRaisesRegex(RuntimeError,"actual Git evidence"):
+            sequence.training_smoke_identity(acceptance,target)
+
+    def test_model_data_or_config_change_cannot_reuse_smokes(self):
+        self.write("src/dynamicwam/models/causal_spatial.py","MODEL_DIM=512\n")
+        with self.assertRaisesRegex(RuntimeError,"non-allowlisted"):
+            sequence.build_training_source_compatibility(self.base,self.commit())
+
+    def test_contract_functions_outside_cache_class_cannot_change(self):
+        self.write("src/dynamicwam/runtime/causal_spatial_contract.py",
+            "from collections import deque\ndef unchanged(x): return x+1\nclass FiniteObservationWindow:\n    capacity=4\n")
+        with self.assertRaisesRegex(RuntimeError,"outside deployment"):
+            sequence.build_training_source_compatibility(self.base,self.commit())
+
+    def test_source_hash_cannot_be_borrowed_from_different_guard(self):
+        self.write("src/dynamicwam/inference/causal_spatial_policy.py","def infer(): return 2\n")
+        target=self.commit();bad=dict(self.base,source_sha256="0"*64)
+        with self.assertRaisesRegex(RuntimeError,"old guard source hash"):
+            sequence.build_training_source_compatibility(bad,target)
+
+    def test_unknown_base_and_tracked_addition_rejected(self):
+        with self.assertRaisesRegex(RuntimeError,"exact audited"):
+            sequence.build_training_source_compatibility(dict(self.base,git_head="0"*40),dict(self.base))
+        self.write("src/dynamicwam/inference/new_deployment.py","x=1\n")
+        with self.assertRaisesRegex(RuntimeError,"additions/deletions"):
+            sequence.build_training_source_compatibility(self.base,self.commit())
 
 
 if __name__=="__main__":unittest.main()

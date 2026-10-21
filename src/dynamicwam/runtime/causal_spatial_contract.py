@@ -9,6 +9,7 @@ before installation. No source-plan or previous-plan fallback exists here.
 from __future__ import annotations
 
 from collections import deque, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 import hashlib
 import json
@@ -137,11 +138,15 @@ class FiniteObservationWindow:
     Execution acknowledgements remain separate diagnostics; they never silently
     replace missing capture targets or observations.
     """
-    def __init__(self, episode: str, contract=CausalSpatialContract(), *, flow_backend=None):
+    def __init__(self, episode: str, contract=CausalSpatialContract(), *, flow_backend=None, flow_workers=3):
+        if type(flow_workers) is not int or not 1 <= flow_workers <= 3:
+            raise ValueError("flow_workers must be an integer within 1..3")
         self.episode, self.contract = str(episode), contract
         self._frames = deque()
         self._flows = OrderedDict()
         self._flow_backend = flow_backend
+        self._flow_workers = flow_workers
+        self._last_flow_workers = 0
         self._revision = 0
 
     def append(self, *, event_id, observation_physics_s, available_wall_s,
@@ -178,6 +183,12 @@ class FiniteObservationWindow:
         cutoff = t-(self.contract.window_size-1)*self.contract.window_stride_s
         while len(self._frames) > 1 and self._frames[1][1] <= cutoff+1e-10:
             self._frames.popleft()
+        # Immutable exposure ids also own image geometry and padding masks.
+        # A pair cannot be selected again after either endpoint is evicted.
+        live_ids = {frame[0] for frame in self._frames}
+        for key in tuple(self._flows):
+            if key[0] not in live_ids or key[1] not in live_ids:
+                del self._flows[key]
         self._revision += 1
         return self.snapshot()
 
@@ -201,21 +212,61 @@ class FiniteObservationWindow:
         flow = np.zeros((steps,views,2,height,width),dtype=np.float32)
         flow_valid = np.zeros((steps,views,1,height,width),dtype=bool)
         backend = self._flow_backend or farneback_pair
+        missing = {}
         for i in range(1,steps):
             if not transitions[i]:
                 continue
             for view in range(views):
-                key = (selected[i-1][0],selected[i][0],view)
+                key = (selected[i-1][0],selected[i][0],view,height,width)
                 if key not in self._flows:
-                    delta,mask = backend(selected[i-1][4][view],selected[i][4][view])
-                    self._flows[key] = (_array(delta,shape=(height,width,2)),
-                                        _array(mask,shape=(height,width),dtype=np.bool_))
-                    while len(self._flows) > 64:
-                        self._flows.popitem(last=False)
-                delta,mask = self._flows[key]
-                mask = flow_pair_validity(delta,mask,valid[i-1,view,0],valid[i,view,0])
-                flow[i,view] = np.where(mask[...,None],delta,0).transpose(2,0,1)
+                    missing[key] = (selected[i-1][4][view],selected[i][4][view],
+                                    valid[i-1,view,0],valid[i,view,0])
+
+        def compute_pair(inputs):
+            # Read only immutable CPU images/masks. Workers never access the
+            # mutable cache or any model, Torch/CUDA state, or shared output.
+            previous,current,previous_valid,current_valid = inputs
+            delta,mask = backend(previous,current)
+            delta = _array(delta,shape=(height,width,2))
+            mask = _array(mask,shape=(height,width),dtype=np.bool_)
+            mask = flow_pair_validity(delta,mask,previous_valid,current_valid)
+            return (_array(np.where(mask[...,None],delta,0).transpose(2,0,1)),
+                    _array(mask,dtype=np.bool_))
+
+        self._last_flow_workers = 0
+        if missing:
+            workers = min(self._flow_workers,len(missing))
+            if workers > 1:
+                if backend is farneback_pair:
+                    import cv2
+                    if cv2.getNumThreads() != 1:
+                        # Direct CPU callers may not run production's thread
+                        # setup. Avoid nested OpenCV pools without changing
+                        # process-global configuration in this helper.
+                        workers = 1
+            self._last_flow_workers = workers
+            if workers > 1:
+                # Per-snapshot lifetime: shutdown joins all workers even when a
+                # pair raises. Ordered map plus main-thread writeback makes
+                # completion order irrelevant and prevents partial publication.
+                with ThreadPoolExecutor(max_workers=workers,
+                                        thread_name_prefix="causal-spatial-flow") as executor:
+                    results = list(executor.map(compute_pair,missing.values()))
+            else:
+                results = [compute_pair(inputs) for inputs in missing.values()]
+            for key,result in zip(missing,results):
+                self._flows[key] = result
+        for i in range(1,steps):
+            if not transitions[i]:
+                continue
+            for view in range(views):
+                key = (selected[i-1][0],selected[i][0],view,height,width)
+                self._flows.move_to_end(key)
+                pair_flow,mask = self._flows[key]
+                flow[i,view] = pair_flow
                 flow_valid[i,view,0] = mask
+        while len(self._flows) > 64:
+            self._flows.popitem(last=False)
         commands = np.stack([selected[max(0,i-1)][6] for i in range(steps)])
         commands[~transitions] = 0.
         return WindowSnapshot(self.episode, last[0], self._revision, last[1], last[2],

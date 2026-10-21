@@ -4,6 +4,8 @@ import sys
 import json
 import importlib.util
 from types import SimpleNamespace
+from contextlib import nullcontext
+from unittest.mock import patch
 import unittest
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -139,6 +141,65 @@ class PolicyPacketTests(unittest.TestCase):
         self.assertEqual(native.name, "motionkv_stage3_20k_eval_20261019.yaml")
         self.assertEqual(deploy["runtime_contract"], EXPECTED_RUNTIME_CONTRACT)
         with self.assertRaises(ValueError): read_deployment(root / "configs/causal_spatial/interface_adapt_smoke.yaml")
+
+    def scheduler_fixture(self, origin, *, fail_fast=False):
+        """CPU scheduling test only: tensor math/latency is deliberately stubbed."""
+        events = []
+        packet = self.phase_packet(origin)
+        packet["_sampling_seed"] = 12
+        observation = SimpleNamespace(spatial_times=np.arange(4, dtype=float))
+        old_memory = SimpleNamespace(source=SimpleNamespace(event_id=1, observation_physics_s=0.),
+            publication=1, completed_wall_s=1., payload=object())
+        policy = object.__new__(CausalSpatialPolicy)
+        policy._text, policy.vae, policy.device = object(), object(), "cpu-fixture"
+        policy._source_origin, policy._future = 0, None
+        policy._observe = lambda p: observation
+        policy._slow_status = lambda: None
+        policy.memories = SimpleNamespace(snapshot=lambda **kwargs: old_memory)
+        policy._model_batch = lambda *args: events.append("prepare_fast") or {}
+        policy._sync_stream = lambda: events.append("fast_stream_complete")
+        class Result:
+            def float(self): return self
+            def squeeze(self, axis): return self
+            def cpu(self): events.append("fast_actions_cpu_ready"); return self
+            def numpy(self): return np.ones((16, 14), dtype=np.float32)
+        def replay(batch, memory, noise):
+            events.append("fast_graph")
+            self.assertIs(memory, old_memory.payload)
+            if fail_fast: raise RuntimeError("fast fixture failed")
+            return {"actions": Result()}
+        policy._graph = SimpleNamespace(replay=replay, captures=1, replays=1)
+        policy.normalizer = SimpleNamespace(denormalize=lambda value: value)
+        def submit(p, obs, index):
+            self.assertIs(p, packet); self.assertIs(obs, observation); self.assertEqual(index, origin)
+            self.assertIn("fast_actions_cpu_ready", events)
+            events.append("slow_submit_same_source")
+            policy._future = object()
+            return True
+        policy._submit_memory = submit
+        fake_torch = SimpleNamespace(Generator=lambda **kwargs: SimpleNamespace(manual_seed=lambda seed: object()),
+            randn=lambda shape, **kwargs: np.zeros(shape, np.float32), inference_mode=nullcontext,
+            autocast=lambda *args, **kwargs: nullcontext(), bfloat16=object())
+        return policy, packet, events, fake_torch
+
+    def test_refresh_starts_after_cpu_actions_and_uses_original_source(self):
+        policy, packet, events, torch_fixture = self.scheduler_fixture(16)
+        with patch.dict(sys.modules, {"torch": torch_fixture}): actions = policy.sample(packet)
+        self.assertEqual(events, ["prepare_fast", "fast_graph", "fast_stream_complete",
+                                  "fast_actions_cpu_ready", "slow_submit_same_source"])
+        np.testing.assert_array_equal(actions[:2], packet["_rtc_prefix_actions"])
+        self.assertTrue(policy.last_policy_timing["slow_launched"])
+        self.assertEqual(policy.last_policy_timing["source_event_id"], 1)
+        self.assertEqual(policy.last_policy_timing["slow_dispatch_order"], "after_fast_actions_cpu_ready")
+
+    def test_no_refresh_before_cadence_or_after_failed_fast_result(self):
+        policy, packet, events, torch_fixture = self.scheduler_fixture(14)
+        with patch.dict(sys.modules, {"torch": torch_fixture}): policy.sample(packet)
+        self.assertNotIn("slow_submit_same_source", events)
+        policy, packet, events, torch_fixture = self.scheduler_fixture(16, fail_fast=True)
+        with patch.dict(sys.modules, {"torch": torch_fixture}):
+            with self.assertRaisesRegex(RuntimeError, "fast fixture failed"): policy.sample(packet)
+        self.assertNotIn("slow_submit_same_source", events)
 
     @unittest.skipUnless(importlib.util.find_spec("torch") and importlib.util.find_spec("cv2"),
                          "actual CPU serving geometry requires torch and OpenCV")

@@ -3,6 +3,9 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 import unittest
+import importlib.util
+import threading
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -144,6 +147,134 @@ class ContractTests(unittest.TestCase):
                                                 completion_ready=True),reversed(sources)))
         self.assertEqual(store.current.source.event_id,11)
         self.assertEqual(store.current.payload,11)
+
+    def test_complete_pair_cache_reuses_flow_and_warped_validity_only_for_same_exposures(self):
+        from dynamicwam.observations import causal_spatial_window as shared
+        with patch.object(shared,"flow_pair_validity",wraps=shared.flow_pair_validity) as validity:
+            backend=unittest.mock.Mock(side_effect=deterministic_flow)
+            h=FiniteObservationWindow("ep",flow_backend=backend)
+            for event in range(4):
+                observe(h,event,event*.32,10+event*.32)
+                self.assertEqual(backend.call_count,event*3)
+                self.assertEqual(validity.call_count,event*3)
+            previous=h.snapshot()
+            h.snapshot()
+            self.assertEqual((backend.call_count,validity.call_count),(9,9))
+            observe(h,4,1.28,11.28)
+            self.assertEqual((backend.call_count,validity.call_count),(12,12))
+            # Only the new 3-view pair was evaluated; the previous 2 pairs
+            # retained their FULL masked tensors and previous-padding validity.
+            np.testing.assert_array_equal(h.snapshot().flow[1:3],previous.flow[2:4])
+            np.testing.assert_array_equal(h.snapshot().flow_valid[1:3],previous.flow_valid[2:4])
+            self.assertEqual(len(h._flows),9)
+            for event in range(5,30):observe(h,event,event*.32,10+event*.32)
+            live={frame[0] for frame in h._frames}
+            self.assertTrue(all(a in live and b in live for a,b,*_ in h._flows))
+            self.assertLessEqual(len(h._flows),9)
+            self.assertEqual((backend.call_count,validity.call_count),(87,87))
+
+    def test_cached_full_tensors_equal_uncached_shared_flow_semantics_with_padding(self):
+        from dynamicwam.observations.causal_spatial_window import causal_window_indices,flow_pair_validity
+        def subpixel_flow(previous,current):
+            h,w,_=previous.shape
+            delta=np.empty((h,w,2),np.float32)
+            delta[...,0]=.5 if current[0,0,0]%2 else -.5
+            delta[...,1]=.25
+            confidence=np.ones((h,w),bool);confidence[1,2]=False
+            return delta,confidence
+        h=FiniteObservationWindow("ep",flow_backend=subpixel_flow)
+        exposures=[]
+        for event,t in enumerate((0.,.1,.32,.49,.64,.96,1.28,1.61,1.92)):
+            raw=np.full((3,6,8,3),event,np.uint8)
+            rgb=raw.transpose(0,3,1,2).astype(np.float32)/255
+            valid=np.ones((3,1,6,8),bool)
+            valid[0,0,:,0]=False;valid[1,0,-1,:]=False
+            valid[2,0,2,event%8]=False
+            exposures.append((t,raw.copy(),valid.copy()))
+            snap=h.append(event_id=event,observation_physics_s=t,available_wall_s=10+t,
+                spatial_rgb=rgb,raw_rgb=raw,valid=valid,capture_drive_targets=np.full(14,event))
+            raw[:]=255;valid[:]=False # the cache owns immutable exposure inputs
+            indices,_,_,transitions=causal_window_indices([e[0] for e in exposures],event)
+            expected=np.zeros_like(snap.flow);expected_valid=np.zeros_like(snap.flow_valid)
+            for row in range(1,4):
+                if not transitions[row]:continue
+                previous,current=exposures[indices[row-1]],exposures[indices[row]]
+                for view in range(3):
+                    delta,confidence=subpixel_flow(previous[1][view],current[1][view])
+                    mask=flow_pair_validity(delta,confidence,previous[2][view,0],current[2][view,0])
+                    expected[row,view]=np.where(mask[...,None],delta,0).transpose(2,0,1)
+                    expected_valid[row,view,0]=mask
+            np.testing.assert_array_equal(snap.flow,expected)
+            np.testing.assert_array_equal(snap.flow_valid,expected_valid)
+            np.testing.assert_array_equal(h.snapshot().flow,expected)
+        self.assertTrue(snap.flow_valid.any())
+        self.assertTrue((~snap.flow_valid[1:]).any())
+        for pair_flow,pair_valid in h._flows.values():
+            with self.assertRaises(ValueError):pair_flow.setflags(write=True)
+            with self.assertRaises(ValueError):pair_valid.setflags(write=True)
+
+    def test_three_view_parallel_pairs_match_sequential_and_join_before_return(self):
+        barrier=threading.Barrier(3)
+        thread_ids=set();lock=threading.Lock()
+        def parallel_backend(previous,current):
+            with lock:thread_ids.add(threading.get_ident())
+            barrier.wait(timeout=5.)
+            return deterministic_flow(previous,current)
+        parallel=FiniteObservationWindow("ep",flow_backend=parallel_backend)
+        sequential=FiniteObservationWindow("ep",flow_backend=deterministic_flow,flow_workers=1)
+        for event in range(5):
+            a=observe(parallel,event,event*.32,10+event*.32)
+            b=observe(sequential,event,event*.32,10+event*.32)
+            for name in ("flow","flow_valid","spatial_rgb","valid","dt","recorded_capture_commands",
+                         "command_valid","spatial_times","spatial_event_ids"):
+                np.testing.assert_array_equal(getattr(a,name),getattr(b,name))
+            self.assertEqual(list(parallel._flows),list(sequential._flows))
+            self.assertFalse(any(t.name.startswith("causal-spatial-flow") for t in threading.enumerate()))
+        self.assertGreaterEqual(len(thread_ids),3)
+        self.assertEqual(parallel._last_flow_workers,3)
+        parallel.snapshot()
+        self.assertEqual(parallel._last_flow_workers,0)
+
+    def test_parallel_failure_propagates_without_cache_publication_or_orphan_threads(self):
+        barrier=threading.Barrier(3)
+        def failing(previous,current):
+            barrier.wait(timeout=5.)
+            raise RuntimeError("flow backend failure")
+        h=FiniteObservationWindow("ep",flow_backend=failing)
+        observe(h)
+        with self.assertRaisesRegex(RuntimeError,"flow backend failure"):
+            observe(h,1,.32,10.32)
+        self.assertEqual(len(h._flows),0)
+        self.assertFalse(any(t.name.startswith("causal-spatial-flow") for t in threading.enumerate()))
+        for workers in (0,4,True,1.5):
+            with self.assertRaises(ValueError):FiniteObservationWindow("ep",flow_workers=workers)
+
+    @unittest.skipUnless(importlib.util.find_spec("cv2"),"OpenCV unavailable in local CPU runtime")
+    def test_real_opencv_parallel_matches_sequential_and_respects_global_threads(self):
+        import cv2
+        saved=cv2.getNumThreads()
+        rng=np.random.default_rng(31)
+        def append(h,event,raw):
+            valid=np.ones((3,1,*raw.shape[1:3]),bool);valid[:,:,:,0]=False
+            return h.append(event_id=event,observation_physics_s=event*.32,available_wall_s=10+event*.32,
+                spatial_rgb=raw.transpose(0,3,1,2).astype(np.float32)/255,raw_rgb=raw,valid=valid,
+                capture_drive_targets=np.zeros(14))
+        try:
+            cv2.setNumThreads(1)
+            parallel=FiniteObservationWindow("ep");sequential=FiniteObservationWindow("ep",flow_workers=1)
+            base=rng.integers(0,256,(3,64,80,3),dtype=np.uint8)
+            for event in range(5):
+                raw=np.roll(base,event,axis=2)
+                a,b=append(parallel,event,raw),append(sequential,event,raw)
+                np.testing.assert_array_equal(a.flow,b.flow)
+                np.testing.assert_array_equal(a.flow_valid,b.flow_valid)
+            self.assertEqual(parallel._last_flow_workers,3)
+            cv2.setNumThreads(2)
+            fallback=FiniteObservationWindow("ep")
+            append(fallback,0,base);append(fallback,1,np.roll(base,1,axis=2))
+            self.assertEqual(fallback._last_flow_workers,1)
+            self.assertEqual(cv2.getNumThreads(),2)
+        finally:cv2.setNumThreads(saved)
 
 
 class NativeQueueAdapterTests(unittest.TestCase):

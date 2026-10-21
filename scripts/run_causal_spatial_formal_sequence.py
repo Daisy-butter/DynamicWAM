@@ -10,6 +10,7 @@ The root writes acceptance only after actual acceptance, never this controller.
 """
 from __future__ import annotations
 import argparse
+import ast
 from datetime import datetime,timezone
 import hashlib
 import json
@@ -28,6 +29,15 @@ OUT=SSD/"outputs/diagnostics/causal_spatial_v4_20261021"
 PHASES=("interface_adapt","policy_pretrain","joint")
 STEPS=dict(zip(PHASES,(2000,30000,20000)))
 FORMAT="causal_spatial_formal_acceptance_v1"
+TRAINING_SMOKE_BASE_HEAD="4af56fa925a8b67aa880ccf69ba85c1b3b270724"
+TRAINING_REUSE_ALLOWED=frozenset({
+    "src/dynamicwam/inference/causal_spatial_policy.py",
+    "src/dynamicwam/runtime/causal_spatial_contract.py",
+    "scripts/run_causal_spatial_formal_sequence.py",
+    "tests/test_causal_spatial_policy.py",
+    "tests/test_causal_spatial_contract.py",
+    "tests/test_causal_spatial_formal_sequence.py",
+})
 
 
 def require(value,message):
@@ -63,6 +73,116 @@ def source_identity():
             "freeze and commit the source before formal sequence")
     return dict(git_head=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),
                 source_sha256=source_files_and_hash(ROOT)[1])
+
+
+def _git_tree(revision):
+    raw=subprocess.check_output(["git","ls-tree","-r","-z",revision],cwd=ROOT)
+    result={}
+    for item in raw.split(b"\0"):
+        if not item:continue
+        metadata,path=item.split(b"\t",1);mode,kind,oid=metadata.decode().split()
+        result[path.decode("utf-8")]=dict(mode=mode,kind=kind,oid=oid)
+    return result
+
+
+def _git_blobs(revision,paths):
+    paths=sorted(paths)
+    require(all("\n" not in p and "\r" not in p for p in paths),"unsupported source filename")
+    request="".join(revision+":"+p+"\n" for p in paths).encode()
+    data=subprocess.check_output(["git","cat-file","--batch"],cwd=ROOT,input=request)
+    result={};offset=0
+    for path in paths:
+        newline=data.index(b"\n",offset);header=data[offset:newline].split()
+        require(len(header)==3 and header[1]==b"blob","source is not a Git blob: "+path)
+        size=int(header[2]);offset=newline+1
+        result[path]=data[offset:offset+size];offset+=size
+        require(data[offset:offset+1]==b"\n","invalid git batch boundary");offset+=1
+    require(offset==len(data),"extra Git batch output")
+    return result
+
+
+def _source_hash(blobs):
+    value=hashlib.sha256()
+    for path,content in sorted(blobs.items()):
+        if path.startswith(("src/","scripts/")) and path.endswith(".py"):
+            value.update(path.encode()+b"\0"+content+b"\0")
+    return value.hexdigest()
+
+
+def _window_external_ast(content):
+    """Only the deployment cache class and OrderedDict import may change."""
+    tree=ast.parse(content)
+    tree.body=[node for node in tree.body if not(isinstance(node,ast.ClassDef) and node.name=="FiniteObservationWindow")]
+    for node in tree.body:
+        if isinstance(node,ast.ImportFrom) and node.module=="collections":
+            require(all(alias.name!="OrderedDict" or alias.asname is None for alias in node.names),"OrderedDict alias changed")
+            node.names=[alias for alias in node.names if alias.name!="OrderedDict"]
+        if isinstance(node,ast.ImportFrom) and node.module=="concurrent.futures":
+            require(all(alias.name=="ThreadPoolExecutor" and alias.asname is None for alias in node.names),
+                    "only the bounded window ThreadPoolExecutor import is permitted")
+            node.names=[]
+    tree.body=[node for node in tree.body if not(isinstance(node,ast.ImportFrom) and not node.names)]
+    return ast.dump(tree,include_attributes=False)
+
+
+def build_training_source_compatibility(base_identity,target_identity):
+    """Recompute narrow compatibility from real Git objects; never trust a flag.
+
+    This admits old *training smokes only*. CPU, Graph, DOMINO, guards, model,
+    optimizer, loaders, datasets and every recipe retain their original gates.
+    """
+    base=base_identity["git_head"];target=target_identity["git_head"]
+    require(base==TRAINING_SMOKE_BASE_HEAD and base!=target,"training reuse requires the exact audited base commit")
+    require(bool(re.fullmatch(r"[0-9a-f]{40}",target)),"invalid compatibility target HEAD")
+    require(subprocess.run(["git","merge-base","--is-ancestor",base,target],cwd=ROOT,
+            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,"training smoke source is not a Git ancestor")
+    before=_git_tree(base);after=_git_tree(target)
+    require(set(before)==set(after),"training reuse forbids tracked file additions/deletions/renames")
+    changed=sorted(path for path in before if before[path]!=after[path])
+    require(bool(changed) and set(changed)<=TRAINING_REUSE_ALLOWED,
+            "training reuse contains a non-allowlisted changed file: "+str(sorted(set(changed)-TRAINING_REUSE_ALLOWED)))
+    for path in changed:
+        require(before[path]["mode"]==after[path]["mode"]=="100644" and
+                before[path]["kind"]==after[path]["kind"]=="blob","changed source mode/type is not a regular Python file")
+    python_paths={path for path in before if path.startswith(("src/","scripts/")) and path.endswith(".py")}
+    loaded=python_paths|set(changed)
+    old=_git_blobs(base,loaded);new=_git_blobs(target,loaded)
+    require(_source_hash(old)==base_identity["source_sha256"],"old guard source hash does not match its Git commit")
+    require(_source_hash(new)==target_identity["source_sha256"],"current source hash does not match its Git commit")
+    contract="src/dynamicwam/runtime/causal_spatial_contract.py"
+    require(_window_external_ast(old[contract])==_window_external_ast(new[contract]),
+            "runtime contract changed outside deployment FiniteObservationWindow cache")
+    protected_roots=("src/dynamicwam/training/","src/dynamicwam/models/","src/dynamicwam/observations/")
+    protected_exact={"src/dynamicwam/inference/causal_spatial_loader.py","scripts/train_causal_spatial.py",
+                     "scripts/check_causal_spatial_export.py"}
+    deployment_modules=("dynamicwam.runtime.causal_spatial_contract","dynamicwam.inference.causal_spatial_policy")
+    for path in python_paths:
+        if not(path.startswith(protected_roots) or path in protected_exact):continue
+        require(old[path]==new[path],"training/data/model/loader bytes changed: "+path)
+        for node in ast.walk(ast.parse(new[path])):
+            imports=[alias.name for alias in node.names] if isinstance(node,ast.Import) else (
+                [node.module or ""] if isinstance(node,ast.ImportFrom) else [])
+            require(not any(name==m or name.startswith(m+".") for name in imports for m in deployment_modules),
+                    "protected training code imports a modified deployment module: "+path)
+    protected=[dict(path=path,**before[path]) for path in sorted(before) if path not in TRAINING_REUSE_ALLOWED]
+    return dict(format="causal_spatial_training_source_compatibility_v1",base_identity=base_identity,
+        target_identity=target_identity,git_ancestor=True,scope="three_existing_training_smokes_only",
+        allowed_changed_files=sorted(TRAINING_REUSE_ALLOWED),changed_files=[dict(path=path,status="M",
+            before_sha256=hashlib.sha256(old[path]).hexdigest(),after_sha256=hashlib.sha256(new[path]).hexdigest(),
+            before_git_blob=before[path]["oid"],after_git_blob=after[path]["oid"]) for path in changed],
+        protected_tracked_files=len(protected),
+        protected_inventory_sha256=hashlib.sha256(json.dumps(protected,sort_keys=True,separators=(",",":")).encode()).hexdigest(),
+        training_data_models_configs_loaders_unchanged=True,window_noncache_ast_unchanged=True,
+        shared_observation_helpers_unchanged=True,current_cpu_graph_domino_required=True)
+
+
+def training_smoke_identity(acceptance,identity):
+    reference=acceptance.get("training_source_compatibility")
+    if reference is None:return identity
+    receipt=artifact(reference)
+    expected=build_training_source_compatibility(receipt["base_identity"],identity)
+    require(receipt==expected,"training source compatibility receipt differs from actual Git evidence")
+    return receipt["base_identity"]
 
 
 def check_guard(bundle,identity,*,expected_stage,workers):
@@ -179,6 +299,7 @@ def validate_acceptance(path,*,identity=None):
     require(cpu.get('source_sha256')==identity['source_sha256'],'actual CPU model/data acceptance is stale')
     require(cpu.get("fast_strict_roundtrip") is True and cpu.get("teacher_normalization_equal") is True,"actual CPU model/data gate incomplete")
     require(set(evidence["smokes"])==set(PHASES),"all three actual training smokes required")
+    smoke_identity=training_smoke_identity(a,identity)
     checkpoint=None
     for phase in PHASES:
         bundle=evidence["smokes"][phase];value=artifact(bundle["audit"])
@@ -189,7 +310,7 @@ def validate_acceptance(path,*,identity=None):
         for key in ("model","runtime_contract","data","microbatch","accumulation","lr","loss","teacher_checkpoint"):
             require(smoke[key]==recipes[phase][key],"smoke differs from formal recipe: "+key)
         checkpoint=check_export(value,smoke,diagnostic=True)
-        check_guard(bundle,identity,expected_stage="smoke",workers=8)
+        check_guard(bundle,smoke_identity,expected_stage="smoke",workers=8)
     graph=evidence["graph"];result=artifact(graph["result"])
     check_guard(graph,identity,expected_stage="graph",workers=1)
     require(result.get("passed") is True and result.get("source_sha256")==identity["source_sha256"],"actual Graph gate failed or stale")

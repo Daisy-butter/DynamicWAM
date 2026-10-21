@@ -353,9 +353,7 @@ class CausalSpatialPolicy:
                 complete_request_ms=1000 * (time.perf_counter() - started))
             return np.repeat(np.asarray(packet["_rtc_capture_drive_targets"], np.float64)[None], 16, axis=0)
         memory = self.memories.snapshot(observation_physics_s=float(packet["sim_time"]), request_wall_s=time.perf_counter())
-        launched = False
-        if origin - self._source_origin >= 16:
-            launched = self._submit_memory(packet, observation, origin)
+        refresh_due = origin - self._source_origin >= 16
         batch = self._model_batch(packet, observation, memory, prefix, offsets, previous, previous_valid)
         generator = torch.Generator(device=self.device).manual_seed(int(packet["_sampling_seed"]))
         action_noise = torch.randn((1, 16, 14), device=self.device, generator=generator)
@@ -373,6 +371,13 @@ class CausalSpatialPolicy:
         if actions.shape != (16, 14) or not np.isfinite(actions).all():
             raise RuntimeError("nonfinite or malformed causal-spatial action plan")
         actions[:len(prefix)] = prefix  # preserve controller-owned original targets exactly
+        actions_ready = time.perf_counter()
+        # This request consumes its already selected complete M. Launching
+        # slow VAE/Video before its fast Graph competes on the same GPU and can
+        # miss H2 at refresh@16. Keep the SAME source observation, but dispatch
+        # its background refresh only after the fast result is owned on CPU.
+        # Later requests still use latest-complete publication; never wait here.
+        launched = self._submit_memory(packet, observation, origin) if refresh_due else False
         finished = time.perf_counter()
         self.last_policy_timing = dict(policy="causal_spatial", cuda_graph=self._graph is not None, H=2, R=2, K=10,
             graph_captures=0 if self._graph is None else self._graph.captures,
@@ -381,10 +386,13 @@ class CausalSpatialPolicy:
             source_publication=memory.publication, source_completed_wall_s=memory.completed_wall_s,
             source_consumed_wall_s=fast_started, memory_age_seconds=float(packet["sim_time"]) - memory.source.observation_physics_s,
             slow_launched=launched, slow_in_flight=self._future is not None,
+            slow_dispatch_order="after_fast_actions_cpu_ready",
+            fast_actions_cpu_ready_wall_s=actions_ready,
+            slow_dispatch_overhead_ms=1000 * (finished - actions_ready),
             last_slow=self._slow_status(), spatial_window_times=observation.spatial_times.tolist(),
             command_history_semantics="recorded_capture_drive_targets_not_dense_executed_control",
             soft_plan_valid_rows=int(previous_valid.sum()), future_target_offsets=offsets[[7, 15]].tolist(),
-            preprocessing_ms=1000 * (fast_started - started), fast_model_ms=1000 * (finished - fast_started),
+            preprocessing_ms=1000 * (fast_started - started), fast_model_ms=1000 * (actions_ready - fast_started),
             complete_request_ms=1000 * (finished - started))
         return actions
 
