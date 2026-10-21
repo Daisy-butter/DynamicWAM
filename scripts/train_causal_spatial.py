@@ -9,6 +9,8 @@ from train_multirate import finish_training
 def load_recipe(path):
  import yaml
  r=yaml.safe_load(Path(path).read_text())
+ from dynamicwam.training.train.causal_spatial_trainer import normalize_recipe_numbers
+ r=normalize_recipe_numbers(r)
  if r.get('format')!='causal_spatial_training_v1':raise ValueError('unsupported recipe')
  if r['runtime_contract']['simulation_rate']!=1.:raise ValueError('V4 target is fixed 1x physical clock')
  if r['runtime_contract']['H']!=2 or r['runtime_contract']['R']!=2:raise ValueError('V4 recipe requires explicit H2/R2')

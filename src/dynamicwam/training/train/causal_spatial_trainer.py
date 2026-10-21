@@ -1,6 +1,6 @@
 """V4 joint spatial-world/action training, with explicit data and causal contracts."""
 from __future__ import annotations
-import copy, gc, hashlib, json, os, re, shutil, time
+import copy, gc, hashlib, json, math, os, re, shutil, time
 from pathlib import Path
 import torch
 from torch import nn
@@ -16,6 +16,94 @@ from dynamicwam.training.train.common import build_training_flow_scheduler
 from dynamicwam.training.data.physical_grid_dataset import PhysicalGridPairedWorldActionDataset
 from dynamicwam.training.data.multirate_sampling import BalancedPairSampler,ProcessGroupAlignedSampler
 from dynamicwam.training.utils.scheduler import create_scheduler
+
+
+def normalize_recipe_numbers(recipe):
+ """Canonical numeric recipe, before optimizer/DeepSpeed copies parameter groups.
+
+ PyYAML's YAML 1.1 resolver reads JSON-style ``1e-06`` as a string. Validate
+ explicit numeric fields without coercing paths, booleans or metadata strings.
+ """
+ result=copy.deepcopy(recipe)
+ def number(value,path,*,integer=False,minimum=0):
+  if isinstance(value,bool) or not isinstance(value,(str,int,float)):
+   raise ValueError(f'{path} must be a finite number, not {type(value).__name__}')
+  try: parsed=float(value)
+  except (TypeError,ValueError,OverflowError) as exc:raise ValueError(f'{path} must be a finite number') from exc
+  if not math.isfinite(parsed) or parsed<minimum:
+   raise ValueError(f'{path} must be finite and >= {minimum}')
+  if integer and not parsed.is_integer():raise ValueError(f'{path} must be an integer')
+  return int(parsed) if integer else parsed
+ for key in ('steps','microbatch','accumulation','teacher_plan_interval','log_interval',
+             'validation_interval','validation_batches','checkpoint_interval'):
+  if key in result:result[key]=number(result[key],key,integer=True,minimum=1)
+ for key in ('workers','warmup_steps'):
+  if key in result:result[key]=number(result[key],key,integer=True)
+ for section in ('lr','loss'):
+  for key,value in result.get(section,{}).items():result[section][key]=number(value,f'{section}.{key}')
+ for section,integers,floats in (
+  ('model',('z_dim','z_ffn_ratio','belief_dim','views','latent_channels','history_length'),()),
+  ('runtime_contract',('H','R','chunk_size','K','window_size','memory_refresh_actions'),
+   ('dt','simulation_rate','window_stride_seconds','max_memory_age_seconds'))):
+  values=result.get(section,{})
+  for key in integers:
+   if key in values:values[key]=number(values[key],f'{section}.{key}',integer=True,minimum=1)
+  for key in floats:
+   if key in values:values[key]=number(values[key],f'{section}.{key}')
+ if 'belief_grid' in result.get('model',{}):
+  result['model']['belief_grid']=[number(v,f'model.belief_grid[{i}]',integer=True,minimum=1)
+    for i,v in enumerate(result['model']['belief_grid'])]
+ return result
+
+
+def build_causal_spatial_optimizer(model,recipe):
+ """Shared real optimizer construction for training and CPU phase regression."""
+ recipe=normalize_recipe_numbers(recipe)
+ if recipe['phase'] not in ('interface_adapt','policy_pretrain','joint'):raise ValueError('unsupported training phase')
+ model.requires_grad_(True)
+ if recipe['phase']=='interface_adapt':
+  model.backbone.action_expert.requires_grad_(False)
+  model.backbone.absolute_motion_tokens.requires_grad_(False)
+ groups=[];seen=set()
+ for name,module,lr in [('video',model.backbone.compact_wan,recipe['lr']['video']),
+  ('action',model.backbone.action_expert,recipe['lr']['action']),
+  ('motion',model.backbone.absolute_motion_tokens,recipe['lr']['action'])]:
+  params=[p for p in module.parameters() if p.requires_grad]
+  seen.update(id(p) for p in module.parameters())
+  if params:groups.append(dict(params=params,lr=lr,name=name))
+ params=[p for p in model.parameters() if id(p) not in seen and p.requires_grad]
+ if params:groups.append(dict(params=params,lr=recipe['lr']['new'],name='new_spatial_future'))
+ return torch.optim.AdamW(groups,weight_decay=.001)
+
+
+def optimizer_step_with_norm(accelerator,objective,optimizer):
+ """Non-DS clips before update; DS reports its stored norm after engine step.
+
+ Accelerate/DeepSpeed versions can execute engine.step inside backward, or at
+ optimizer.step. Never call clipping a second time or read a stale pre-step norm.
+ """
+ distributed=getattr(accelerator,'distributed_type',None)
+ is_deepspeed=getattr(distributed,'value',distributed)=='DEEPSPEED'
+ norm=None
+ def checked(value):
+  if value is None:raise RuntimeError('optimizer boundary lacks measured global gradient norm')
+  if not torch.isfinite(torch.as_tensor(value)).all():raise FloatingPointError('nonfinite gradient')
+  return float(value)
+ if accelerator.sync_gradients and not is_deepspeed:
+  norm=checked(accelerator.clip_grad_norm_(objective.parameters(),1.))
+ optimizer.step()
+ if accelerator.sync_gradients:
+  if is_deepspeed:
+   engine=objective
+   if not callable(getattr(engine,'get_global_grad_norm',None)):
+    engine=getattr(getattr(accelerator,'deepspeed_engine_wrapped',None),'engine',None)
+   if not callable(getattr(engine,'get_global_grad_norm',None)):
+    raise RuntimeError('DeepSpeed engine does not expose get_global_grad_norm')
+   norm=checked(engine.get_global_grad_norm())
+  if getattr(accelerator,'optimizer_step_was_skipped',False):
+   raise RuntimeError('optimizer update skipped; refusing to advance the training clock')
+ optimizer.zero_grad()
+ return norm
 
 
 def tensor_to(value,device):
@@ -94,6 +182,7 @@ class Objective(nn.Module):
 class CausalSpatialTrainer:
  def __init__(self,recipe,accelerator):
   from dynamicwam.training.data.causal_spatial_dataset import collate_causal_spatial
+  recipe=normalize_recipe_numbers(recipe)
   self.recipe=recipe;self.acc=accelerator;self.device=accelerator.device
   self.run=Path(recipe['run_dir']);self.run.mkdir(parents=True,exist_ok=True)
   self.train=build_dataset(recipe);self.val=build_dataset(recipe,'validation')
@@ -112,19 +201,8 @@ class CausalSpatialTrainer:
    model,self.native_config=build_from_initialization(recipe['initial_checkpoint'],recipe['model'],self.device)
    self.initialization=dict(path=recipe['initial_checkpoint'],sha256=sha256(recipe['initial_checkpoint']),kind='stage1_video_wo_motion_action_fresh_motion')
   self.validate_statistics(model)
-  model.requires_grad_(True)
-  if recipe['phase']=='interface_adapt':
-   model.backbone.action_expert.requires_grad_(False)
-   model.backbone.absolute_motion_tokens.requires_grad_(False)
-  video=model.backbone.compact_wan
-  groups=[];seen=set()
-  for name,module,lr in [('video',video,recipe['lr']['video']),('action',model.backbone.action_expert,recipe['lr']['action']),('motion',model.backbone.absolute_motion_tokens,recipe['lr']['action'])]:
-   params=[p for p in module.parameters() if p.requires_grad]
-   seen.update(id(p) for p in module.parameters())
-   if params:groups.append(dict(params=params,lr=lr,name=name))
-  groups.append(dict(params=[p for p in model.parameters() if id(p) not in seen and p.requires_grad],lr=recipe['lr']['new'],name='new_spatial_future'))
   self.objective=Objective(model,recipe['loss'])
-  self.optimizer=torch.optim.AdamW(groups,weight_decay=.001)
+  self.optimizer=build_causal_spatial_optimizer(model,recipe)
   self.teacher=None
   if recipe.get('teacher_checkpoint'):
    self.initialization['teacher_sha256']=sha256(recipe['teacher_checkpoint'])
@@ -292,16 +370,11 @@ class CausalSpatialTrainer:
        nonfinite_loss+=1;raise RuntimeError('nonfinite causal-spatial loss')
       self.finite_loss_checks+=1
       self.acc.backward(loss)
+      try:norm=optimizer_step_with_norm(self.acc,self.objective,self.optimizer)
+      except FloatingPointError:
+       nonfinite_grad+=1;raise
       if self.acc.sync_gradients:
-       norm=self.acc.clip_grad_norm_(self.objective.parameters(),1.)
-       if norm is None and hasattr(self.objective,'get_global_grad_norm'):norm=self.objective.get_global_grad_norm()
-       if norm is None:raise RuntimeError('optimizer boundary lacks measured global gradient norm')
-       if norm is not None:
-        if not torch.isfinite(torch.as_tensor(norm)):
-         nonfinite_grad+=1;raise RuntimeError('nonfinite gradient')
-        self.finite_grad_checks+=1;self.last_grad_norm=float(norm)
-      self.optimizer.step();self.optimizer.zero_grad()
-      if self.acc.sync_gradients:
+       self.finite_grad_checks+=1;self.last_grad_norm=norm
        self.scheduler.step();self.step+=1
        values=self.acc.reduce(torch.stack([loss.detach()]+[metrics[k] for k in sorted(metrics)]),reduction='mean').float().cpu().tolist()
        self.last_metrics=dict(zip(['total']+sorted(metrics),values))
