@@ -21,6 +21,10 @@ class PolicyPacketTests(unittest.TestCase):
             _rtc_action_target_offsets=np.arange(1, 17, dtype=np.float64) * .16,
             _rtc_previous_actions=np.ones((16, 14), np.float32),
             _rtc_previous_valid=np.ones(16, bool), _rtc_action_interval_s=.16, sim_time=2.,
+            _rtc_physics_timestep_s=.004, _rtc_observation_physics_s=2.,
+            _rtc_action_grid_start_physics_s=None if bootstrap else 2.,
+            _rtc_action_origin_physics_s=2.,
+            _rtc_action_target_times=2. + np.arange(1, 17, dtype=np.float64) * .16,
             _rtc_capture_drive_targets=np.arange(14, dtype=np.float64),
             _rtc_capture_wall_perf_s=10., _rtc_capture_available_wall_perf_s=10.3)
 
@@ -47,6 +51,52 @@ class PolicyPacketTests(unittest.TestCase):
             packet = self.packet(); packet[key] = value
             with self.assertRaises(ValueError): validate_packet(packet)
         packet = self.packet(); packet["_rtc_action_target_offsets"] += .01
+        with self.assertRaises(ValueError): validate_packet(packet)
+
+    def phase_packet(self, origin):
+        """Exact observed domino_joint02 epoch and native float32 timestep."""
+        packet = self.packet()
+        grid = .25600001215934753
+        dt = float(np.float32(.004))
+        capture = grid + origin * 40 * dt
+        anchor = grid + origin * .16
+        targets = anchor + np.arange(1, 17, dtype=np.float64) * .16
+        packet.update(_rtc_observation_action_index=origin, sim_time=capture,
+            _rtc_physics_timestep_s=dt, _rtc_observation_physics_s=capture,
+            _rtc_action_grid_start_physics_s=grid, _rtc_action_origin_physics_s=anchor,
+            _rtc_action_target_times=targets, _rtc_action_target_offsets=targets - capture)
+        return packet
+
+    def test_real_native_tick_phase_is_preserved_without_moving_endpoints(self):
+        for origin in (2, 100, 1000, 10000):
+            packet = self.phase_packet(origin)
+            original = packet["_rtc_action_target_offsets"].copy()
+            _, _, _, offsets, _, _ = validate_packet(packet)
+            np.testing.assert_array_equal(offsets, original)
+            np.testing.assert_allclose(offsets + packet["sim_time"],
+                packet["_rtc_action_target_times"], atol=1e-12, rtol=0)
+        failure = self.phase_packet(2)
+        self.assertEqual(failure["sim_time"], .576000027358532)
+        self.assertAlmostEqual(failure["_rtc_action_origin_physics_s"] - failure["sim_time"],
+                               -1.5199184359997457e-8, delta=1e-16)
+        self.assertFalse(np.allclose(failure["_rtc_action_target_offsets"],
+                                    np.arange(1, 17) * .16, atol=1e-8, rtol=0))
+
+    def test_real_tick_delay_and_changed_absolute_grid_still_rejected(self):
+        packet = self.phase_packet(2)
+        packet["sim_time"] += packet["_rtc_physics_timestep_s"]
+        packet["_rtc_observation_physics_s"] = packet["sim_time"]
+        packet["_rtc_action_target_offsets"] = packet["_rtc_action_target_times"] - packet["sim_time"]
+        with self.assertRaises(ValueError): validate_packet(packet)
+        packet = self.phase_packet(2)
+        packet["_rtc_action_target_times"] += .004
+        packet["_rtc_action_target_offsets"] += .004
+        with self.assertRaises(ValueError): validate_packet(packet)
+        packet = self.phase_packet(2)
+        packet["_rtc_action_target_offsets"] = np.arange(1, 17) * .16
+        with self.assertRaises(ValueError): validate_packet(packet)
+        packet = self.phase_packet(2)
+        packet["_rtc_action_interval_s"] += 1e-7
         with self.assertRaises(ValueError): validate_packet(packet)
 
     def test_invalid_forecast_tail_never_becomes_context(self):

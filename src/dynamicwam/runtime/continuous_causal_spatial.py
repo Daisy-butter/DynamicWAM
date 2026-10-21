@@ -8,6 +8,7 @@ timestamps, absolute drive-target commitments, and the real wall-clock deadline.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import math
 import time
@@ -32,8 +33,9 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
     """Execute H2/R2 on the measured wall/physics clock.
 
     Bootstrap initializes observation memory while native drive targets hold.
-    Every subsequent exposure and immutable two-action deadline stays on one
-    absolute .16-second action grid. The owner drains worker/camera after return.
+    Action endpoints and two-action deadlines stay on one absolute .16-second
+    grid; exposure retains the actual native tick time, including its phase.
+    The owner drains worker/camera after return.
     No fixed-rate concession or deadline extension is available.
     """
     protocol = protocol_for_rate(simulation_rate)
@@ -55,7 +57,7 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
         raise ValueError("session action spacing does not match RTC checkpoint")
     dt = float(session.timestep())
     if not 0 < dt < action_interval_s or not np.isclose(round(action_interval_s / dt) * dt,
-                                                       action_interval_s, atol=1e-8):
+                                                       action_interval_s, atol=1e-8, rtol=0):
         raise ValueError("trained action interval must contain an integral number of physics ticks")
     wall0, phys0 = clock(), float(session.physics_time())
     object0 = np.asarray(session.object_position()).copy()
@@ -207,6 +209,11 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
             if active is not None or worker.busy:
                 fail("RTC previous inference still outstanding at next query")
             reservation = None if grid0 is None else queue.reserve(completed, frozen, length=prefix_max)
+            if reservation is not None:
+                # The native queue records the actual exposure. Its default
+                # exposure+H deadline must not rebase the immutable action grid.
+                reservation = replace(reservation, deadline_physics_s=
+                    grid0 + (completed + prefix_max) * action_interval_s)
         drive = np.asarray(session.current_drive_targets(), dtype=np.float64)
         if drive.shape != (14,) or not np.isfinite(drive).all():
             fail("invalid capture-time native drive targets")
@@ -214,9 +221,9 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
                    "capture_drive_targets": drive.tolist(),
                    "delivered": False, "asynchronous_readback": True,
                    "action_origin": completed, "query_index": query if for_inference else None}
-        # Keep the exposure and reservation on the immutable action boundary.
-        # Catching up here would move the observation and extend frozen+H2;
-        # rendering overhead remains real lag, never hidden by re-labelling.
+        # Keep the measured exposure and absolute-grid reservation separate.
+        # Catching up here would move the observation; rendering overhead
+        # remains real lag, never hidden by re-labelling or extending H2.
         pending["pre_submit_backlog_s"] = lag("camera_before_submit")
         session.begin_capture(for_inference=for_inference)
         pending["submit_duration_s"] = wall() - pending["wall_s"]
@@ -251,9 +258,10 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
         previous_actions[~previous_valid] = 0.
         # Endpoints are on the immutable queue grid, relative to actual capture.
         # Initial source priming is a hypothetical source plan, never executed.
-        target_offsets = np.arange(1, 17, dtype=np.float64) * action_interval_s
-        if grid0 is not None:
-            target_offsets += grid0 + record["action_origin"] * action_interval_s - record["physics_s"]
+        action_origin_physics = (record["physics_s"] if grid0 is None else
+                                 grid0 + record["action_origin"] * action_interval_s)
+        target_times = action_origin_physics + np.arange(1, 17, dtype=np.float64) * action_interval_s
+        target_offsets = target_times - record["physics_s"]
         # The DOMINO packet is the raw head-over-two-wrists composite; letterbox
         # conversion belongs to the slow policy preprocessor, not this packet.
         if "frame" in packet:
@@ -268,7 +276,11 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
                       _rtc_previous_actions=previous_actions,
                       _rtc_previous_valid=previous_valid,
                       _rtc_queue_generation=queue.generation,
+                      _rtc_action_grid_start_physics_s=grid0,
+                      _rtc_action_origin_physics_s=action_origin_physics,
+                      _rtc_action_target_times=target_times,
                       _rtc_action_target_offsets=target_offsets,
+                      _rtc_physics_timestep_s=dt,
                       _rtc_bootstrap_only=bool(query == 0),
                       _rtc_observation_action_index=record["action_origin"],
                       _rtc_cache_age_actions=record["action_origin"] % 16,
@@ -336,6 +348,9 @@ def run_continuous_causal_spatial_episode(session, worker, *, task, episode_seed
                   "previous_proposal_valid_rows": int(previous_valid.sum()),
                   "queue_generation_at_dispatch": queue.generation,
                   "bootstrap_only": bool(query == 0),
+                  "action_grid_start_physics_s": grid0,
+                  "action_origin_physics_s": action_origin_physics,
+                  "action_target_times": target_times.tolist(),
                   "action_target_offsets": target_offsets.tolist(),
                   "replacement_semantics": "immutable_prefix_then_atomic_unexecuted_tail",
                   "suffix_not_before_physics_s": None if reservation is None else reservation.deadline_physics_s,
@@ -622,6 +637,17 @@ def validate_causal_spatial_report(report):
     initial=finite(report["initial_physics_s"],"physics epoch")
     grid=report["action_grid_start_physics_s"]
     if grid is not None: grid=finite(grid,"action grid")
+    dt=finite(report["physics_dt_s"],"native timestep")
+    if not 0<dt<.16 or not math.isclose(round(.16/dt)*dt,.16,abs_tol=1e-8,rel_tol=0):
+        raise ValueError("native timestep does not match the fixed action interval")
+    def measured_boundary(value,nominal,name):
+        actual=finite(value,name)
+        # Match the existing controller start bound, while checking that the
+        # phase is native tick quantization rather than a relabelled exposure.
+        tick_time=grid+round((nominal-grid)/dt)*dt
+        if abs(actual-nominal)>dt*.1 or abs(actual-tick_time)>1e-8:
+            raise ValueError(f"{name} moved off the native tick / immutable action grid")
+        return actual
     requests=report["requests"]
     origins=[]
     for index,record in enumerate(requests):
@@ -639,23 +665,39 @@ def validate_causal_spatial_report(report):
                 raise ValueError("inference interval does not track actual wall time")
             if abs(float(record["inference_clock_error_s"])-(elapsed-advance))>1e-8:
                 raise ValueError("inference error receipt was altered")
+        observation=finite(record["observation_physics_s"],"observation physics")
+        origin=record["action_origin"]
+        if type(origin) is not int or origin<0 or origin%2:
+            raise ValueError("request origin is not on R2")
+        if bootstrap:
+            if record["action_grid_start_physics_s"] is not None or origin!=0:
+                raise ValueError("bootstrap invented an execution grid")
+            origin_time=observation
+        else:
+            if grid is None or record["action_grid_start_physics_s"]!=grid:
+                raise ValueError("request rebased the immutable action grid")
+            origin_time=grid+.16*origin
+            measured_boundary(observation,origin_time,"exposure")
+        if abs(finite(record["action_origin_physics_s"],"action origin")-origin_time)>1e-9:
+            raise ValueError("action origin differs from immutable grid")
+        expected_times=origin_time+np.arange(1,17,dtype=np.float64)*.16
+        for key,expected_values in (("action_target_times",expected_times),
+                                    ("action_target_offsets",expected_times-observation)):
+            values=np.asarray(record[key],dtype=np.float64)
+            if values.shape!=(16,) or not np.allclose(values,expected_values,atol=1e-9,rtol=0):
+                raise ValueError(f"{key} differs from absolute endpoints minus actual exposure")
         if not record.get("installed"): continue
         if bootstrap:
             if record.get("bootstrap_actions_executed") is not False or record.get("bootstrap_hold_source")!="native_drive_targets":
                 raise ValueError("bootstrap candidate actions were executed")
             continue
-        origin=record["action_origin"];origins.append(origin)
-        if type(origin) is not int or origin%2:
-            raise ValueError("request origin is not on R2")
-        observation=finite(record["observation_physics_s"],"observation physics")
-        if grid is None or abs(observation-(grid+.16*origin))>1e-8:
-            raise ValueError("exposure moved off immutable action grid")
-        deadline=observation+.32
-        if abs(finite(record["suffix_not_before_physics_s"],"deadline")-deadline)>1e-8:
+        origins.append(origin)
+        deadline=grid+.16*(origin+2)
+        if abs(finite(record["suffix_not_before_physics_s"],"deadline")-deadline)>1e-9:
             raise ValueError("H2 deadline was changed")
         ready=max(finite(record["install_physics_s"],"install physics"),
                   initial+finite(record["install_wall_s"],"install wall"))
-        if ready>deadline+1e-8:
+        if ready>deadline+1e-9:
             raise ValueError("suffix installed after the physical or wall H2 deadline")
         metadata=record.get("policy_diagnostics",{})
         if metadata.get("policy")=="causal_spatial":
@@ -666,10 +708,8 @@ def validate_causal_spatial_report(report):
                 raise ValueError("incomplete memory publication was consumed")
             if (metadata.get("H"),metadata.get("R"),metadata.get("K"))!=(2,2,10):
                 raise ValueError("policy H/R/K differs from controller contract")
-        if abs(finite(record["suffix_effective_physics_s"],"suffix effect")-deadline)>1e-8:
+        if abs(finite(record["suffix_effective_physics_s"],"suffix effect")-deadline)>1e-9:
             raise ValueError("suffix became effective outside its commitment")
-        if not np.allclose(record["action_target_offsets"],np.arange(1,17)*.16,atol=1e-9,rtol=0):
-            raise ValueError("action target offsets differ from physical grid")
     if origins != list(range(0,2*len(origins),2)):
         raise ValueError("installed R2 requests skipped or duplicated a boundary")
     completed=report["completed_targets"];started=report["started_targets"]
@@ -679,13 +719,14 @@ def validate_causal_spatial_report(report):
     for block in report["blocks"]:
         if block["origin"]!=count or not 1<=block["count"]<=2:
             raise ValueError("execution block does not implement contiguous R2")
-        if grid is None or abs(block["start_physics_s"]-(grid+.16*count))>1e-8:
+        if grid is None:
             raise ValueError("execution block moved off the action grid")
+        measured_boundary(block["start_physics_s"],grid+.16*count,"execution block start")
         expected_times=grid+.16*(count+np.arange(1,block["count"]+1))
         if not np.allclose(block["row_times_physics_s"],expected_times,atol=1e-8,rtol=0):
             raise ValueError("execution endpoints were retimed")
-        if block["completed"] and abs(block["end_physics_s"]-expected_times[-1])>1e-8:
-            raise ValueError("completed block endpoint differs from training grid")
+        if block["completed"]:
+            measured_boundary(block["end_physics_s"],expected_times[-1],"completed block endpoint")
         count+=block["count"]
     return True
 

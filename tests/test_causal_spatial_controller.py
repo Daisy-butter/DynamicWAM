@@ -18,9 +18,10 @@ from dynamicwam.runtime.continuous_causal_spatial import (
 
 
 class CausalSpatialControllerTests(unittest.TestCase):
-    def run_case(self,*,actions=12,durations=(.05,),session_args=None,worker_args=None,controller_args=None):
+    def run_case(self,*,actions=12,durations=(.05,),session_args=None,worker_args=None,controller_args=None,
+                 session_type=Session):
         clock=Clock()
-        session=Session(clock,interval_s=.16,**(session_args or {}))
+        session=session_type(clock,interval_s=.16,**(session_args or {}))
         worker=Worker(clock,durations,**(worker_args or {}))
         report=run_continuous_causal_spatial_episode(session,worker,task="causal-spatial-cpu",
             episode_seed=37,action_limit=actions,clock=clock,sleep=clock.sleep,
@@ -114,6 +115,65 @@ class CausalSpatialControllerTests(unittest.TestCase):
             self.assertAlmostEqual(packet["_rtc_capture_wall_perf_s"],100.+capture["wall_s"])
             self.assertGreater(packet["_rtc_capture_available_wall_perf_s"],packet["_rtc_capture_wall_perf_s"])
             np.testing.assert_array_equal(packet["_rtc_capture_drive_targets"],capture["capture_drive_targets"])
+
+    def drift_case(self,actions=20):
+        class NativeFloat32Timestep(Session):
+            def timestep(self):return float(np.float32(.004))
+        return self.run_case(actions=actions,session_type=NativeFloat32Timestep)
+
+    def test_native_timestep_phase_preserves_absolute_targets_and_training_offsets(self):
+        from dynamicwam.inference.causal_spatial_policy import validate_packet
+        session,worker,report=self.drift_case(actions=100)
+        grid=report["action_grid_start_physics_s"]
+        self.assertGreater(report["requests"][-1]["observation_physics_s"]-
+            (grid+.16*report["requests"][-1]["action_origin"]),1e-8)
+        for packet,record in zip(worker.calls,report["requests"]):
+            validate_packet(packet)
+            capture=packet["_rtc_observation_physics_s"]
+            origin=capture if packet["_rtc_bootstrap_only"] else (
+                grid+.16*packet["_rtc_observation_action_index"])
+            endpoints=origin+.16*np.arange(1,17)
+            self.assertEqual(packet["_rtc_physics_timestep_s"],session.timestep())
+            self.assertEqual(packet["_rtc_action_origin_physics_s"],origin)
+            np.testing.assert_array_equal(packet["_rtc_action_target_times"],endpoints)
+            np.testing.assert_array_equal(packet["_rtc_action_target_offsets"],endpoints-capture)
+            # Training requests future latent support at action endpoints 8/16;
+            # it never substitutes unavailable actual future capture timestamps.
+            np.testing.assert_array_equal(packet["_rtc_action_target_offsets"][[7,15]],
+                                          endpoints[[7,15]]-capture)
+            if not packet["_rtc_bootstrap_only"]:
+                deadline=grid+.16*(record["action_origin"]+2)
+                self.assertEqual(record["suffix_not_before_physics_s"],deadline)
+                self.assertEqual(record["suffix_effective_physics_s"],deadline)
+                self.assertLessEqual(deadline,capture+.32+1e-12)
+        validate_causal_spatial_report(report)
+
+    def test_phase_report_rejects_nominal_offset_substitution_or_rebased_grid(self):
+        _,_,report=self.drift_case()
+        changes=(("action_target_offsets",(.16*np.arange(1,17)).tolist()),
+                 ("action_grid_start_physics_s",report["action_grid_start_physics_s"]+.004),
+                 ("action_origin_physics_s",report["requests"][2]["observation_physics_s"]),
+                 ("suffix_not_before_physics_s",report["requests"][2]["observation_physics_s"]+.32))
+        for key,value in changes:
+            with self.subTest(key=key):
+                invalid=copy.deepcopy(report);invalid["requests"][2][key]=value
+                with self.assertRaises(ValueError):validate_causal_spatial_report(invalid)
+
+    def test_phase_does_not_allow_an_extra_tick_or_late_h2_installation(self):
+        _,_,report=self.drift_case()
+        for where,key in (("requests","observation_physics_s"),("blocks","start_physics_s"),
+                          ("blocks","end_physics_s")):
+            invalid=copy.deepcopy(report);invalid[where][2][key]+=report["physics_dt_s"]
+            with self.assertRaises(ValueError):validate_causal_spatial_report(invalid)
+        invalid=copy.deepcopy(report)
+        record=invalid["requests"][2]
+        record["install_physics_s"]=record["suffix_not_before_physics_s"]+1e-8
+        with self.assertRaisesRegex(ValueError,"after.*H2 deadline"):
+            validate_causal_spatial_report(invalid)
+        class NativeFloat32Timestep(Session):
+            def timestep(self):return float(np.float32(.004))
+        with self.assertRaises(RealtimeViolation):
+            self.run_case(durations=(.05,.4),session_type=NativeFloat32Timestep)
 
 
 if __name__=="__main__":unittest.main()

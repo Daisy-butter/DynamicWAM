@@ -18,6 +18,7 @@ def main():
  p.add_argument('--previous-guard',required=True);p.add_argument('--detach',action='store_true');p.add_argument('--worker',action='store_true')
  p.add_argument('--deploy-config',default=str(ROOT/'configs/causal_spatial/deploy.yaml'))
  p.add_argument('--software-fix-reason',default='')
+ p.add_argument('--formal-scene-manifest')
  a=p.parse_args();run=OUT/a.label
  if not a.label.replace('_','').replace('-','').isalnum():raise ValueError('invalid label')
  if a.detach:
@@ -76,6 +77,7 @@ def main():
    cmd=[str(ROOT/'external/robotwin/bin/python'),str(ROOT/'scripts/smoke_causal_spatial_domino.py'),'--config',str(Path(a.deploy_config).resolve()),
     '--checkpoint',a.checkpoint,'--output-dir',str(run/'domino'),'--allow-diagnostic','--cuda-graph']
    kind='smoke';compute=ids[:1]
+   if a.formal_scene_manifest:cmd+=['--formal-scene-manifest',str(Path(a.formal_scene_manifest).resolve(strict=True))]
   command=[PYTHON,str(ROOT/'scripts/supervise_motionkv_eval.py'),'--stage',kind,'--run-dir',str(run/'guard'),
    '--gpus',','.join(compute),'--guard-gpus',','.join(ids),'--authorization',str(auth),
    '--startup-seconds','300','--max-runtime-seconds',str(7200 if kind!='formal' else 1209600)]

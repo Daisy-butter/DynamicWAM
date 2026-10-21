@@ -54,8 +54,7 @@ def validate_packet(packet):
         raise ValueError("invalid causal-spatial RTC packet geometry")
     if not np.isfinite(prefix).all() or not np.isfinite(offsets).all() or not np.isfinite(previous[valid]).all():
         raise ValueError("nonfinite RTC packet")
-    if not np.isclose(float(packet["_rtc_action_interval_s"]), .16, atol=1e-10) or not np.allclose(offsets, np.arange(1, 17) * .16, atol=1e-8, rtol=0):
-        raise ValueError("causal-spatial query left the immutable .16s endpoint grid")
+    validate_action_grid(packet, offsets, origin, bootstrap)
     # Match training: only two replaceable overlap rows are soft conditioning.
     overlap = np.zeros(16, dtype=bool)
     if not bootstrap:
@@ -68,6 +67,59 @@ def validate_packet(packet):
     if packet.get("_rtc_contract") != "continuous_world_actual_latency_causal_spatial_h2r2_v1":
         raise ValueError("packet is not from the independently versioned H2 controller")
     return bootstrap, origin, prefix, offsets, previous, overlap
+
+
+def validate_action_grid(packet, offsets, origin, bootstrap):
+    """Bind physical-offset conditioning to the immutable absolute queue grid.
+
+    SAPIEN exposes .004 seconds as float32 (.004000000189989805). Forty
+    real ticks therefore differ from nominal .16 by 7.5995922 ns. This known
+    accumulated representation phase belongs in model offsets, not in queue
+    endpoints or H2 deadlines. Only the predicted integer-tick phase is allowed.
+    """
+    interval = float(packet["_rtc_action_interval_s"])
+    timestep = float(packet["_rtc_physics_timestep_s"])
+    capture = float(packet["sim_time"])
+    observation = float(packet["_rtc_observation_physics_s"])
+    anchor = float(packet["_rtc_action_origin_physics_s"])
+    target = np.asarray(packet["_rtc_action_target_times"], dtype=np.float64)
+    if target.shape != (16,) or not np.isfinite(target).all():
+        raise ValueError("absolute action endpoints must be finite length sixteen")
+    if not np.isfinite([interval, timestep, capture, observation, anchor]).all():
+        raise ValueError("nonfinite physical grid metadata")
+    if not np.isclose(interval, .16, atol=1e-12, rtol=0):
+        raise ValueError("causal-spatial action interval differs from the trained .16 seconds")
+    if timestep not in (.004, float(np.float32(.004))):
+        raise ValueError("physical timestep differs from the declared 4ms/native float32 representation")
+    grid = packet["_rtc_action_grid_start_physics_s"]
+    if bootstrap:
+        if grid is not None or origin != 0:
+            raise ValueError("observation bootstrap cannot supply an initialized action grid")
+        expected_anchor = expected_capture = capture
+    else:
+        if grid is None or not np.isfinite(float(grid)):
+            raise ValueError("live policy needs the immutable action grid origin")
+        grid = float(grid)
+        expected_anchor = grid + origin * interval
+        # The same native tick lattice and sub-tick boundary bound as the
+        # controller. This does not assume rounded .16 equals forty C++ ticks.
+        tick_count = round((capture - grid) / timestep)
+        expected_capture = grid + tick_count * timestep
+    # Only double-precision arithmetic roundoff: no arbitrary phase allowance,
+    # exposure shift, action retiming, or late-H2 acceptance is introduced.
+    scale = max(1., abs(capture), abs(anchor), float(np.abs(target).max()))
+    tolerance = max(1e-12, 32 * np.finfo(np.float64).eps * scale)
+    if abs(capture - observation) > tolerance or abs(anchor - expected_anchor) > tolerance:
+        raise ValueError("capture/origin metadata does not identify the fixed action grid")
+    if abs(capture - expected_capture) > tolerance:
+        raise ValueError("capture phase is not the declared native integer-tick representation")
+    if abs(capture - expected_anchor) > .1 * timestep + tolerance:
+        raise ValueError("capture moved outside the controller's existing sub-tick grid boundary")
+    expected = expected_anchor + np.arange(1, 17, dtype=np.float64) * interval
+    if not np.allclose(target, expected, atol=tolerance, rtol=0):
+        raise ValueError("absolute action endpoints moved off the immutable .16s grid")
+    if not np.allclose(offsets, target - capture, atol=tolerance, rtol=0) or np.any(offsets <= 0):
+        raise ValueError("action offsets must preserve absolute endpoint minus actual capture time")
 
 
 class CausalSpatialPolicy:
