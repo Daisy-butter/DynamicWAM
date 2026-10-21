@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import pickle
+import re
 import signal
 import sys
 import time
@@ -26,11 +27,14 @@ def verify_parent_guard(owner_pid):
     """Read-only proof that the named live parent retains every adapter FD."""
     if type(owner_pid) is not int or owner_pid < 1:
         raise ValueError("explicit guard owner PID is required")
-    expected = {}
+    expected = {}; inventory = {}
     for path in Path("/proc/driver/nvidia/gpus").glob("*/information"):
         fields = dict(line.split(":", 1) for line in path.read_text().splitlines() if ":" in line)
-        expected["/dev/nvidia" + fields["Device Minor"].strip()] = fields["GPU UUID"].strip()
-    if len(expected) != 8:
+        uuid = fields["GPU UUID"].strip()
+        device = "/dev/nvidia" + fields["Device Minor"].strip()
+        expected[device] = uuid
+        inventory[uuid] = dict(pci=path.parent.name,device=device)
+    if len(expected) != 8 or len(inventory) != 8:
         raise RuntimeError("Route1 smoke requires eight visible adapters and all-adapter guard")
     held = set()
     for path in (Path("/proc") / str(owner_pid) / "fd").iterdir():
@@ -38,7 +42,63 @@ def verify_parent_guard(owner_pid):
         except FileNotFoundError: pass
     if not set(expected).issubset(held):
         raise RuntimeError("guard owner does not hold all eight adapter FDs")
-    return dict(owner_pid=owner_pid, devices=expected, verified=True, recovery_operations=False)
+    return dict(owner_pid=owner_pid, devices=expected, inventory=inventory,
+                verified=True, recovery_operations=False)
+
+
+def requested_gpu_roles(environment, guard):
+    """Parse UUID roles using read-only inventory already covered by the guard."""
+    from dynamicwam.runtime.domino_continuous.gpu_binding import normalize_pci
+    visible = environment.get("CUDA_VISIBLE_DEVICES", "").split(",")
+    pattern = r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+    if len(visible) not in (1,2) or any(re.fullmatch(pattern,value) is None for value in visible):
+        raise ValueError("smoke requires exactly one or two explicit full GPU UUIDs")
+    if len(set(value.lower() for value in visible)) != len(visible):
+        raise ValueError("renderer/policy visible UUIDs must be distinct")
+    if environment.get("DYNAMICWAM_SIM_CUDA") != "0":
+        raise ValueError("renderer must use CUDA-local index zero")
+    infer = environment.get("DYNAMICWAM_INFER_CUDA")
+    if infer != str(len(visible)-1):
+        raise ValueError("explicit policy index must be zero for shared GPU or one for split GPUs")
+    inventory = guard.get("inventory", {})
+    if guard.get("verified") is not True or len(inventory) != 8 or any(
+            uuid not in inventory or uuid not in guard.get("devices", {}).values() for uuid in visible):
+        raise ValueError("requested GPU roles are not covered by the all-adapter guard inventory")
+    render_pci = normalize_pci(environment.get("DYNAMICWAM_GPU_PCI", ""))
+    if render_pci != normalize_pci(inventory[visible[0]]["pci"]):
+        raise ValueError("renderer PCI does not match CUDA-local zero's guarded UUID")
+    policy_index = int(infer)
+    return dict(format="causal_spatial_gpu_roles_v1", visible_uuids=visible,
+        allocation="single_gpu_shared" if len(visible)==1 else "two_gpu_render_policy_split",
+        compute_gpu_count=len(visible),
+        renderer=dict(local_index=0,uuid=visible[0],pci=render_pci),
+        policy=dict(local_index=policy_index,uuid=visible[policy_index],
+                    pci=normalize_pci(inventory[visible[policy_index]]["pci"])))
+
+
+def verify_gpu_roles(requested, renderer_binding, worker_startup):
+    """Bind requested roles to actual renderer and child CUDA context identities."""
+    from dynamicwam.runtime.domino_continuous.gpu_binding import normalize_pci
+    render = requested["renderer"]; policy = requested["policy"]
+    if (renderer_binding.get("enabled") is not True or renderer_binding.get("cuda_id") != 0
+            or renderer_binding.get("can_render") is not True
+            or normalize_pci(renderer_binding["pci"]) != render["pci"]):
+        raise RuntimeError("actual SAPIEN renderer identity differs from its guarded role")
+    actual = worker_startup.get("gpu_identity")
+    if not isinstance(actual,dict):
+        raise RuntimeError("actual policy child CUDA context identity is missing")
+    index = policy["local_index"]
+    if (type(actual.get("local_index")) is not int or type(actual.get("current_device")) is not int
+            or actual["local_index"] != index or actual["current_device"] != index
+            or actual.get("model_device") != f"cuda:{index}"
+            or actual.get("uuid") != policy["uuid"]
+            or actual.get("visible_uuids") != requested["visible_uuids"]
+            or normalize_pci(actual["pci"]) != policy["pci"]):
+        raise RuntimeError("actual policy child CUDA identity differs from its guarded role")
+    return dict(requested, verified=True,
+        renderer=dict(render,identity_source="actual_sapien_device_pci_to_guarded_proc_uuid"),
+        policy=dict(policy,current_device=actual["current_device"],model_device=actual["model_device"],
+                    identity_source="worker_startup_gpu_identity"))
 
 
 def main():
@@ -64,6 +124,7 @@ def main():
     from eval_domino_motionkv_rtc import preserve_failed_video
     require_ssd(args.output_dir); require_ssd(args.checkpoint)
     guard = verify_parent_guard(args.guard_owner_pid)
+    requested_roles = requested_gpu_roles(os.environ, guard)
     config_path, checkpoint = args.config.resolve(), args.checkpoint.resolve()
     output = args.output_dir.resolve()
     if output.exists(): raise FileExistsError("smoke output must be new; preserve every failed attempt")
@@ -106,7 +167,10 @@ def main():
     try:
         from dynamicwam.inference.causal_spatial_policy import CausalSpatialProcessWorker
         worker = CausalSpatialProcessWorker(project_root=str(ROOT), config_path=str(config_path),
-            checkpoint=str(checkpoint), allow_diagnostic=args.allow_diagnostic, cuda_graph=args.cuda_graph)
+            checkpoint=str(checkpoint), infer_index=requested_roles["policy"]["local_index"],
+            allow_diagnostic=args.allow_diagnostic, cuda_graph=args.cuda_graph)
+        gpu_roles = verify_gpu_roles(requested_roles,binding,worker.startup_metadata)
+        save(output / "gpu_roles.json",gpu_roles)
         env, prepared = prepare_level1_env(domino, task_name=args.task, task_config=benchmark["task_config"],
             start_seed=args.seed, instruction_type=str(benchmark["instruction_type"]))
         if (args.task, int(prepared["seed"])) in formal_scenes:
@@ -147,7 +211,7 @@ def main():
         provenance["source_generation"] = provenance["source_digest"][:16]
         save(output / "started.json", dict(**descriptor, **provenance, checkpoint=str(checkpoint),
             worker_startup=worker.startup_metadata, instruction_preparation=instruction,
-            GPU_binding=binding, native_result_dir=str(native), simulation_rate=1., action_limit=action_limit))
+            GPU_binding=binding, gpu_roles=gpu_roles, native_result_dir=str(native), simulation_rate=1., action_limit=action_limit))
         report = run_continuous_causal_spatial_episode(session, worker, task=args.task,
             episode_seed=descriptor["seed"], action_limit=action_limit, sink=events.append)
         validate_causal_spatial_report(report)
@@ -158,7 +222,8 @@ def main():
         report.update(**descriptor, **provenance, checkpoint=str(checkpoint),
             checkpoint_sha256=worker.startup_metadata["checkpoint_sha256"], camera_equivalence=equivalence,
             video_required=True, native_result_dir=str(native), full_native_episode=args.probe_action_limit is None,
-            smoke_only=True, performance_claim=False, worker_startup_metadata=worker.startup_metadata)
+            smoke_only=True, performance_claim=False, worker_startup_metadata=worker.startup_metadata,
+            gpu_roles=gpu_roles)
         video = session.head_video.finalize(native / "episode0.mp4", episode_end_physics_s=endpoint)
         report.update(video); report.update(publish_episode_video_links(episode_dir, video))
         tracker = session.metrics_tracker
@@ -179,7 +244,7 @@ def main():
         completed = True
         completed_receipt = dict(passed=True, full_native_episode=args.probe_action_limit is None,
             report=str(episode_dir / "report.json"), video=report["video"], success=report["success"],
-            realtime_valid=True, performance_claim=False)
+            realtime_valid=True, performance_claim=False,gpu_roles=gpu_roles)
     except BaseException as exc:
         save(output / "failure.json", dict(error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc(),
             diagnostics=getattr(exc, "diagnostics", None), passed=False))

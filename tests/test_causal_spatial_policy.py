@@ -235,4 +235,42 @@ class PolicyPacketTests(unittest.TestCase):
             np.testing.assert_array_equal(batch["initial_state"][0].numpy(), packet["_rtc_capture_drive_targets"])
 
 
+class WorkerCudaIdentityTests(unittest.TestCase):
+    def fixture(self, *, actual_uuid=None, current=1, failure=None):
+        import ctypes
+        import uuid
+        selected='GPU-12345678-1234-5678-1234-567812345678'
+        class Driver:
+            def cuCtxGetDevice(self, pointer):
+                ctypes.cast(pointer,ctypes.POINTER(ctypes.c_int))[0]=1
+                return 9 if failure=='context' else 0
+            def cuDeviceGetUuid(self, pointer, device):
+                data=uuid.UUID((actual_uuid or selected)[4:]).bytes
+                ctypes.memmove(pointer,data,16)
+                return 8 if failure=='uuid' else 0
+            def cuDeviceGetPCIBusId(self, buffer, length, device):
+                buffer.value=b'0000:1d:00.0'
+                return 7 if failure=='pci' else 0
+        torch=SimpleNamespace(cuda=SimpleNamespace(current_device=lambda:current))
+        env={'CUDA_VISIBLE_DEVICES':'GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,'+selected}
+        return torch,Driver(),env
+
+    def test_existing_context_identity_records_selected_second_uuid(self):
+        from dynamicwam.inference.causal_spatial_policy import _current_cuda_identity
+        torch,driver,env=self.fixture()
+        got=_current_cuda_identity(torch,1,'cuda:1',driver=driver,environment=env)
+        self.assertEqual(got['uuid'],env['CUDA_VISIBLE_DEVICES'].split(',')[1])
+        self.assertEqual(got['local_index'],1)
+        self.assertEqual(got['pci'],'0000:1d:00.0')
+
+    def test_wrong_actual_device_or_failed_driver_query_is_rejected(self):
+        from dynamicwam.inference.causal_spatial_policy import _current_cuda_identity
+        cases=[{'current':0},{'actual_uuid':'GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]
+        cases.extend({'failure':x} for x in ['context','uuid','pci'])
+        for kwargs in cases:
+            torch,driver,env=self.fixture(**kwargs)
+            with self.subTest(kwargs=kwargs),self.assertRaises(RuntimeError):
+                _current_cuda_identity(torch,1,'cuda:1',driver=driver,environment=env)
+
+
 if __name__ == "__main__": unittest.main()

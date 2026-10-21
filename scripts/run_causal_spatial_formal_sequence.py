@@ -34,10 +34,14 @@ TRAINING_REUSE_ALLOWED=frozenset({
     "src/dynamicwam/inference/causal_spatial_policy.py",
     "src/dynamicwam/runtime/causal_spatial_contract.py",
     "scripts/run_causal_spatial_formal_sequence.py",
+    "scripts/run_causal_spatial_guarded.py",
+    "scripts/smoke_causal_spatial_domino.py",
     "tests/test_causal_spatial_policy.py",
     "tests/test_causal_spatial_contract.py",
     "tests/test_causal_spatial_formal_sequence.py",
+    "tests/test_causal_spatial_smoke_gpu_roles.py",
 })
+TRAINING_REUSE_ADDED_TESTS=frozenset({"tests/test_causal_spatial_smoke_gpu_roles.py"})
 
 
 def require(value,message):
@@ -125,6 +129,22 @@ def _window_external_ast(content):
     return ast.dump(tree,include_attributes=False)
 
 
+def _guard_training_ast(content):
+    """Erase only DOMINO's worker-command branch; compare everything else."""
+    tree=ast.parse(content);matches=0
+    expected=ast.dump(ast.parse("a.mode=='training'",mode="eval").body,include_attributes=False)
+    graph=ast.dump(ast.parse("a.mode=='graph'",mode="eval").body,include_attributes=False)
+    for node in ast.walk(tree):
+        if not isinstance(node,ast.If) or ast.dump(node.test,include_attributes=False)!=expected:continue
+        if len(node.orelse)!=1 or not isinstance(node.orelse[0],ast.If):continue
+        branch=node.orelse[0]
+        if ast.dump(branch.test,include_attributes=False)!=graph:continue
+        require(bool(branch.orelse),"guard DOMINO branch missing")
+        branch.orelse=[ast.Pass()];matches+=1
+    require(matches==1,"guard command branch is ambiguous")
+    return ast.dump(tree,include_attributes=False)
+
+
 def build_training_source_compatibility(base_identity,target_identity):
     """Recompute narrow compatibility from real Git objects; never trust a flag.
 
@@ -137,21 +157,28 @@ def build_training_source_compatibility(base_identity,target_identity):
     require(subprocess.run(["git","merge-base","--is-ancestor",base,target],cwd=ROOT,
             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,"training smoke source is not a Git ancestor")
     before=_git_tree(base);after=_git_tree(target)
-    require(set(before)==set(after),"training reuse forbids tracked file additions/deletions/renames")
-    changed=sorted(path for path in before if before[path]!=after[path])
+    added=set(after)-set(before);removed=set(before)-set(after)
+    require(not removed and added<=TRAINING_REUSE_ADDED_TESTS,
+            "training reuse forbids tracked file additions/deletions/renames except the exact GPU-role regression")
+    changed=sorted(path for path in set(before)|set(after) if before.get(path)!=after.get(path))
     require(bool(changed) and set(changed)<=TRAINING_REUSE_ALLOWED,
             "training reuse contains a non-allowlisted changed file: "+str(sorted(set(changed)-TRAINING_REUSE_ALLOWED)))
     for path in changed:
-        require(before[path]["mode"]==after[path]["mode"]=="100644" and
-                before[path]["kind"]==after[path]["kind"]=="blob","changed source mode/type is not a regular Python file")
+        require(after[path]["mode"]=="100644" and after[path]["kind"]=="blob" and
+                (path in added or before[path]["mode"]==after[path]["mode"] and before[path]["kind"]==after[path]["kind"]),
+                "changed source mode/type is not a regular Python file")
     python_paths={path for path in before if path.startswith(("src/","scripts/")) and path.endswith(".py")}
     loaded=python_paths|set(changed)
-    old=_git_blobs(base,loaded);new=_git_blobs(target,loaded)
+    old=_git_blobs(base,loaded-set(added));new=_git_blobs(target,loaded)
     require(_source_hash(old)==base_identity["source_sha256"],"old guard source hash does not match its Git commit")
     require(_source_hash(new)==target_identity["source_sha256"],"current source hash does not match its Git commit")
     contract="src/dynamicwam/runtime/causal_spatial_contract.py"
     require(_window_external_ast(old[contract])==_window_external_ast(new[contract]),
             "runtime contract changed outside deployment FiniteObservationWindow cache")
+    wrapper="scripts/run_causal_spatial_guarded.py"
+    if wrapper in changed:
+        require(_guard_training_ast(old[wrapper])==_guard_training_ast(new[wrapper]),
+                "guard wrapper changed outside the DOMINO-only command branch")
     protected_roots=("src/dynamicwam/training/","src/dynamicwam/models/","src/dynamicwam/observations/")
     protected_exact={"src/dynamicwam/inference/causal_spatial_loader.py","scripts/train_causal_spatial.py",
                      "scripts/check_causal_spatial_export.py"}
@@ -167,13 +194,14 @@ def build_training_source_compatibility(base_identity,target_identity):
     protected=[dict(path=path,**before[path]) for path in sorted(before) if path not in TRAINING_REUSE_ALLOWED]
     return dict(format="causal_spatial_training_source_compatibility_v1",base_identity=base_identity,
         target_identity=target_identity,git_ancestor=True,scope="three_existing_training_smokes_only",
-        allowed_changed_files=sorted(TRAINING_REUSE_ALLOWED),changed_files=[dict(path=path,status="M",
-            before_sha256=hashlib.sha256(old[path]).hexdigest(),after_sha256=hashlib.sha256(new[path]).hexdigest(),
-            before_git_blob=before[path]["oid"],after_git_blob=after[path]["oid"]) for path in changed],
+        allowed_changed_files=sorted(TRAINING_REUSE_ALLOWED),changed_files=[dict(path=path,status="A" if path in added else "M",
+            before_sha256=None if path in added else hashlib.sha256(old[path]).hexdigest(),after_sha256=hashlib.sha256(new[path]).hexdigest(),
+            before_git_blob=None if path in added else before[path]["oid"],after_git_blob=after[path]["oid"]) for path in changed],
         protected_tracked_files=len(protected),
         protected_inventory_sha256=hashlib.sha256(json.dumps(protected,sort_keys=True,separators=(",",":")).encode()).hexdigest(),
         training_data_models_configs_loaders_unchanged=True,window_noncache_ast_unchanged=True,
-        shared_observation_helpers_unchanged=True,current_cpu_graph_domino_required=True)
+        shared_observation_helpers_unchanged=True,guard_training_and_graph_ast_unchanged=True,
+        current_cpu_graph_domino_required=True)
 
 
 def training_smoke_identity(acceptance,identity):
@@ -227,7 +255,43 @@ def check_export(value,recipe,*,diagnostic):
     return value["full_checkpoint"]
 
 
-def check_domino(bundle,checkpoint,runtime):
+def _pci(value):
+    match=re.fullmatch(r"([0-9a-fA-F]{4,8}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])",str(value))
+    require(match is not None,"invalid GPU PCI identity")
+    return tuple(int(part,16) for part in match.groups())
+
+
+def check_domino_gpu_roles(roles,manifest):
+    selected=manifest.get("worker_gpu_uuids",[])
+    require(len(selected)==len(set(selected))==2,"DOMINO requires exactly two compute GPUs")
+    inventory={row["uuid"]:row["pci_bus_id"] for row in manifest["proc_gpu_inventory"]}
+    require(roles.get("format")=="causal_spatial_gpu_roles_v1" and roles.get("verified") is True and
+            roles.get("allocation")=="two_gpu_render_policy_split" and roles.get("compute_gpu_count")==2 and
+            roles.get("visible_uuids")==selected,"DOMINO actual dual-GPU allocation is absent or mismatched")
+    render=roles.get("renderer",{});policy=roles.get("policy",{})
+    require(render.get("local_index")==0 and render.get("uuid")==selected[0] and
+            render.get("identity_source")=="actual_sapien_device_pci_to_guarded_proc_uuid",
+            "renderer identity is not actual local GPU0")
+    require(policy.get("local_index")==1 and policy.get("current_device")==1 and
+            policy.get("model_device")=="cuda:1" and policy.get("uuid")==selected[1] and
+            policy.get("identity_source")=="worker_startup_gpu_identity","policy identity is not actual local GPU1")
+    require(_pci(render.get("pci"))==_pci(inventory[selected[0]]) and
+            _pci(policy.get("pci"))==_pci(inventory[selected[1]]),"DOMINO actual PCI roles differ from guarded UUID inventory")
+    command=manifest.get("command",[])
+    require(command and command[0]=="/usr/bin/env","DOMINO must preserve guarded worker PID through env exec")
+    assignments={};index=1
+    while index<len(command) and "=" in command[index]:
+        key,value=command[index].split("=",1)
+        require(key not in assignments,"duplicate DOMINO environment binding")
+        assignments[key]=value;index+=1
+    require(assignments.get("CUDA_VISIBLE_DEVICES")==",".join(selected) and
+            assignments.get("DYNAMICWAM_SIM_CUDA")=="0" and assignments.get("DYNAMICWAM_INFER_CUDA")=="1" and
+            _pci(assignments.get("DYNAMICWAM_GPU_PCI"))==_pci(render["pci"]),
+            "DOMINO command does not bind render0/policy1 to its actual identities")
+    require(str(ROOT/"scripts/smoke_causal_spatial_domino.py") in command[index:],"wrong dual-GPU DOMINO worker command")
+
+
+def check_domino(bundle,checkpoint,runtime,guard_manifest):
     from dynamicwam.runtime.continuous_causal_spatial import validate_causal_spatial_report
     from video_artifacts import validate_video_artifacts
     complete=artifact(bundle["completed"]);report=artifact(bundle["report"])
@@ -239,7 +303,16 @@ def check_domino(bundle,checkpoint,runtime):
     require(report.get("completed_targets",0)>0 and report.get("inference_calls",0)>=2,"no actual policy handoff")
     require(report["checkpoint_sha256"]==checkpoint["sha256"] and
             Path(report["checkpoint"]).resolve()==Path(checkpoint["path"]).resolve(),"DOMINO tested a different checkpoint")
+    roles=report.get("gpu_roles",{})
+    require(complete.get("gpu_roles")==roles,"DOMINO completed/report actual GPU role disagreement")
+    check_domino_gpu_roles(roles,guard_manifest)
     startup=report.get("worker_startup_metadata",{})
+    actual=startup.get("gpu_identity",{})
+    require(all(actual.get(key)==roles["policy"].get(key) for key in
+                ("local_index","current_device","uuid","model_device")) and
+            actual.get("visible_uuids")==roles["visible_uuids"] and
+            _pci(actual.get("pci"))==_pci(roles["policy"]["pci"]),
+            "reported policy roles differ from actual child CUDA startup identity")
     measured_runtime=startup.get("runtime",{})
     require(all(isinstance(runtime.get(key),str) and bool(runtime[key]) and measured_runtime.get(key)==runtime[key]
                 for key in ("torch","python","cuda")),"Graph and DOMINO Python/Torch runtime differ or are missing")
@@ -325,8 +398,8 @@ def validate_acceptance(path,*,identity=None):
     require(result["plan_causality"].get("belief_invariant") is True and
             result["plan_causality"].get("invalid_or_outside_overlap_exact_noop") is True,"plan causality acceptance missing")
     require(result["peak_memory"].get("num_ooms")==0,"Graph OOM receipt failed")
-    domino=evidence["domino"];last_guard,_=check_guard(domino,identity,expected_stage="smoke",workers=1)
-    check_domino(domino,checkpoint,result.get("runtime",{}))
+    domino=evidence["domino"];last_guard,domino_manifest=check_guard(domino,identity,expected_stage="smoke",workers=2)
+    check_domino(domino,checkpoint,result.get("runtime",{}),domino_manifest)
     return dict(acceptance_sha256=digest(path),identity=identity,recipes=recipes,previous_guard=str(last_guard))
 
 

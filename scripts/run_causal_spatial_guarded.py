@@ -74,9 +74,17 @@ def main():
    if a.checkpoint:cmd+=['--checkpoint',a.checkpoint]
    kind='graph';compute=ids[:1]
   else:
-   cmd=[str(ROOT/'external/robotwin/bin/python'),str(ROOT/'scripts/smoke_causal_spatial_domino.py'),'--config',str(Path(a.deploy_config).resolve()),
+   compute=ids[:2]
+   render=next(row for row in proc_gpu_inventory() if row['uuid']==compute[0])
+   # env exec preserves the worker PID/guard parent relationship. The existing
+   # all-eight guard still precedes any CUDA/Vulkan initialization. Without
+   # --single-worker the supervisor leaves CUDA visibility empty; set both
+   # ordered compute UUIDs explicitly for this DOMINO-only worker command.
+   cmd=['/usr/bin/env','CUDA_VISIBLE_DEVICES='+','.join(compute),
+    'DYNAMICWAM_GPU_PCI='+render['pci_bus_id'],'DYNAMICWAM_SIM_CUDA=0','DYNAMICWAM_INFER_CUDA=1',
+    str(ROOT/'external/robotwin/bin/python'),str(ROOT/'scripts/smoke_causal_spatial_domino.py'),'--config',str(Path(a.deploy_config).resolve()),
     '--checkpoint',a.checkpoint,'--output-dir',str(run/'domino'),'--allow-diagnostic','--cuda-graph']
-   kind='smoke';compute=ids[:1]
+   kind='smoke'
    if a.formal_scene_manifest:cmd+=['--formal-scene-manifest',str(Path(a.formal_scene_manifest).resolve(strict=True))]
   command=[PYTHON,str(ROOT/'scripts/supervise_motionkv_eval.py'),'--stage',kind,'--run-dir',str(run/'guard'),
    '--gpus',','.join(compute),'--guard-gpus',','.join(ids),'--authorization',str(auth),

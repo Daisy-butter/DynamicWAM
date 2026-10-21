@@ -416,6 +416,46 @@ class CausalSpatialPolicy:
             self._closed = True
 
 
+def _current_cuda_identity(torch_module, infer_index, model_device, *, driver=None, environment=None):
+    """Read the already-loaded worker context; no NVML or new CUDA context.
+
+    Torch 2.4 lacks a UUID property. The driver queries below identify the
+    existing context, rather than trusting the requested visibility order.
+    Called only inside the owned all-adapter-guarded deployment lifecycle.
+    """
+    import ctypes
+    import os
+    import uuid
+    environment = os.environ if environment is None else environment
+    visible = environment.get('CUDA_VISIBLE_DEVICES', '').split(',')
+    index = int(infer_index)
+    if index < 0 or index >= len(visible) or not all(x.startswith('GPU-') for x in visible):
+        raise RuntimeError('worker CUDA identity requires explicit UUID visibility')
+    if len(set(visible)) != len(visible):
+        raise RuntimeError('worker CUDA UUID visibility contains duplicates')
+    current = int(torch_module.cuda.current_device())
+    if current != index or str(model_device) != f'cuda:{index}':
+        raise RuntimeError('worker current context/model CUDA index mismatch')
+    driver = ctypes.CDLL('libcuda.so.1') if driver is None else driver
+    device = ctypes.c_int()
+    raw_uuid = (ctypes.c_ubyte * 16)()
+    pci = ctypes.create_string_buffer(32)
+    for name, arguments in (
+        ('cuCtxGetDevice', (ctypes.byref(device),)),
+        ('cuDeviceGetUuid', (ctypes.byref(raw_uuid), device)),
+        ('cuDeviceGetPCIBusId', (pci, len(pci), device)),
+    ):
+        result = getattr(driver, name)(*arguments)
+        if result != 0:
+            raise RuntimeError(f'current CUDA context identity {name} failed: {result}')
+    actual_uuid = 'GPU-' + str(uuid.UUID(bytes=bytes(raw_uuid)))
+    if actual_uuid != visible[index]:
+        raise RuntimeError('worker actual CUDA UUID does not match selected policy device')
+    return dict(local_index=index, current_device=current, uuid=actual_uuid,
+                visible_uuids=visible, model_device=str(model_device),
+                pci=pci.value.decode('ascii'), identity_method='existing_cuda_context_driver_query')
+
+
 def _serve_causal_policy(root, config, checkpoint, infer_index, allow_diagnostic, cuda_graph, requests, results):
     policy = None
     try:
@@ -428,7 +468,9 @@ def _serve_causal_policy(root, config, checkpoint, infer_index, allow_diagnostic
                                          allow_diagnostic=allow_diagnostic, cuda_graph=cuda_graph)
         except BaseException as exc:
             results.put(f"{type(exc).__name__}: {exc}"); traceback.print_exc(); return
+        gpu_identity = _current_cuda_identity(torch, infer_index, next(policy.model.parameters()).device)
         results.put(dict(ready=True, metadata=dict(policy="causal_spatial", cpu_runtime=cpu_runtime,
+            gpu_identity=gpu_identity,
             runtime=dict(torch=torch.__version__,cuda=torch.version.cuda,python=__import__('sys').version.split()[0]),
             checkpoint_sha256=policy.checkpoint_sha256, cuda_graph=False, cuda_graph_requested=bool(cuda_graph))))
         def infer(packet):

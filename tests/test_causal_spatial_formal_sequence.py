@@ -1,5 +1,6 @@
 """Pure CPU fail-closed sequence gates, using synthetic receipt files only."""
 from pathlib import Path
+import ast
 import copy
 import importlib.util
 import json
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"tests"))
@@ -56,7 +58,7 @@ class FormalSequenceGateTests(unittest.TestCase):
             plan_causality=dict(belief_invariant=True,invalid_or_outside_overlap_exact_noop=True),peak_memory=dict(num_ooms=0))
         bundle=self.guard("graph","graph",1);bundle["result"]=self.emit("graph.json",graph)
         self.acceptance["evidence"]["graph"]=bundle
-        self.acceptance["evidence"]["domino"]=self.guard("domino","smoke",1)
+        self.acceptance["evidence"]["domino"]=self.guard("domino","smoke",2)
         self.path=self.root/"acceptance.json";self.flush()
         self.real_domino=sequence.check_domino
         self.domino=patch.object(sequence,"check_domino",return_value={});self.mock_domino=self.domino.start();self.addCleanup(self.domino.stop)
@@ -74,8 +76,12 @@ class FormalSequenceGateTests(unittest.TestCase):
         status=dict(ended_at="fixture-end",final_exit_code=0,driver_exit_clean=True,guard_workers_exited=True,
                     guard_all_handles_closed=True,stop_reason=None)
         manifest=dict(**self.identity,stage=stage,preflight_only=False,device_lifetime_mode="fds_before_telemetry_v1",
-            guard_gpu_uuids=ids,worker_gpu_uuids=ids[:workers],proc_gpu_inventory=[dict(uuid=x) for x in ids],
+            guard_gpu_uuids=ids,worker_gpu_uuids=ids[:workers],proc_gpu_inventory=[dict(uuid=x,pci_bus_id=f"0000:{i+16:02x}:00.0") for i,x in enumerate(ids)],
             device_guard_sha256=sequence.digest(self.root/"scripts/device_lifetime_guard.py"))
+        if name=="domino":
+            manifest["command"]=["/usr/bin/env","CUDA_VISIBLE_DEVICES="+",".join(ids[:2]),
+                "DYNAMICWAM_GPU_PCI=0000:10:00.0","DYNAMICWAM_SIM_CUDA=0","DYNAMICWAM_INFER_CUDA=1",
+                "python",str(self.root/"scripts/smoke_causal_spatial_domino.py")]
         return dict(guard_status=self.emit(directory/"status.json",status),guard_manifest=self.emit(directory/"manifest.json",manifest))
 
     def mutate(self,ref,**values):
@@ -167,25 +173,33 @@ class FormalSequenceGateTests(unittest.TestCase):
             video=str(video),video_timestamps=str(sidecar),video_sha256=sequence.digest(video),video_bytes=video.stat().st_size,
             video_timestamps_sha256=sequence.digest(sidecar),video_timestamps_bytes=sidecar.stat().st_size,
             video_frames=2,video_fps=10.,video_continuous_physics=False,video_probe=probe)
+        roles=dict(format="causal_spatial_gpu_roles_v1",allocation="two_gpu_render_policy_split",compute_gpu_count=2,
+            visible_uuids=["GPU-0","GPU-1"],verified=True,
+            renderer=dict(local_index=0,uuid="GPU-0",pci="0000:10:00.0",identity_source="actual_sapien_device_pci_to_guarded_proc_uuid"),
+            policy=dict(local_index=1,current_device=1,model_device="cuda:1",uuid="GPU-1",pci="0000:11:00.0",identity_source="worker_startup_gpu_identity"))
+        report["gpu_roles"]=roles
+        report["worker_startup_metadata"]["gpu_identity"]={key:value for key,value in roles["policy"].items() if key!="identity_source"}
+        report["worker_startup_metadata"]["gpu_identity"]["visible_uuids"]=roles["visible_uuids"]
+        manifest=sequence.read(self.acceptance["evidence"]["domino"]["guard_manifest"]["path"])
         for index,row in enumerate(report["requests"]):
             row["policy_diagnostics"]=dict(cuda_graph=True,graph_captures=1,slow_launched=index==1,
                 source_publication=1 if index<=1 else 2,source_sim_time=row["observation_physics_s"])
         bundle=dict(report=self.emit("domino-report.json",report))
         bundle["completed"]=self.emit("domino-complete.json",dict(passed=True,full_native_episode=True,
-            report=bundle["report"]["path"],video=str(video)))
+            report=bundle["report"]["path"],video=str(video),gpu_roles=roles))
         runtime=report["worker_startup_metadata"]["runtime"]
-        self.real_domino(bundle,checkpoint,runtime)
+        self.real_domino(bundle,checkpoint,runtime,manifest)
         with self.assertRaisesRegex(RuntimeError,"runtime differ"):
-            self.real_domino(bundle,checkpoint,dict(torch="other",python="fixture-python",cuda="fixture-cuda"))
+            self.real_domino(bundle,checkpoint,dict(torch="other",python="fixture-python",cuda="fixture-cuda"),manifest)
         original=copy.deepcopy(report)
         for row in report["requests"]:row["policy_diagnostics"]["source_publication"]=1
         bundle["report"].update(self.emit(bundle["report"]["path"],report))
-        with self.assertRaisesRegex(RuntimeError,"live slow-memory"):self.real_domino(bundle,checkpoint,runtime)
+        with self.assertRaisesRegex(RuntimeError,"live slow-memory"):self.real_domino(bundle,checkpoint,runtime,manifest)
         bundle["report"].update(self.emit(bundle["report"]["path"],original))
         video.write_bytes(b"corrupt")
-        with self.assertRaisesRegex(RuntimeError,"MP4"):self.real_domino(bundle,checkpoint,runtime)
+        with self.assertRaisesRegex(RuntimeError,"MP4"):self.real_domino(bundle,checkpoint,runtime,manifest)
         self.mutate(bundle["completed"],full_native_episode=False)
-        with self.assertRaisesRegex(RuntimeError,"full native"):self.real_domino(bundle,checkpoint,runtime)
+        with self.assertRaisesRegex(RuntimeError,"full native"):self.real_domino(bundle,checkpoint,runtime,manifest)
 
 
 class TrainingSourceCompatibilityTests(unittest.TestCase):
@@ -202,6 +216,8 @@ class TrainingSourceCompatibilityTests(unittest.TestCase):
             "from dynamicwam.observations.causal_spatial_window import select\n")
         self.write("src/dynamicwam/observations/causal_spatial_window.py","def select(): return 4\n")
         self.write("src/dynamicwam/models/causal_spatial.py","MODEL_DIM=768\n")
+        self.wrapper="def main():\n    if a.mode=='training':\n        cmd='train8'\n    elif a.mode=='graph':\n        cmd='graph1'\n    else:\n        cmd='domino1'\n"
+        self.write("scripts/run_causal_spatial_guarded.py",self.wrapper)
         self.write("configs/causal_spatial/joint.yaml",'{"lr": 0.00003}\n')
         self.base=self.commit()
         override=patch.object(sequence,"TRAINING_SMOKE_BASE_HEAD",self.base["git_head"])
@@ -263,6 +279,60 @@ class TrainingSourceCompatibilityTests(unittest.TestCase):
         self.write("src/dynamicwam/inference/new_deployment.py","x=1\n")
         with self.assertRaisesRegex(RuntimeError,"additions/deletions"):
             sequence.build_training_source_compatibility(self.base,self.commit())
+
+    def test_wrapper_domino_only_change_allowed_but_training_change_rejected(self):
+        path="scripts/run_causal_spatial_guarded.py"
+        self.write(path,self.wrapper.replace("domino1","domino2"))
+        receipt=sequence.build_training_source_compatibility(self.base,self.commit())
+        self.assertTrue(receipt["guard_training_and_graph_ast_unchanged"])
+        self.write(path,self.wrapper.replace("train8","train7"))
+        with self.assertRaisesRegex(RuntimeError,"outside the DOMINO-only"):
+            sequence.build_training_source_compatibility(self.base,self.commit())
+
+    def test_only_explicit_new_role_regression_is_admitted(self):
+        self.write("tests/test_causal_spatial_smoke_gpu_roles.py","def test_roles(): pass\n")
+        receipt=sequence.build_training_source_compatibility(self.base,self.commit())
+        row=receipt["changed_files"][0]
+        self.assertEqual(row["status"],"A");self.assertIsNone(row["before_sha256"])
+
+
+class DualGpuAdmissionTests(unittest.TestCase):
+    def test_actual_wrapper_domino_branch_uses_two_uuids_and_exec(self):
+        tree=ast.parse((ROOT/"scripts/run_causal_spatial_guarded.py").read_text())
+        graph=ast.dump(ast.parse("a.mode=='graph'",mode="eval").body,include_attributes=False)
+        branches=[node.orelse for node in ast.walk(tree) if isinstance(node,ast.If)
+            and ast.dump(node.test,include_attributes=False)==graph]
+        self.assertEqual(len(branches),1)
+        ids=["GPU-"+str(i) for i in range(8)]
+        inventory=[dict(uuid=uuid,pci_bus_id=f"0000:{i+16:02x}:00.0") for i,uuid in enumerate(ids)]
+        environment=dict(ROOT=ROOT,Path=Path,ids=ids,run=Path("/diagnostics/domino"),
+            proc_gpu_inventory=lambda:inventory,a=SimpleNamespace(deploy_config="deploy.yaml",checkpoint="actual.pt",formal_scene_manifest=None))
+        exec(compile(ast.Module(body=branches[0],type_ignores=[]),"actual_domino_branch","exec"),environment)
+        command=environment["cmd"]
+        self.assertEqual(environment["compute"],ids[:2]);self.assertEqual(command[0],"/usr/bin/env")
+        self.assertIn("CUDA_VISIBLE_DEVICES=GPU-0,GPU-1",command)
+        self.assertIn("DYNAMICWAM_SIM_CUDA=0",command);self.assertIn("DYNAMICWAM_INFER_CUDA=1",command)
+        self.assertIn("DYNAMICWAM_GPU_PCI=0000:10:00.0",command)
+
+    def test_actual_roles_and_command_must_match_guarded_inventory(self):
+        roles=dict(format="causal_spatial_gpu_roles_v1",allocation="two_gpu_render_policy_split",compute_gpu_count=2,
+            visible_uuids=["GPU-A","GPU-B"],verified=True,
+            renderer=dict(local_index=0,uuid="GPU-A",pci="00000000:10:00.0",identity_source="actual_sapien_device_pci_to_guarded_proc_uuid"),
+            policy=dict(local_index=1,current_device=1,model_device="cuda:1",uuid="GPU-B",pci="0000:11:00.0",identity_source="worker_startup_gpu_identity"))
+        manifest=dict(worker_gpu_uuids=["GPU-A","GPU-B"],proc_gpu_inventory=[dict(uuid="GPU-A",pci_bus_id="0000:10:00.0"),
+            dict(uuid="GPU-B",pci_bus_id="0000:11:00.0")],command=["/usr/bin/env","CUDA_VISIBLE_DEVICES=GPU-A,GPU-B",
+            "DYNAMICWAM_GPU_PCI=0000:10:00.0","DYNAMICWAM_SIM_CUDA=0","DYNAMICWAM_INFER_CUDA=1",
+            "python",str(sequence.ROOT/"scripts/smoke_causal_spatial_domino.py")])
+        sequence.check_domino_gpu_roles(roles,manifest)
+        for field,value in (("current_device",0),("uuid","GPU-A"),("pci","0000:12:00.0"),("model_device","cuda:0")):
+            invalid=copy.deepcopy(roles);invalid["policy"][field]=value
+            with self.assertRaises(RuntimeError):sequence.check_domino_gpu_roles(invalid,manifest)
+        invalid=copy.deepcopy(manifest);invalid["command"][1]="CUDA_VISIBLE_DEVICES=GPU-B,GPU-A"
+        with self.assertRaisesRegex(RuntimeError,"command does not bind"):
+            sequence.check_domino_gpu_roles(roles,invalid)
+        invalid=copy.deepcopy(manifest);invalid["worker_gpu_uuids"]=["GPU-A"]
+        with self.assertRaisesRegex(RuntimeError,"exactly two"):
+            sequence.check_domino_gpu_roles(roles,invalid)
 
 
 if __name__=="__main__":unittest.main()
