@@ -1,0 +1,50 @@
+{
+  "run_kind": "single_process_engineering_smoke",
+  "formal_training_ready": false,
+  "native_profile": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v1-20261023/configs/absolute_motion_v2.yaml",
+  "init_checkpoint": "/SSD_DISK/users/wuruihan/wam/external/hf_dynamicwam_release/external/checkpoints/DynamicWAM_full.pt",
+  "init_checkpoint_sha256": "7c0dfc44a785ea1f6bd1f833f09dcadc2e470dadb1ba5508fa98918e147671d7",
+  "action_normalization_sha256": "a7f54660920585a65adaa1f9d6247b8683e773ee7ba869dd75d838f63e7d4d69",
+  "motion_normalization_sha256": "48780ede6def2cb8c3f2bf647c429d283266377876e14d5249349a76394a225d",
+  "architecture": {
+    "dim": 384,
+    "layers": 6,
+    "heads": 6,
+    "action_dim": 14,
+    "chunk_size": 16,
+    "future_dim": 134,
+    "future_tokens": 16,
+    "observation_dim": 384,
+    "world_dim": 384
+  },
+  "future_latent_shape": [
+    48,
+    2,
+    12,
+    10
+  ],
+  "gradient_checkpointing": true,
+  "loss": {
+    "slow_video": 0.001,
+    "slow_action": 1.0,
+    "fast_action": 1.0,
+    "future_visual": 0.25,
+    "future_geometry": 1.0,
+    "contact": 0.1,
+    "action_conditioned_probability": 0.25,
+    "cache_dropout": 0.1
+  },
+  "readout_grid": 4,
+  "action_time_tolerance": 0.02,
+  "slow_lr": 1e-06,
+  "fast_lr": 0.0001,
+  "warmup_steps": 0,
+  "steps": 4,
+  "batch_size": 1,
+  "seed": 20261023,
+  "save_every": 4,
+  "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v1_20261023/train_manifest.json",
+  "storage_root": "/SSD_DISK/users/wuruihan",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/dualrate_joint_v1_engineering_20261023",
+  "min_free_bytes": 21474836480
+}

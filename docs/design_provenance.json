@@ -1,0 +1,7 @@
+{
+  "source_name": "DualRate_DynamicWAM_Design.md",
+  "sha256": "2f839a114fec0584043299f5fe0a18a48eccfe107e011346f3de6786d9f3c8b2",
+  "role": "user supplied design reference; latest direct user constraints take precedence",
+  "snapshot_sha256": "2f839a114fec0584043299f5fe0a18a48eccfe107e011346f3de6786d9f3c8b2",
+  "snapshot_transform": "CRLF to LF only; sha256 records original user file bytes"
+}

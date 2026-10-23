@@ -1,0 +1,3 @@
+
+# Preserve valid Markdown hard-break spaces in the supplied design snapshot.
+docs/DualRate_DynamicWAM_Design.source.md whitespace=-blank-at-eol
