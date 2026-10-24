@@ -73,6 +73,29 @@ class TextTests(unittest.TestCase):
             (root / "tokenizer.json").write_text("b", encoding="utf-8")
             self.assertNotEqual(first, worker.tokenizer_identity(root))
 
+    def test_native_resolved_schema_uses_nested_prefix_but_flattened_wan_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "models_t5_umt5-xxl-enc-bf16.pth").write_bytes(b"explicit fixture")
+            (root / "google" / "umt5-xxl").mkdir(parents=True)
+            profile = {"wan_root": str(root), "inference": {"scene_prefix": "native scene: "}}
+            prompts = {"episode_prompt": "native scene: actual episode instruction"}
+            with mock.patch("torch.cuda._lazy_init", side_effect=AssertionError("CPU preflight only")):
+                prefix, checkpoint, tokenizer = worker.native_text_inputs(profile, prompts)
+            self.assertEqual(prefix, "native scene: ")
+            self.assertTrue(checkpoint.is_file())
+            self.assertTrue(tokenizer.is_dir())
+            # Raw-YAML paths nesting is not the resolved deployment contract.
+            with self.assertRaisesRegex(ValueError, "top-level absolute wan_root"):
+                worker.native_text_inputs({"paths": {"wan_root": str(root)}, "inference": profile["inference"]}, prompts)
+            # Regression: the failed first attempt looked at this wrong level.
+            with self.assertRaisesRegex(ValueError, "inference mapping"):
+                worker.native_text_inputs({"wan_root": str(root), "scene_prefix": prefix}, prompts)
+            with self.assertRaisesRegex(ValueError, "duplicates"):
+                worker.native_text_inputs(profile, {"p": prefix + prefix + "task"})
+            with self.assertRaisesRegex(ValueError, "does not start"):
+                worker.native_text_inputs(profile, {"p": "task without the scene prefix"})
+
     def test_worker_arguments_bound_before_guard(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

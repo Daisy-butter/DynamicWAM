@@ -64,6 +64,35 @@ def tokenizer_identity(root):
     return digest.hexdigest()
 
 
+def native_text_inputs(profile, prompts):
+    """Use the resolved native deployment schema, not the raw YAML schema.
+
+    load_deploy_config flattens paths (wan_root is top-level), but retains the
+    inference subsection. Requiring those exact locations catches schema/API
+    mistakes before allocating the native T5 encoder or initializing CUDA.
+    """
+    inference = profile.get("inference")
+    if not isinstance(inference, dict):
+        raise ValueError("resolved native deployment config requires an inference mapping")
+    prefix = inference.get("scene_prefix")
+    if not isinstance(prefix, str) or not prefix or not prefix.endswith(": "):
+        raise ValueError("resolved inference.scene_prefix must retain its trailing ': '")
+    for prompt_id, text in prompts.items():
+        if not text.startswith(prefix):
+            raise ValueError(f"prompt {prompt_id} does not start with resolved inference.scene_prefix")
+        if text[len(prefix):].startswith(prefix):
+            raise ValueError(f"prompt {prompt_id} duplicates the native scene prefix")
+    root_value = profile.get("wan_root")
+    if not isinstance(root_value, (str, Path)) or not Path(root_value).is_absolute():
+        raise ValueError("resolved native deployment config requires top-level absolute wan_root")
+    root = Path(root_value).resolve(strict=True)
+    encoder_path = root / "models_t5_umt5-xxl-enc-bf16.pth"
+    tokenizer_root = root / "google" / "umt5-xxl"
+    if not encoder_path.is_file() or not tokenizer_root.is_dir():
+        raise ValueError("resolved wan_root is missing native T5 checkpoint/tokenizer assets")
+    return prefix, encoder_path, tokenizer_root
+
+
 @contextmanager
 def cpu_without_cuda():
     """Turn accidental CUDA initialization into a failure on the CPU path."""
@@ -173,6 +202,8 @@ def prepare(args, argv):
     target = torch.device(args.device)
     if target.type not in ("cpu", "cuda"):
         raise ValueError("only explicit CPU/CUDA supported")
+    if args.validate_only and target.type != "cpu":
+        raise ValueError("validate-only is a CPU preflight, never a GPU worker")
     prompt_path = Path(args.prompts).resolve(strict=True)
     prompts, episodes = read_prompts(prompt_path)
     prompt_sha = file_sha256(prompt_path)
@@ -196,14 +227,7 @@ def prepare(args, argv):
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         from dynamicwam.inference.model_loader import _build_t5_encoder, load_deploy_config
         profile = load_deploy_config(config["native_profile"])
-        prefix = profile.get("scene_prefix")
-        if not isinstance(prefix, str) or not prefix or any(not text.startswith(prefix) for text in prompts.values()):
-            raise ValueError("episode prompts must already contain the exact native scene prefix once")
-        if any(text[len(prefix):].startswith(prefix) for text in prompts.values()):
-            raise ValueError("duplicated native scene prefix")
-        root = Path(profile["wan_root"]).resolve(strict=True)
-        encoder_path = root / "models_t5_umt5-xxl-enc-bf16.pth"
-        tokenizer_root = root / "google" / "umt5-xxl"
+        prefix, encoder_path, tokenizer_root = native_text_inputs(profile, prompts)
         encoder_sha = file_sha256(encoder_path)
         tokenizer_sha = tokenizer_identity(tokenizer_root)
         for key, actual in (("text_encoder_sha256", encoder_sha), ("tokenizer_sha256", tokenizer_sha)):
@@ -213,7 +237,13 @@ def prepare(args, argv):
             native_profile_sha256=file_sha256(config["native_profile"]),
             source_encoder_sha256=encoder_sha, tokenizer_sha256=tokenizer_sha,
             source_sha256=source_identity(), text_semantics=TEXT_SEMANTICS,
+            scene_prefix_sha256=hashlib.sha256(prefix.encode()).hexdigest(),
             context_shape=[512, 4096], context_dtype="bfloat16", mask_dtype="bool")
+        if args.validate_only:
+            return dict(validated=True, encoded=False, device="cpu", cuda_initialized=torch.cuda.is_initialized(),
+                prompt_count=len(prompts), episode_count=len(episodes),
+                native_scene_prefix_location="inference.scene_prefix", native_wan_root_location="wan_root",
+                encoder_path=str(encoder_path), tokenizer_path=str(tokenizer_root), identity=identity)
         output.mkdir(parents=True, exist_ok=True)
         index_path = output / "index.json"
         if index_path.exists():
@@ -270,6 +300,7 @@ def main(argv=None):
     parser.add_argument("--authorization")
     parser.add_argument("--limit", type=int, default=4, help="unique prompts; zero processes all")
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--validate-only", action="store_true", help="CPU-check real prompts/config/asset hashes without loading T5")
     args = parser.parse_args(argv)
     print(json.dumps(prepare(args, argv), sort_keys=True), flush=True)
 

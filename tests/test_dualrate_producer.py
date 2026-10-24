@@ -5,6 +5,7 @@ import torch
 from dynamicwam.dualrate.producer import (
     unique_last_indices,select_frame,resample_actions,view_overlap,materialize_native_latents,
     _letterbox,
+    file_stat_identity,verify_file_stat,
 )
 
 
@@ -58,3 +59,14 @@ def test_native_camera_resolution_has_explicit_padding_mask():
     assert int(head_valid.sum())==240*320
     assert int(wrist_valid.sum())==120*160
     assert not wrist[:,~wrist_valid].any()
+
+
+def test_source_file_stat_rejects_replacement_and_is_not_claimed_hash(tmp_path):
+    p=tmp_path/'raw.bin';p.write_bytes(b'original')
+    identity=file_stat_identity(p)
+    assert set(identity)=={'resolved_path','size','mtime_ns'}
+    verify_file_stat(p,identity)
+    p.write_bytes(b'new content')
+    with pytest.raises(ValueError,match='stat identity changed'):verify_file_stat(p,identity)
+    q=tmp_path/'different.bin';q.write_bytes(b'original')
+    with pytest.raises(ValueError,match='stat identity changed'):verify_file_stat(q,identity)

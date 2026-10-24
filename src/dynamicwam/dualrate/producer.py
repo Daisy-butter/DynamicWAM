@@ -106,6 +106,35 @@ def unique_last_indices(times):
     return np.flatnonzero(np.r_[np.diff(times) != 0, True])
 
 
+def file_stat_identity(path):
+    """Accidental-rewrite detector; explicitly NOT a content/byte hash."""
+    resolved=Path(path).resolve(strict=True);stat=resolved.stat()
+    return dict(resolved_path=str(resolved),size=stat.st_size,mtime_ns=stat.st_mtime_ns)
+
+
+def verify_file_stat(path, expected):
+    _require(file_stat_identity(path)==expected,f'raw/flow file stat identity changed: {path}')
+
+
+def attach_stat_identity(output):
+    """Bind existing prepared episode raw/flow files without rehashing image TBs."""
+    output=Path(output)
+    episodes=json.loads((output/'episodes.json').read_text())
+    sidecar=dict(schema_version=1,identity_kind='resolved_path_size_mtime_ns_not_content_hash',episodes={})
+    for ep in episodes:
+        sidecar['episodes'][ep['episode_uid']]={key:file_stat_identity(ep[key+'_path']) for key in ('raw','flow')}
+    path=output/'source_file_stats.json'
+    path.write_text(json.dumps(sidecar,indent=2))
+    digest=sha256_file(path)
+    for split in ('train','validation'):
+        manifest=output/f'{split}.json'
+        if manifest.exists():
+            m=json.loads(manifest.read_text());m.update(source_file_stats='source_file_stats.json',source_file_stats_sha256=digest,
+                                                       source_file_identity_kind=sidecar['identity_kind'])
+            manifest.write_text(json.dumps(m,indent=2))
+    return dict(episodes=len(episodes),path=str(path),sha256=digest,identity_kind=sidecar['identity_kind'])
+
+
 def select_frame(times, target, *, past_only, tolerance):
     """Return a real frame index; duplicate timestamps select the last whole row."""
     indices = unique_last_indices(times)
@@ -298,6 +327,10 @@ class DominoPhysicalDataset(Dataset):
         _require(self.rows.ndim==2 and self.rows.shape[1]==3,"rows must be episode/start/age triples")
         if verify_hash:_require(sha256_file(self.path.parent/m['rows_file'])==m['rows_sha256'],"row index changed")
         self.episodes=json.loads((self.path.parent/m['episodes_file']).read_text())
+        stat_path=self.path.parent/m['source_file_stats']
+        _require(sha256_file(stat_path)==m['source_file_stats_sha256'],'source stat sidecar changed')
+        self.source_stats=json.loads(stat_path.read_text())
+        _require(self.source_stats['identity_kind']=='resolved_path_size_mtime_ns_not_content_hash','unknown source stat semantics')
         self.text_root=self.path.parent/m.get('text_index','text/index.json')
         _require(self.text_root.is_file(),f'episode-specific frozen text cache missing: {self.text_root}')
         text_index=json.loads(self.text_root.read_text())
@@ -314,8 +347,10 @@ class DominoPhysicalDataset(Dataset):
     def __len__(self):return len(self.rows)
 
     def _episode(self,index):
+        ep=self.episodes[index]
+        for key in ('raw','flow'):
+            verify_file_stat(ep[key+'_path'],self.source_stats['episodes'][ep['episode_uid']][key])
         if index not in self.cache:
-            ep=self.episodes[index]
             _require(ep['split']==self.manifest['split'],"episode crosses split")
             records,actions=read_episode_records(ep['raw_path'],ep,self.manifest['visual_encoder_id'])
             with np.load(ep['flow_path']) as data:flow={k:data[k] for k in ('flow_rgb','motion_features','interval_valid','acceleration_valid','interval_start_time_seconds','interval_end_time_seconds')}
@@ -559,4 +594,5 @@ def build_manifests(config, output, *, max_episodes=None):
                   'latency_provenance':'synthetic_completion_0.18s_not_measured','time_grid_cache_rebuilt':True,'formal_training_ready':False,
                   'text_index':'text/index.json','native_latents':'main_process_frozen_native_vae_or_identity_bound_cache','audit_file':'audit.json'}
         (output/f'{split}.json').write_text(json.dumps(manifest,indent=2))
+    attach_stat_identity(output)
     return audit

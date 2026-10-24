@@ -213,9 +213,11 @@ class DualRateSystem(nn.Module):
             _prefix(batch[prefix + "_known_actions"], batch[prefix + "_known_actions"], batch[prefix + "_known_mask"])
         st, ft = batch["source_action_times"], batch["action_times"]
         common = (st[:, :, None] - ft[:, None, :]).abs() <= 1e-7
-        promised = common & batch["source_known_mask"][:, :, None]
-        promised = promised & (st >= batch["query_time"][:, None])[:, :, None]
-        if (promised & ~batch["fast_known_mask"][:, None, :]).any():
+        si,fi=batch["source_action_intervals"],batch["action_intervals"]
+        common=common & ((si[:,:,None,1]-fi[:,None,:,1]).abs()<=1e-7)
+        active=batch["source_known_mask"] & (si[...,1]>batch["query_time"][:,None]+1e-8)
+        represented=(common & batch["fast_known_mask"][:,None,:]).any(-1)
+        if (active & ~represented).any():
             raise ValueError("fast prefix drops a still-future source commitment")
         common = common & batch["source_known_mask"][:, :, None] & batch["fast_known_mask"][:, None, :]
         difference = (batch["source_known_actions"][:, :, None] - batch["fast_known_actions"][:, None]).abs()

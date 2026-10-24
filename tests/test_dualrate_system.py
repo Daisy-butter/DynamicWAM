@@ -230,6 +230,20 @@ def test_new_fast_commitments_are_allowed_and_source_not_rewritten():
     assert torch.equal(before,batch["source_known_mask"])
 
 
+def test_in_progress_source_commitment_cannot_disappear_from_fast_grid():
+    system,batch=make_system()
+    batch['query_time']+=.05
+    system._validate_prefix_pair(batch)
+    batch['fast_known_mask'].zero_()
+    with pytest.raises(ValueError,match='drops a still-future'):
+        system._validate_prefix_pair(batch)
+    batch['fast_known_mask'][:,0]=True
+    batch['action_times']+=.1
+    batch['action_intervals']+=.1
+    with pytest.raises(ValueError,match='drops a still-future'):
+        system._validate_prefix_pair(batch)
+
+
 @pytest.mark.parametrize("wrapped", [False,True])
 def test_train_mode_keeps_codec_eval_without_freezing_trainable_experts(wrapped):
     system,_ = make_system()
