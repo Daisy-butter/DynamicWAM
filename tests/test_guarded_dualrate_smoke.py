@@ -139,3 +139,16 @@ def test_telemetry_guard_and_worker_launch_order_and_no_shell():
     assert text.index("remaining = cleanup_owned") < text.index('post = telemetry(devices, out, "postflight")') < text.index("guard.close()")
     assert "shell=True" not in text and "/cmdline" not in text and "/environ" not in text
     assert '"cleanup_pending"' in text
+
+
+def test_dependency_overlay_search_path_and_receipt_boundaries(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "existing-path")
+    overlay = tmp_path / "dependencies"
+    env = runner.worker_environment(tmp_path, tmp_path/"out", "GPU-test", {"root": str(overlay)})
+    assert env["PYTHONPATH"].split(runner.os.pathsep) == [str(tmp_path/"src"), str(overlay), "existing-path"]
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert text.index('persist("dependencies_before.json"') < text.index("proc = subprocess.Popen(command")
+    assert text.index('persist("dependencies_after.json"') > text.index('persist("owned_exit.json"')
+    assert '"python_dependencies": dependency_binding' in text
+    assert "require_flash_attention=" in text

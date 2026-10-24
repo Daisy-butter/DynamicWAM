@@ -368,13 +368,15 @@ def _validate_normalization(config: Mapping, manifest: Mapping) -> None:
 
 
 def _gpu_authorization(path: Path, identity: Mapping, output: Path, *,
-                       expected_mode="single_process_engineering_smoke") -> None:
+                       expected_mode="single_process_engineering_smoke", expected_dependencies=None) -> None:
     """Validate external supervisor receipt without CUDA/NVML/driver telemetry."""
     receipt = json.loads(path.read_text(encoding="utf-8"))
     if receipt.get("mode") != expected_mode or receipt.get("authorized") is not True:
         raise ValueError("GPU authorization is not for this engineering smoke")
     if receipt.get("identity") != dict(identity) or float(receipt.get("expires_at_unix", 0)) <= time.time():
         raise ValueError("stale or differently bound GPU authorization")
+    if expected_dependencies is not None and receipt.get("python_dependencies") != expected_dependencies:
+        raise ValueError("GPU authorization dependency overlay differs from the validated files")
     visibility = os.environ.get("CUDA_VISIBLE_DEVICES", "")
     if visibility != receipt.get("cuda_visible_devices") or not visibility.startswith("GPU-") or "," in visibility:
         raise ValueError("single UUID-pinned compute GPU required")
@@ -438,6 +440,9 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
     if target.type not in ("cpu", "cuda"):
         raise ValueError("only explicit CPU or CUDA devices supported")
     output = _validate_storage(config)
+    from .dependencies import validate_dependency_overlay, activate_dependency_overlay, probe_dependency_imports
+    dependencies = validate_dependency_overlay(config)
+    activate_dependency_overlay(dependencies)
     manifest_path = Path(config["manifest"]).resolve(strict=True)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     _validate_normalization(config, manifest)
@@ -450,7 +455,8 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
     if target.type == "cuda":
         if authorization is None:
             raise ValueError("CUDA requires a fresh external guarded authorization receipt")
-        _gpu_authorization(Path(authorization), identity, output)
+        _gpu_authorization(Path(authorization), identity, output, expected_dependencies=dependencies)
+    dependency_probe = probe_dependency_imports(config, require_flash_attention=True)
     from .data import open_training_dataset
     from .factory import build_system
     dataset = open_training_dataset(manifest_path, verify_hash=True)
@@ -467,6 +473,7 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
     if resume is None and output.exists() and any(output.iterdir()):
         raise FileExistsError("fresh output directory is not empty; use explicit resume")
     output.mkdir(parents=True, exist_ok=True)
+    _atomic_json(output / "dependencies.json", dependency_probe)
     floor = int(config.get("min_free_bytes", 10 * (1 << 30)))
     save_every = int(config.get("save_every", 1))
     if floor < 0 or save_every <= 0:
@@ -552,6 +559,8 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
         reload_report = output / "reload.json"
         verify_checkpoint_reload(final_checkpoint, system, optimizer, cursor, identity,
             expected_step=end, report_path=reload_report, generator=generator)
+    if validate_dependency_overlay(config) != dependencies:
+        raise RuntimeError("dependency overlay changed during training")
     return {"completed_steps": end, "configured_steps":steps,"checkpoint": str(final_checkpoint), "identity": identity,
             "parameters":counts, "reload_report":str(reload_report) if reload_report is not None else None,
             "formal_training_ready": False, "run_kind": "single_process_engineering_smoke"}

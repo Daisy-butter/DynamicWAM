@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import collections
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,16 @@ def file_sha256(path: Path) -> str:
 
 def canonical_hash(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def dependency_helpers():
+    # Execute the fixed, pure-stdlib binding helper without importing the model
+    # package or torch in the device-lifetime supervisor.
+    path = Path(__file__).resolve().parents[1] / "src/dynamicwam/dualrate/dependencies.py"
+    spec = importlib.util.spec_from_file_location("dualrate_dependency_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def source_identity(root: Path) -> str:
@@ -204,11 +215,16 @@ def storage_directory(path: Path, root: Path) -> Path:
     return path
 
 
-def worker_environment(repo: Path, out: Path, gpu: str) -> dict:
+def worker_environment(repo: Path, out: Path, gpu: str, dependency_binding=None) -> dict:
     env = os.environ.copy()
     env.update(CUDA_VISIBLE_DEVICES=gpu, WORLD_SIZE="1", PYTHONDONTWRITEBYTECODE="1",
                OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="2")
-    env["PYTHONPATH"] = str(repo / "src") + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    paths = [str(repo / "src")]
+    if dependency_binding is not None:
+        paths.append(dependency_binding["root"])
+    if env.get("PYTHONPATH"):
+        paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(paths)
     for name in ("HF_HOME", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "TORCH_HOME", "TORCHINDUCTOR_CACHE_DIR",
                  "TRITON_CACHE_DIR", "TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME"):
         path = out / "cache" / name.lower()
@@ -266,7 +282,7 @@ def supervise(args, repo: Path, out: Path) -> int:
         signal.signal(sig, interrupt)
     signal.setitimer(signal.ITIMER_REAL, args.max_runtime)
     status("preparing")
-    source = config = frozen = identity = boot = worker = None
+    source = config = frozen = identity = boot = worker = dependency_binding = dependency_probe = None
     try:
         if not args.inspect:
             source = source_snapshot(repo)
@@ -282,6 +298,8 @@ def supervise(args, repo: Path, out: Path) -> int:
             mode, command, worker = fixed_worker(repo, args.worker_script, args.worker_args_json)
             if config["run_kind"] != mode:
                 raise ValueError("config run_kind disagrees with fixed engineering worker")
+            dependency_binding = dependency_helpers().validate_dependency_overlay(config)
+            persist("dependencies_before.json", dependency_binding)
             frozen = out / "config.frozen.json"
             frozen.write_text(json.dumps(config, indent=2, allow_nan=False), encoding="utf-8")
             persist("source.json", source)
@@ -309,10 +327,15 @@ def supervise(args, repo: Path, out: Path) -> int:
             outcome = "inspected"
         else:
             require_idle(rows, args.gpu)
-            env = worker_environment(repo, out, args.gpu)
+            env = worker_environment(repo, out, args.gpu, dependency_binding)
             cpu_env = dict(env, CUDA_VISIBLE_DEVICES="")
-            version = subprocess.check_output([sys.executable, "-c", "import torch; print(str(torch.__version__))"],
-                                              cwd=repo, env=cpu_env, text=True, timeout=60).strip()
+            probe_code = ("import json,sys; from dynamicwam.dualrate.dependencies import probe_dependency_imports; "
+                "config=json.load(open(sys.argv[1])); "
+                "print(json.dumps(probe_dependency_imports(config,require_flash_attention=" + str(mode == MODE) + ")))" )
+            dependency_probe = json.loads(subprocess.check_output([sys.executable, "-B", "-c", probe_code, str(frozen)],
+                                              cwd=repo, env=cpu_env, text=True, timeout=60))
+            persist("dependency_import_probe.json", dependency_probe)
+            version = dependency_probe["versions"]["torch"]
             identity = build_identity(config, source, version)
             if source_snapshot(repo) != source or canonical_hash(json.loads(args.config.read_text(encoding="utf-8"))) != identity["config_sha256"]:
                 raise RuntimeError("source/config changed during preflight")
@@ -320,6 +343,8 @@ def supervise(args, repo: Path, out: Path) -> int:
                 _mode, _command, current_worker = fixed_worker(repo, args.worker_script, args.worker_args_json)
                 if current_worker != worker:
                     raise RuntimeError("preparation entrypoint/argv changed during preflight")
+            if dependency_helpers().validate_dependency_overlay(config) != dependency_binding:
+                raise RuntimeError("dependency overlay changed during preflight")
             authorization = out / "authorization.json"
             self_proc = proc_identity(os.getpid())
             receipt = {"mode": mode, "authorized": True, "identity": identity, "storage_root": str(storage),
@@ -328,6 +353,7 @@ def supervise(args, repo: Path, out: Path) -> int:
                                           "mode": GUARD_MODE, "device_paths": [v["device_path"] for v in devices.values()]},
                        "source": source, "selected_gpu": next(r for r in rows if r["uuid"] == args.gpu),
                        "boot_id": boot, "worker": worker,
+                       "python_dependencies": dependency_binding, "dependency_import_probe": dependency_probe,
                        "expected_worker": ({"path": worker["path"], "sha256": worker["worker_sha256"],
                                             "args_sha256": worker["worker_args_sha256"]} if worker else None)}
             atomic(authorization, receipt)
@@ -408,6 +434,10 @@ def supervise(args, repo: Path, out: Path) -> int:
                     errors.append("config/data identity changed during worker lifetime")
                 if worker and fixed_worker(repo, args.worker_script, args.worker_args_json)[2] != worker:
                     errors.append("preparation worker/argv changed during worker lifetime")
+                final_dependencies = dependency_helpers().validate_dependency_overlay(config)
+                persist("dependencies_after.json", final_dependencies)
+                if final_dependencies != dependency_binding:
+                    errors.append("dependency overlay changed during worker lifetime")
             except BaseException as exc:
                 errors.append(f"final source binding unavailable: {exc!r}")
         if lock is not None:
