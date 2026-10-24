@@ -41,14 +41,16 @@
   "sapien_version": "3.0.0b1",
   "sapien_binding_sha256": "56cf1ec3fa68b825a14361fc5f9c8b26844ce5d595cd6270a9311d1a1af0410b",
   "sapien_library_sha256": "2941d67f23a0955d80f5808d47aa9b65d4a9d974626183c3c6b42d77794a099d",
-  "source_sha256": "761822055b982865bfa3944d3665a29851cd236d6250b4a700b03420c073464d",
+  "source_sha256": "5eda404bbdf1b7cf88aa6b105238a1290f60bbe5a6f2c2798cc1bf15508374d5",
   "artifact": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v3-20261024/src/dynamicwam/runtime/domino_rt/_sapien_color_reader.cpython-310-x86_64-linux-gnu.so",
-  "artifact_sha256": "c89f294398df91afd5a86b668c08121910ba05a54ac345088a291b982224654e",
+  "artifact_sha256": "e07607933905e6426a2048f082c2844dd5462bf7b996345f530d8790383a27db",
   "cpu_validation": {
-    "performed": false,
-    "reason": "compile_only_no_sapien_import",
+    "import": true,
+    "registered_camera_cast": true,
+    "native_exception_reacquires_gil": true,
+    "wrong_type_rejected": true,
     "gpu_scene_created": false,
-    "telemetry_called": false
+    "internals_id": "__pybind11_internals_v4_gcc_libstdcpp_cxxabi1014__"
   },
   "limits": "CPU import/cast/exception checks do not prove full ABI or renderer thread safety; actual GPU equivalence and physics overlap required before formal evaluation"
 }

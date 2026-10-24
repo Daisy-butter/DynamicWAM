@@ -129,3 +129,30 @@ def test_native_batch_called_once_in_original_four_camera_order():
     assert all(result[name]['rgb'].flags.owndata for name,_ in cameras)
     with pytest.raises(ValueError):
         _read_submitted_rgb_batch(cameras,lambda handles:([np.zeros((2,3,4),np.uint8)]*4,[.01]*4),lambda:0.)
+
+
+def test_owner_simulator_calls_release_the_gil():
+    import threading
+    import time
+    import sapien.physx
+    import sapien.render
+    from dynamicwam.runtime.domino_rt import _sapien_color_reader
+    hits=0
+    stop=False
+    def run():
+        nonlocal hits
+        while not stop:
+            hits+=1
+    thread=threading.Thread(target=run)
+    thread.start()
+    time.sleep(.01)
+    before=hits
+    _sapien_color_reader.sleep_releasing_gil(.15)
+    progressed=hits-before
+    stop=True
+    thread.join()
+    assert progressed>1000
+    camera=sapien.render.RenderCameraComponent(8,8)
+    with pytest.raises(RuntimeError,match='not added to scene'):
+        _sapien_color_reader.take_picture(camera)
+    _sapien_color_reader.step_cpu_physx(sapien.physx.PhysxCpuSystem())

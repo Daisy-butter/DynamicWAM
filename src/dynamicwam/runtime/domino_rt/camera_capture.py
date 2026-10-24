@@ -212,7 +212,11 @@ class AsyncCameraCapture:
         cameras = self._camera_handles(env)
         captured_wall = self._clock()
         env._update_render()
-        env.cameras.update_picture()
+        # update_picture calls Camera.take_picture, whose SAPIEN binding holds
+        # the GIL for the whole render wait. Inference workers are Python threads.
+        from dynamicwam.runtime.domino_rt import _sapien_color_reader
+        for _, camera in cameras:
+            _sapien_color_reader.take_picture(camera)
         render_submitted_wall = self._clock()
         observation = {
             "observation": deepcopy(env.cameras.get_config()),

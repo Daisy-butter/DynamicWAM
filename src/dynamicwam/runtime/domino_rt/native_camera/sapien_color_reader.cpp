@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace py = pybind11;
@@ -129,8 +130,50 @@ static py::tuple read_rgb_batch(py::sequence const &owners) {
   return py::make_tuple(images, elapsed);
 }
 
+static void take_picture(py::object const &owner) {
+  // Same call as Camera.take_picture. SAPIEN's binding keeps the GIL while
+  // waitForRender blocks, which freezes every Python inference worker.
+  Camera &camera = owner.cast<Camera &>();
+  py::gil_scoped_release release;
+  camera.takePicture();
+}
+
+// libsapien PhysxSystemCpu::step(). The physx headers do not compile with this
+// bridge's C++20 mode, so the call uses the installed symbol directly.
+extern void physx_cpu_step(void *self) __asm__("_ZN6sapien5physx14PhysxSystemCpu4stepEv");
+
+static void step_cpu_physx(py::object const &owner) {
+  py::object expected = py::module_::import("sapien.pysapien.physx").attr("PhysxCpuSystem");
+  if (!py::isinstance(owner, expected)) {
+    throw std::invalid_argument("step_cpu_physx requires the installed PhysxCpuSystem");
+  }
+  auto *inst = reinterpret_cast<py::detail::instance *>(owner.ptr());
+  if (inst == nullptr) {
+    throw std::runtime_error("CPU PhysX object is not a pybind instance");
+  }
+  // SAPIEN registers PhysX with a holder larger than shared_ptr, so the
+  // instance uses the nonsimple layout. The first value is the system itself.
+  void *self = inst->get_value_and_holder().value_ptr();
+  if (self == nullptr) {
+    throw std::runtime_error("CPU PhysX instance has no registered C++ pointer");
+  }
+  // Scene.step is this call. SAPIEN's binding keeps the GIL for simulate/fetch,
+  // so a tight catch-up loop starves the Python inference workers.
+  py::gil_scoped_release release;
+  physx_cpu_step(self);
+}
+
+static void sleep_releasing_gil(double seconds) {
+  if (!(seconds > 0.0) || seconds > 2.0) {
+    throw std::invalid_argument("sleep_releasing_gil expects 0 < seconds <= 2");
+  }
+  py::gil_scoped_release release;
+  std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+}
+
 PYBIND11_MODULE(_sapien_color_reader, module) {
   py::module_::import("sapien.pysapien");
+  py::module_::import("sapien.pysapien.physx");
   auto *registered = py::detail::get_type_info(typeid(Camera), false);
   if (registered == nullptr) {
     throw py::import_error("SAPIEN camera type is absent from matching pybind registry; ABI mismatch");
@@ -152,4 +195,10 @@ PYBIND11_MODULE(_sapien_color_reader, module) {
   module.def("read_color", &read_color, py::arg("camera"),
       "Copy one submitted Color frame while releasing the GIL for wait and download. "
       "Caller must prevent render updates, new captures and scene/camera destruction until return.");
+  module.def("take_picture", &take_picture, py::arg("camera"),
+      "Submit one camera render while releasing the GIL across waitForRender.");
+  module.def("step_cpu_physx", &step_cpu_physx, py::arg("system"),
+      "Advance one CPU PhysX step while releasing the GIL.");
+  module.def("sleep_releasing_gil", &sleep_releasing_gil, py::arg("seconds"),
+      "CPU witness that this module releases the GIL for the whole wait.");
 }

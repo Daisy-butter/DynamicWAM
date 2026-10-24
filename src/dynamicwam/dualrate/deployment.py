@@ -138,6 +138,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                   held_prefix_seconds=runtime_config.protect_steps*queue.dt))
         wall0=time.perf_counter();max_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture=initial+frame_period
+        from dynamicwam.runtime.domino_rt import _sapien_color_reader
+        physx_system=session.env.scene.physx_system
         accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={}
         while terminal is None:
             now=clock();elapsed=time.perf_counter()-wall0;lag=elapsed-(now-initial)
@@ -171,6 +173,9 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             wait=(now-initial)+dt-(time.perf_counter()-wall0)
             if wait>0:
                 time.sleep(min(wait,.001));continue
+            # A plan can become ready during the blocking capture above. Commit
+            # it before this tick consumes the last covered action.
+            runtime.poll()
             row=math.floor((now-initial)/queue.dt+1e-9)
             if row>=action_limit:
                 terminal='action_budget_exhausted';break
@@ -190,7 +195,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             robot.set_arm_joints(position[:6],velocity[:6],'left')
             robot.set_arm_joints(position[7:13],velocity[7:13],'right')
             robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
-            session.env._update_kinematic_tasks();session.env.scene.step()
+            session.env._update_kinematic_tasks()
+            _sapien_color_reader.step_cpu_physx(physx_system)
             session.env._update_transient_checks();session._consume_events()
             terminal=session.stop_reason()
             row_complete=clock()>=initial+(row+1)*queue.dt-1e-9
