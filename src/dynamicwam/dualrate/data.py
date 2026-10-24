@@ -53,6 +53,7 @@ class EpisodeRecords:
     contacts: Tensor                        # [N,4,2] or task-target-only [N,2]
     contact_valid: Tensor                   # same shape as contacts, bool
     relevant_gripper: tuple[int, int] = (0, 0)  # object/support, fixed per episode
+    visual_context_valid: Tensor | None = None  # explicit projected-context semantics; not visibility
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ def _validate_records(r: EpisodeRecords) -> None:
 def produce_future_labels(records: EpisodeRecords, query_time: float, *,
                           max_interpolation_gap: float,
                           max_contact_age: float,
+                          max_visual_time_error: float = 0.030001,
                           duplicate_policy: str = "error") -> FutureLabels:
     """Interpolate continuous targets only inside valid, identity-stable brackets.
 
@@ -188,8 +190,9 @@ def produce_future_labels(records: EpisodeRecords, query_time: float, *,
         def blend(x: Tensor) -> Tensor:
             return x[a].float() * (1 - alpha) + x[b].float() * alpha
 
-        xyz, hands, features = (blend(records.entity_world_positions),
-                               blend(records.gripper_positions), blend(records.frozen_visual_features))
+        xyz, hands = blend(records.entity_world_positions), blend(records.gripper_positions)
+        visual_index = a if target - float(times[lo]) <= float(times[hi]) - target else b
+        visual_error = abs(float(records.timestamps[visual_index]) - target)
         for entity in range(4):
             same = (int(records.track_ids[a, entity]) >= 0 and
                     int(records.track_ids[a, entity]) == int(records.track_ids[b, entity]))
@@ -200,11 +203,14 @@ def produce_future_labels(records: EpisodeRecords, query_time: float, *,
             if pos_ok:
                 values[entity, h, 128:131] = xyz[entity]
                 masks[entity, h, 128:131] = True
-            visual_ok = bool((records.visibility[[a,b], entity] &
-                              records.projectability[[a,b], entity]).all())
-            visual_ok &= bool(torch.isfinite(records.frozen_visual_features[[a,b], entity]).all())
+            visual_ok = visual_error <= max_visual_time_error
+            region_valid = (records.visibility if records.visual_context_valid is None
+                            else records.visual_context_valid)
+            visual_ok &= bool(region_valid[visual_index, entity] & records.projectability[visual_index, entity])
+            visual_ok &= bool(torch.isfinite(records.frozen_visual_features[visual_index, entity]).all())
             if visual_ok:
-                values[entity, h, :128] = features[entity]
+                # This is an actual frame encoding, never a blend of image features.
+                values[entity, h, :128] = records.frozen_visual_features[visual_index, entity]
                 masks[entity, h, :128] = True
             if entity < 2:
                 hand = records.relevant_gripper[entity]
@@ -299,6 +305,15 @@ class DualRateShardDataset(Dataset):
         "source_known_mask", "fast_known_actions", "fast_known_mask", "rgb", "rgb_times",
         "motion", "motion_times", "motion_valid", "motion_acceleration_valid", "state", "text", "text_valid",
         "source_time", "completed_time", "query_time", "action_times", "query_entity_valid",
+        "source_temporal_support", "source_view_overlap", "source_token_valid", "source_input_type",
+        "future_view_overlap", "future_token_valid", "future_input_type", "source_action_intervals",
+        "rgb_pixel_valid", "state_time", "spatial_flow", "spatial_flow_valid", "spatial_flow_times",
+        "executed_actions", "executed_action_intervals", "executed_action_valid",
+        "source_action_valid", "fast_action_valid", "source_condition_frames", "source_future_frames",
+        "source_rgb_actual_times", "future_rgb_actual_times", "future_rgb_time_errors",
+        "future_visibility_known", "future_visual_actual_times",
+        "source_cache_id",
+        "action_intervals",
     }
 
     def __init__(self, manifest_path: str | Path, *, verify_hash: bool = True):
@@ -378,3 +393,12 @@ class DualRateShardDataset(Dataset):
                          "expected source <= completed <= query")
         item["future"] = normalize_future(item["future"], item["future_loss_valid"], self.manifest["statistics"])
         return item
+
+
+def open_training_dataset(manifest_path: str | Path, **kwargs) -> Dataset:
+    """Open either audited legacy tensor shards or fixed-time real DOMINO episodes."""
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    if manifest.get("schema_version") == "dualrate-domino-lazy-v2":
+        from .producer import DominoPhysicalDataset
+        return DominoPhysicalDataset(manifest_path, **kwargs)
+    return DualRateShardDataset(manifest_path, **kwargs)

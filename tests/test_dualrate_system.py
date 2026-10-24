@@ -13,10 +13,10 @@ def make_system():
     torch.manual_seed(41)
     torch.set_num_threads(1)
     slow = SlowReferenceAdapter(NativeContractFixture(), gradient_checkpointing=True)
-    readout = StructuredWorldReadout(latent_channels=2, action_dim=2, world_dim=12, grid_size=2)
-    observation = CurrentObservationEncoder(dim=12, views=1, motion_dim=3, state_dim=2, text_dim=4)
+    readout = StructuredWorldReadout(latent_channels=2, action_dim=2, world_dim=12, native_hidden_dim=2, test_fixture=True)
+    observation = CurrentObservationEncoder(dim=12, views=1, motion_dim=3, state_dim=2, text_dim=4, test_fixture=True)
     fast = FastJointWAM(FastConfig(dim=12,layers=2,heads=3,action_dim=2,chunk_size=4,
-                                  future_dim=10,future_tokens=16,observation_dim=12,world_dim=12))
+                                  future_dim=10,future_tokens=16,observation_dim=12,world_dim=12,test_fixture=True))
     cfg = LossConfig(slow_video=0,slow_action=0,fast_action=1,future_visual=0,
                      future_geometry=0,contact=0,action_conditioned_probability=0,
                      cache_dropout=0,visual_dim=4)
@@ -47,11 +47,39 @@ def make_system():
     )
     batch["source_action"][known_mask] = known[known_mask]
     batch["fast_action"][known_mask] = known[known_mask]
+    batch['source_action_intervals'] = torch.stack((action_times,action_times+.1),dim=-1)
+    batch['action_intervals'] = batch['source_action_intervals'].clone()
+    from test_dualrate_slow import metadata_fixture
+    sm = metadata_fixture(batch['source_condition_latent'],torch.tensor([[[1.7,2.]]],dtype=torch.float64))
+    fm = metadata_fixture(batch['source_future_latent'],batch['source_future_intervals'])
+    for prefix,meta in [('source',sm),('future',fm)]:
+        batch[prefix+'_view_overlap']=meta['view_overlap']
+        batch[prefix+'_token_valid']=meta['valid']
+        batch[prefix+'_input_type']=meta['input_type']
+    batch['source_temporal_support']=sm['temporal_support']
     return system,batch
 
 
 def generator(seed=17):
     return torch.Generator().manual_seed(seed)
+
+
+def test_sampling_keeps_unsupported_future_fields_at_fixed_noise():
+    system,batch=make_system()
+    system.future_field_support[:,0]=False
+    world=system.world_readout(system.predict_reference(batch,generator=generator()))
+    seen=[]
+    def constant_velocity(a,z,sigma,context,**kwargs):
+        seen.append(z.clone())
+        return dict(action_velocity=torch.zeros_like(a),future_velocity=torch.ones_like(z),
+                    contact_logits=torch.zeros(*z.shape[:2],2))
+    system.fast.forward_cached=constant_velocity
+    result=system.sample_fast(batch,world,steps=3,generator=generator())
+    for value in seen[1:]:
+        torch.testing.assert_close(value[...,0],seen[0][...,0],atol=0,rtol=0)
+    torch.testing.assert_close(seen[-1][...,1],seen[0][...,1]-1)
+    assert not result['future'][...,0].any()
+    assert not result['future_field_valid'][...,0].any()
 
 
 def copy_batch(batch):
@@ -66,7 +94,7 @@ def test_fast_action_only_loss_reaches_slow_video_action_motion():
     for parameter in (system.slow.native.video_weight,system.slow.native.action_weight,
                       system.slow.native.motion_weight,
                       system.slow.native.compact_wan.video_model.wan_model.blocks[0].self_attn.k.weight,
-                      system.fast.future_in.weight,system.world_readout.visual_projection.weight):
+                      system.fast.future_in.weight,system.world_readout.future_projection.weight):
         assert parameter.grad is not None
         assert torch.isfinite(parameter.grad).all()
         assert parameter.grad.abs().sum() > 0
@@ -128,9 +156,13 @@ def test_sample_fast_clamps_prefix_every_step_and_never_reads_labels():
     seen = []
     def capture(module,args,kwargs):
         seen.append(args[0].detach().clone())
-    handle = system.fast.register_forward_pre_hook(capture,with_kwargs=True)
+    original = system.fast.forward_cached
+    def tracked(*args, **kwargs):
+        seen.append(args[0].detach().clone())
+        return original(*args, **kwargs)
+    system.fast.forward_cached = tracked
     output = system.sample_fast(inference,world,steps=4,generator=generator())
-    handle.remove()
+    system.fast.forward_cached = original
     assert len(seen) == 5  # four denoising steps and final contact readout
     for actions in seen+[output["actions"]]:
         torch.testing.assert_close(actions[:,:1],batch["fast_known_actions"][:,:1],atol=0,rtol=0)

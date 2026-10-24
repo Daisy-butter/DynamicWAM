@@ -10,7 +10,7 @@ class FastJointTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(37)
         torch.set_num_threads(1)
-        self.cfg = FastConfig(dim=24, layers=2, heads=3, chunk_size=4, future_tokens=4, future_dim=10, observation_dim=12, world_dim=12)
+        self.cfg = FastConfig(dim=24, layers=2, heads=3, chunk_size=4, future_tokens=4, future_dim=10, observation_dim=12, world_dim=12, test_fixture=True)
         self.model = FastJointWAM(self.cfg)
         self.a = torch.randn(2, 4, 14)
         self.z = torch.randn(2, 4, 10)
@@ -105,11 +105,87 @@ class FastJointTests(unittest.TestCase):
         for name in expected:
             torch.testing.assert_close(actual[name], expected[name], atol=0, rtol=0)
 
+    def test_context_cache_equivalence_and_full_gradients(self):
+        other = copy.deepcopy(self.model)
+        one = {k: v.detach().clone() for k, v in self.kw.items()}
+        two = {k: v.detach().clone() for k, v in self.kw.items()}
+        for args in (one, two):
+            args["observation_tokens"].requires_grad_()
+            args["world_tokens"].requires_grad_()
+        cached = other.prepare_context(**two)
+        # Two forwards share one differentiable KV computation and one backward.
+        lhs = [self.model(self.a, self.z, s, **one) for s in (self.sigma, self.sigma / 2)]
+        rhs = [other.forward_cached(self.a, self.z, s, cached) for s in (self.sigma, self.sigma / 2)]
+        for actual, expected in zip(lhs, rhs):
+            for key in actual:
+                torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
+        sum(v["action_velocity"].square().sum() for v in lhs).backward()
+        sum(v["action_velocity"].square().sum() for v in rhs).backward()
+        for key in ("observation_tokens", "world_tokens"):
+            torch.testing.assert_close(one[key].grad, two[key].grad, rtol=2e-5, atol=1e-6)
+        for a, b in zip(self.model.parameters(), other.parameters()):
+            if a.grad is not None:
+                torch.testing.assert_close(a.grad, b.grad, rtol=3e-5, atol=3e-6)
+
+    def test_cache_rejects_mutated_conditions_parameters_and_other_model(self):
+        cache = self.model.prepare_context(**self.kw)
+        with self.assertRaises(ValueError):
+            copy.deepcopy(self.model).forward_cached(self.a, self.z, self.sigma, cache)
+        with self.assertRaises(ValueError):
+            self.model(self.a, self.z, self.sigma, context_cache=cache,
+                **dict(self.kw, query_time=self.kw["query_time"].clone()))
+        self.kw["world_valid"][0, 0] = False
+        with self.assertRaises(ValueError):
+            self.model.forward_cached(self.a, self.z, self.sigma, cache)
+        cache = self.model.prepare_context(**self.kw)
+        with torch.no_grad():
+            self.model.action_in.weight.add_(.1)
+        with self.assertRaises(ValueError):
+            self.model.forward_cached(self.a, self.z, self.sigma, cache)
+
+    def test_inference_tensor_cache_fails_closed(self):
+        with torch.inference_mode():
+            kw = {k: v.clone() for k, v in self.kw.items()}
+            with self.assertRaises(ValueError):
+                self.model.prepare_context(**kw)
+
+    def test_world_types_allow_history_but_reject_expired_future(self):
+        intervals = self.kw["world_intervals"] - 1
+        history = torch.zeros(2, 2, dtype=torch.long)
+        cache = self.model.prepare_context(**dict(self.kw, world_types=history, world_intervals=intervals))
+        self.assertTrue(cache.slow_allowed[..., 1].all())
+        # type=1 expired first interval cannot be read; type=2 historical action
+        # remains causally relevant to future targets from this source plan.
+        types = torch.tensor([[1, 2]] * 2)
+        cache = self.model.prepare_context(**dict(self.kw, world_types=types,
+            world_intervals=torch.tensor([[[8., 9.], [9.5, 9.7]]] * 2, dtype=torch.float64)))
+        self.assertFalse(cache.slow_allowed[..., 1].any())
+        self.assertTrue(cache.slow_allowed[..., 2].all())
+
+    def test_action_deviation_only_affects_valid_soft_actions(self):
+        types = torch.tensor([[2, 1]] * 2)
+        delta = torch.randn(2, 2, 14, requires_grad=True)
+        valid = torch.tensor([[1, 0]] * 2, dtype=torch.bool)
+        base = self.run_model(world_types=types, world_action_delta=delta, world_action_delta_valid=valid)
+        base["action_velocity"].square().sum().backward()
+        self.assertGreater(delta.grad[:, 0].abs().sum().item(), 0)
+        self.assertEqual(delta.grad[:, 1].abs().sum().item(), 0)
+        changed = delta.detach().clone()
+        changed[:, 1] = float("nan")
+        actual = self.run_model(world_types=types, world_action_delta=changed, world_action_delta_valid=valid)
+        torch.testing.assert_close(actual["action_velocity"], base["action_velocity"], rtol=0, atol=0)
+        self.assertGreater(self.model.blocks[0].slow_gate.bias.grad.abs().sum().item(), 0)
+
+    def test_production_requires_explicit_typed_context(self):
+        model = FastJointWAM(FastConfig(**dict(vars(self.cfg), test_fixture=False)))
+        with self.assertRaises(ValueError):
+            model(self.a, self.z, self.sigma, **self.kw)
+
 
 class CurrentEncoderTests(unittest.TestCase):
     def test_native_bfloat_language_cast_and_acceleration_mask(self):
         torch.manual_seed(13)
-        model = CurrentObservationEncoder(dim=24, text_dim=16)
+        model = CurrentObservationEncoder(dim=24, text_dim=16, test_fixture=True)
         rgb, motion, state = torch.rand(1, 3, 3, 32, 32), torch.randn(1, 4, 12), torch.randn(1, 14)
         text = torch.randn(1, 2, 16).bfloat16()
         args = dict(query_time=torch.tensor([5.0], dtype=torch.float64),
@@ -128,7 +204,7 @@ class CurrentEncoderTests(unittest.TestCase):
     def test_spatial_tokens_timestamps_masks_and_gradients(self):
         torch.manual_seed(3)
         torch.set_num_threads(1)
-        model = CurrentObservationEncoder(dim=24, text_dim=16)
+        model = CurrentObservationEncoder(dim=24, text_dim=16, test_fixture=True)
         rgb = torch.rand(1, 3, 3, 64, 64, requires_grad=True)
         motion = torch.randn(1, 4, 12, requires_grad=True)
         args = dict(
@@ -140,8 +216,8 @@ class CurrentEncoderTests(unittest.TestCase):
         )
         tokens, valid = model(rgb, motion, torch.randn(1, 14), torch.randn(1, 2, 16), **args)
         self.assertFalse(model.pretrained)
-        self.assertEqual(tokens.shape, (1, 19, 24))  # 3 views x 2x2 patches + 4 motion + state + 2 language
-        self.assertEqual(valid.sum().item(), 12)
+        self.assertEqual(tokens.shape, (1, 71, 24))  # 3 x 4x4 RGB + 4 motion + state + 2 text + 16 local flow
+        self.assertEqual(valid.sum().item(), 36)
         self.assertEqual(tokens[~valid].abs().sum().item(), 0)
         self.assertFalse(torch.allclose(tokens[:, 0], tokens[:, 1]))
         tokens[..., 0].sum().backward()

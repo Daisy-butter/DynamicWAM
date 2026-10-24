@@ -40,11 +40,24 @@ def fm_input(target: Tensor, sigma: Tensor, noise: Tensor) -> Tensor:
 
 class DualRateSystem(nn.Module):
     def __init__(self, slow, world_readout, observation, fast, *, future_latent_shape,
-                 loss_config=LossConfig(), motion_mean=None, motion_scale=None):
+                 loss_config=LossConfig(), motion_mean=None, motion_scale=None, codec_id=None,
+                 future_field_support=None,contact_field_support=None):
         super().__init__()
         self.slow, self.world_readout = slow, world_readout
         self.observation, self.fast = observation, fast
         self.loss_config = loss_config
+        self.test_fixture = bool(getattr(fast.config, "test_fixture", False))
+        self.codec_id = codec_id or ("test_fixture_codec_not_real_data" if self.test_fixture else "")
+        if not self.codec_id or (not self.test_fixture and self.codec_id.startswith("test_fixture")):
+            raise ValueError("production system requires the audited dataset codec identity")
+        fshape=(fast.config.future_tokens,fast.config.future_dim)
+        cshape=(fast.config.future_tokens,2)
+        self.register_buffer("future_field_support",torch.ones(fshape,dtype=torch.bool) if future_field_support is None
+                             else torch.as_tensor(future_field_support,dtype=torch.bool))
+        self.register_buffer("contact_field_support",torch.ones(cshape,dtype=torch.bool) if contact_field_support is None
+                             else torch.as_tensor(contact_field_support,dtype=torch.bool))
+        if self.future_field_support.shape!=fshape or self.contact_field_support.shape!=cshape:
+            raise ValueError("static trained field capabilities differ from Z/contact layout")
         self.future_latent_shape = tuple(int(x) for x in future_latent_shape)
         if len(self.future_latent_shape) != 4 or min(self.future_latent_shape) < 1:
             raise ValueError("future_latent_shape is explicit [C,T,H,W] from the native codec")
@@ -91,7 +104,67 @@ class DualRateSystem(nn.Module):
         return self.slow.sample_reference(source, video_noise, action_noise,
             batch["source_known_actions"], batch["source_known_mask"],
             batch["source_action_times"], batch["source_future_intervals"],
-            batch["source_time"], batch["completed_time"])
+            batch["source_time"], batch["completed_time"],
+            action_intervals=batch["source_action_intervals"],
+            source_metadata=self._spatial_metadata(batch, "source"),
+            future_metadata=self._spatial_metadata(batch, "future"))
+
+    def _spatial_metadata(self, batch, prefix):
+        return dict(codec_id=self.codec_id,
+            temporal_support=batch["source_temporal_support" if prefix == "source" else "source_future_intervals"],
+            view_overlap=batch[prefix+"_view_overlap"],valid=batch[prefix+"_token_valid"],
+            input_type=batch[prefix+"_input_type"])
+
+    def empty_world(self, batch):
+        """Explicit missing-reference condition, trained by reference dropout."""
+        state,time = batch["state"],batch["query_time"]
+        b=state.shape[0];n=self.fast.config.world_dim
+        return dict(world_tokens=state.new_zeros(b,1,n),
+            world_valid=torch.zeros(b,1,dtype=torch.bool,device=state.device),
+            world_intervals=time[:,None,None].expand(b,1,2).clone(),
+            world_types=torch.zeros(b,1,dtype=torch.long,device=state.device),
+            source_time=time.clone(),completed_time=time.clone(),
+            reference_actions=state.new_empty(b,0,self.fast.config.action_dim),
+            reference_action_intervals=time.new_empty(b,0,2))
+
+    def _action_deviation(self,batch,world):
+        """Compare only executed history and current immutable prefix, not GT suffix."""
+        tokens=world["world_tokens"]
+        b,n=tokens.shape[:2];a=self.fast.config.action_dim
+        delta=tokens.new_zeros(b,n,a)
+        valid=torch.zeros(b,n,dtype=torch.bool,device=tokens.device)
+        if world["reference_actions"].shape[1] == 0:
+            return delta,valid
+        needed={"executed_actions","executed_action_intervals","executed_action_valid","action_intervals"}
+        if not needed<=batch.keys():
+            if self.test_fixture:
+                return delta,valid
+            raise ValueError("physical executed trace and current action intervals required")
+        acts=batch["executed_actions"]
+        times=batch["executed_action_intervals"]
+        known=batch["executed_action_valid"]
+        if (times.dtype!=torch.float64 or times.shape!=(*acts.shape[:2],2) or
+                known.dtype!=torch.bool or known.shape!=acts.shape[:2] or
+                (known & (times[...,1]>batch["query_time"][:,None]+1e-8)).any()):
+            raise ValueError("execution trace contains unavailable future actions")
+        acts=torch.cat((acts,batch["fast_known_actions"]),dim=1)
+        times=torch.cat((times,batch["action_intervals"]),dim=1)
+        known=torch.cat((known,batch["fast_known_mask"]),dim=1)
+        for i in range(b):
+            slots=(world["world_types"][i]==2).nonzero().flatten()
+            ref=world["reference_actions"][i]
+            ri=world["reference_action_intervals"][i]
+            if slots.numel()!=ref.shape[0]:
+                raise ValueError("soft action tokens and reference plan differ")
+            for j,slot in enumerate(slots):
+                match=known[i] & ((times[i]-ri[j]).abs().amax(-1)<1e-7)
+                if match.any():
+                    values=acts[i,match]
+                    if not torch.allclose(values,values[:1].expand_as(values),atol=1e-5,rtol=0):
+                        raise ValueError("execution and commitment disagree at a physical interval")
+                    delta[i,slot]=values[0].to(ref.dtype)-ref[j]
+                    valid[i,slot]=True
+        return delta,valid
 
     def conditions(self, batch, world):
         self._validate_clocks(dict(source_time=world["source_time"],
@@ -104,10 +177,15 @@ class DualRateSystem(nn.Module):
             query_time=batch["query_time"], rgb_times=batch["rgb_times"],
             motion_times=batch["motion_times"], motion_valid=batch["motion_valid"],
             motion_acceleration_valid=batch["motion_acceleration_valid"],
-            text_valid=batch["text_valid"])
+            text_valid=batch["text_valid"],
+            **{key:batch[key] for key in ("rgb_valid","rgb_pixel_valid","state_time",
+                "spatial_flow","spatial_flow_valid","spatial_flow_times") if key in batch})
+        action_delta,action_delta_valid=self._action_deviation(batch,world)
         result = dict(observation_tokens=obs, observation_valid=valid,
             world_tokens=world["world_tokens"], world_valid=world["world_valid"],
             world_intervals=world["world_intervals"],
+            world_types=world["world_types"],world_action_delta=action_delta,
+            world_action_delta_valid=action_delta_valid,
             target_times=torch.cat((batch["action_times"], batch["future_times"]), dim=1),
             query_time=batch["query_time"], source_time=world["source_time"],
             completed_time=world["completed_time"])
@@ -167,10 +245,14 @@ class DualRateSystem(nn.Module):
             raise ValueError("future target shape differs from configured slots/fields")
         if future_mask.shape != future.shape or future_mask.dtype != torch.bool:
             raise ValueError("future_loss_valid must be a boolean field mask matching future")
+        if (future_mask & ~self.future_field_support[None]).any():
+            raise ValueError("label declares a field outside the training capability manifest")
         contact, contact_mask = batch["contact"], batch["contact_valid"]
         if (contact.shape != (*future.shape[:2], 2) or contact_mask.shape != contact.shape or
                 contact_mask.dtype != torch.bool):
             raise ValueError("contact labels need matching boolean [B,Z,2] masks")
+        if (contact_mask & ~self.contact_field_support[None]).any():
+            raise ValueError("contact label outside declared trained capabilities")
         if not torch.isfinite(future[future_mask]).all():
             raise ValueError("valid future labels must be finite")
         if not (((contact[contact_mask] == 0) | (contact[contact_mask] == 1)).all()):
@@ -206,7 +288,9 @@ class DualRateSystem(nn.Module):
         # Only the declared auxiliary conditional-world mode sees clean suffixes.
         known_mask = batch["fast_known_mask"] | action_conditioned[:, None]
         known_actions = torch.where(action_conditioned[:, None, None], action, batch["fast_known_actions"])
-        result = self.fast(fm_input(action, sigmas[2], nf), fm_input(future, sigmas[2], nz), sigmas[2],
+        # Missing future labels must not become artificial clean zero states.
+        noisy_future=torch.where(future_mask,fm_input(future,sigmas[2],nz),nz)
+        result = self.fast(fm_input(action, sigmas[2], nf), noisy_future, sigmas[2],
             action_known_mask=known_mask, known_actions=known_actions, **conditions)
         losses["fast_action"] = masked_mean((result["action_velocity"].float() - (nf - action).float()).square(), ~known_mask[..., None])
         ze = (result["future_velocity"].float() - (nz - future).float()).square()
@@ -218,6 +302,9 @@ class DualRateSystem(nn.Module):
         losses["contact"] = masked_mean(ce, batch["contact_valid"])
         total = sum(getattr(cfg, name) * value for name, value in losses.items())
         return {"loss": total, **losses}
+
+    def forward(self,batch,generator=None):
+        return self.training_loss(batch,generator=generator)
 
     @torch.no_grad()
     def sample_fast(self, batch, world, *, steps=10, generator=None):
@@ -237,10 +324,21 @@ class DualRateSystem(nn.Module):
         known, mask = batch["fast_known_actions"], batch["fast_known_mask"]
         a = _prefix(a, known, mask)
         conditions = self.conditions(batch, world)
+        context=self.fast.prepare_context(**conditions)
+        valid=conditions.get("future_valid",torch.ones(z.shape[:2],dtype=torch.bool,device=z.device))
+        fields=valid[...,None] & self.future_field_support[None]
+        # Training supplies pure, fixed noise for unsupported fields. Their
+        # unsupervised velocities must not feed back into the joint action path.
         for step in range(steps):
             sigma = a.new_full((b,), 1 - step / steps)
-            result = self.fast(a, z, sigma, known_actions=known, action_known_mask=mask, **conditions)
+            result = self.fast.forward_cached(a, z, sigma, context,
+                known_actions=known, action_known_mask=mask)
             a = _prefix(a - result["action_velocity"] / steps, known, mask)
-            z = z - result["future_velocity"] / steps
-        final = self.fast(a, z, a.new_zeros(b), known_actions=known, action_known_mask=mask, **conditions)
-        return dict(actions=a, future=z, contact_probability=final["contact_logits"].sigmoid())
+            z = torch.where(fields,z - result["future_velocity"] / steps,z)
+        final = self.fast.forward_cached(a, z, a.new_zeros(b), context,
+            known_actions=known, action_known_mask=mask)
+        contacts=valid[...,None] & self.contact_field_support[None]
+        return dict(actions=a, future=torch.where(fields,z,torch.zeros_like(z)),
+            contact_probability=torch.where(contacts,final["contact_logits"].sigmoid(),
+                                            torch.zeros_like(final["contact_logits"])),
+            future_valid=valid,future_field_valid=fields,contact_valid=contacts)

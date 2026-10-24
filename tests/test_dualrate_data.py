@@ -125,7 +125,20 @@ def test_instance_switch_cannot_interpolate_visual_geometry_or_contact():
     x = labels(r)
     assert not x.future_loss_valid[0].any()
     assert not x.contact_valid[0].any()
-    assert x.future_loss_valid[1].all()
+    # Geometry may interpolate across the identity-stable .15-.35 bracket;
+    # nearest real image is .05s away, beyond the declared 30ms tolerance.
+    assert not x.future_loss_valid[1,:128].any()
+    assert x.future_loss_valid[1,128:].all()
+
+
+def test_visual_target_is_actual_nearest_frame_not_feature_blend():
+    r=episode((0.,.09,.11,.2,.4,.8,1.))
+    r.frozen_visual_features[1].fill_(5)
+    r.frozen_visual_features[2].fill_(9)
+    x=labels(r)
+    assert x.future_loss_valid[0,:128].all()
+    assert torch.all(x.future[0,:128]==5) or torch.all(x.future[0,:128]==9)
+    assert not torch.any(x.future[0,:128]==7)
 
 
 def test_visibility_only_masks_visual_not_world_position():

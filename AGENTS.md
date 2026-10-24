@@ -1,3 +1,5 @@
+Current task: .92 DualRate Joint V2, branch feat/dualrate-joint-v2-20261024. Read harness.md v1.19 and docs/dualrate_joint_refinement_20261024.md. Only .92 writable; .50/.100 no changes. Real data preparation and externally guarded single-GPU engineering training smoke authorized; formal training disabled. Preserve original main and V1. All artifacts on verified SSD.
+
 # DualRate Joint V1 entry
 
 Read `harness.md` and `docs/dualrate_joint_v1.md` before changes. This isolated .92 worktree is the only writable remote codebase for this task. .50/.100 are read-only; preserve .92 home dirty source, AHA-WAM, running jobs and shared external assets. Large artifacts belong to verified .92 SSD wuruihan paths. Never reset/unbind/reload GPU/driver/PCI; never launch automatic retries or recurring watchers.

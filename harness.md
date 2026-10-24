@@ -1,6 +1,18 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.18 · 2026-10-23 · 目标投稿：CVPR 2027
+版本：v1.19 · 2026-10-24 · 目标投稿：CVPR 2027
+
+## 当前任务优先约束：.92 DualRate Joint V2（2026-10-24）
+
+用户授权本轮完善架构、准备完整真实数据并通过训练烟测。唯一可写远端是.92；.50/.100禁止文件、进程与GPU改动。V2独立目录 `/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v2-20261024`，分支 `feat/dualrate-joint-v2-20261024`，保留V1和home原项目/AHA-WAM。当前全量准备与GPU工程烟测授权覆盖下方V1“本轮仅CPU”历史表述；不授权正式训练。
+
+完整官方DynamicWAM Video/Action/motion作慢路，source-only可微2+8采样与监督前向分开；导出带真实空间/时间/视角支持的source tokens、第二联合步hidden+clean video latent、最终A10软参考。保留生成阶段差异，不能声称视频已条件于A10。快路384/6/6联合生成A16与Z16，当前/慢路分别attention后门控融合；动作偏差仅来自实际执行与硬承诺，未知未来字段在采样全程保持噪声。原生time MLP保持FP32，其余按原生混合精度。
+
+数据采用新固定物理网格Δ=.18秒，旧原生缓存绝大多数不满足该网格，重新配对原图并冻结VAE编码。慢路周期4步、快路2步、保护2步是配置目标；完成时间和实测延迟不得伪造。训练离线completion=.18是显式合成假设，不是实测运行频率。当前输入保持head240x320、wrist120x160后padding/mask。动作是drive-target而非实测qpos；专家轨迹插值不是部署on-policy轨迹。
+
+10500episode按task+scene绑定clean/randomized划分；完整episode语言绑定真实描述，禁止task首episode embedding复用。训练统计仅来自train；原生action/motion normalization沿用检查点身份并说明其历史来源。未提供的support pose、遮挡不可生成假标签；视觉目标是投影区域局部图像上下文，不保证对象可见。
+
+GPU只允许独立supervisor临时all8设备FD先于NVML；compute固定空闲UUID；每次绑定冻结commit/source/config/data，保留失败、禁止自动重试/驱动恢复/额外长期巡检。文本预处理与全模型单GPU训练smoke是独立工程验收。CPU、单卡smoke不等于八卡、连续DOMINO、1x性能或SOTA验收；formal_training_ready保持false。大文件全部SSD wuruihan目录。
 
 ## 当前任务优先约束：.92 DualRate Joint V1（2026-10-23）
 

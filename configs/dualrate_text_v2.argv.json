@@ -1,0 +1,10 @@
+[
+  "--prompts",
+  "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v2_20261024/full_01/prompts.json",
+  "--output",
+  "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v2_20261024/full_01/text",
+  "--limit",
+  "0",
+  "--batch-size",
+  "2"
+]

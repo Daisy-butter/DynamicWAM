@@ -23,6 +23,22 @@ def checkpoint_identity(payload):
     }
 
 
+def restore_native_time_precision(native):
+    """Keep native FP32 time arithmetic compatible with the BF16 video loader.
+
+    WanVideoModel prepares sinusoidal features in FP32 with autocast disabled;
+    its two time MLPs therefore need FP32 weights too. The native inference
+    loader casts all VideoDiT weights to BF16, so restore only these MLPs after
+    strict loading. No state-dict key or loaded numerical value is changed.
+    """
+    video = native.compact_wan.video_model.wan_model
+    for name in ("time_embedding", "time_projection"):
+        module = getattr(video, name)
+        if not isinstance(module, torch.nn.Module):
+            raise TypeError(f"native {name} must be a module")
+        module.float()
+
+
 def build_system(config, device="cpu"):
     from dynamicwam.inference.model_loader import _build_model, _load_checkpoint_payload, load_deploy_config
     path = Path(config["init_checkpoint"]).resolve(strict=True)
@@ -36,6 +52,7 @@ def build_system(config, device="cpu"):
             raise ValueError(f"{key} differs from the actual native checkpoint")
     runtime = load_deploy_config(config["native_profile"])
     native = _build_model(runtime, payload, device=device)  # exact strict state load
+    restore_native_time_precision(native)
     native.config = replace(native.config, wan_frozen=False)
     native.requires_grad_(True)
     # Wan's VAE wrapper is not necessarily an nn.Module, and is never optimized.
@@ -54,12 +71,17 @@ def build_system(config, device="cpu"):
         shift=fm["shift"], sigma_min=fm["sigma_min"], extra_one_step=fm["extra_one_step"])
     model = DualRateSystem(slow,
         StructuredWorldReadout(latent_channels=48, action_dim=arch.action_dim, world_dim=arch.world_dim,
-            grid_size=config.get("readout_grid", 4), action_time_tolerance=config.get("action_time_tolerance", 0.02)),
-        CurrentObservationEncoder(dim=arch.observation_dim, state_dim=native.config.state_dim),
+            native_hidden_dim=2048),
+        CurrentObservationEncoder(dim=arch.observation_dim, state_dim=native.config.state_dim,
+            vision_weights_path=config["vision_weights"],vision_weights_sha256=config["vision_weights_sha256"],
+            flow_mean=[native.config.motion_feature_mean[i] for i in (0,1,5,6)],
+            flow_scale=[native.config.motion_feature_scale[i] for i in (0,1,5,6)]),
         FastJointWAM(arch), future_latent_shape=latent_shape,
         loss_config=LossConfig(**config.get("loss", {})),
-        motion_mean=native.config.motion_feature_mean, motion_scale=native.config.motion_feature_scale)
-    # Preserve native BF16 VideoDiT + FP32 Action/motion and new modules. No global
+        motion_mean=native.config.motion_feature_mean, motion_scale=native.config.motion_feature_scale,
+        codec_id=config["codec_id"],future_field_support=config["future_field_support"],
+        contact_field_support=config["contact_field_support"])
+    # Preserve BF16 VideoDiT (FP32 time MLPs) + FP32 Action/motion/new modules. No global
     # model.bfloat16(): time arithmetic and normalization stay explicitly FP32/64.
     model = model.to(device)
     model.initialization_identity = {"native_checkpoint_sha256": actual, **identities}
