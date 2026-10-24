@@ -12,6 +12,7 @@ from typing import Callable
 from contextlib import nullcontext
 import time
 import torch
+from .gpu_priority import FastPriorityGate, SlowOperatorSlices
 from .timing import (CompletedReferenceStore, ExecutionQueue, TimedPlan,
                      TimingError, DeadlineMiss, StalePlan, prefix_digest)
 
@@ -68,6 +69,7 @@ class DualRateRuntime:
         self.device = device
         self.fast_stream = torch.cuda.Stream(device=device,priority=-1) if device.type=='cuda' else None
         self.slow_stream = torch.cuda.Stream(device=device) if device.type=='cuda' else None
+        self.gpu_gate = FastPriorityGate() if device.type=='cuda' else None
         self.fast_rng = torch.Generator(device=device).manual_seed(seed)
         self.slow_rng = torch.Generator(device=device).manual_seed(seed+1)
         self.fast_job = self.slow_job = None
@@ -114,7 +116,8 @@ class DualRateRuntime:
         def work():
             started=time.perf_counter()
             context=torch.cuda.stream(self.slow_stream) if self.slow_stream is not None else nullcontext()
-            with context, torch.no_grad():
+            slices=SlowOperatorSlices(self.gpu_gate,self.slow_stream) if self.gpu_gate else nullcontext()
+            with context, torch.no_grad(), slices:
                 local=detached_batch(batch() if callable(batch) else batch)
                 if float(local['source_time'].item())!=source:
                     raise TimingError('source preprocessing changed the captured source time')
@@ -147,8 +150,10 @@ class DualRateRuntime:
             remaining_prefix_budget_seconds=lease.protected_until-lease.submit_margin-query))
         def work():
             started=time.perf_counter()
-            context=torch.cuda.stream(self.fast_stream) if self.fast_stream is not None else nullcontext()
-            with context, torch.no_grad():
+            permit=self.gpu_gate.fast(self.fast_stream.synchronize) if self.gpu_gate else nullcontext()
+            # Own the reservation before stream entry: even a failed CUDA
+            # context must release pending fast work and wake the slow worker.
+            with permit, (torch.cuda.stream(self.fast_stream) if self.fast_stream is not None else nullcontext()), torch.no_grad():
                 batch=detached_batch(batch_factory(lease,reference))
                 if float(batch["query_time"].item()) != query:
                     raise TimingError("batch query differs from queue lease")
@@ -178,7 +183,16 @@ class DualRateRuntime:
                 start=float(batch["action_times"][0,0])
                 return TimedPlan(start,self.config.action_dt,tuple(map(tuple,raw.tolist())),
                                  lease.base_queue_version+1,query,lease),output,time.perf_counter()-started
-        self.fast_job=(self.pool.submit(work),lease)
+        # Reserve before enqueue so no new slow operator can overtake this lease.
+        if self.gpu_gate:
+            self.gpu_gate.reserve_fast()
+        try:
+            self.fast_job=(self.pool.submit(work),lease)
+        except BaseException:
+            if self.gpu_gate:
+                self.gpu_gate.cancel_fast()
+            self.queue.cancel_query(lease)
+            raise
 
     def poll(self):
         """Caller invokes alongside continuous physics; never waits on unfinished work."""
