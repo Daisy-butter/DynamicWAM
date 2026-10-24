@@ -2300,7 +2300,7 @@
     "slow_period_steps": 4,
     "protect_steps": 2,
     "submit_margin": 0.01,
-    "max_reference_age": 1.44,
+    "reference_max_age": 1.44,
     "sample_steps": 10
   }
 }

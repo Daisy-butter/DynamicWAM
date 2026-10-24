@@ -101,3 +101,10 @@ def test_actual_runtime_wires_model_output_into_leased_queue():
         assert queue.action_at(.2)==(102.,)
         assert events[-1]["event"]=="fast_committed"
     finally: runtime.close()
+def test_candidate_runtime_configuration_is_executable():
+    import json
+    from pathlib import Path
+    from dynamicwam.dualrate.runtime import RuntimeConfig
+    config=json.loads((Path(__file__).parents[1]/'configs/dualrate_joint_v2_smoke.json').read_text())
+    runtime=RuntimeConfig(**config['runtime'])
+    assert runtime.action_dt==.18 and runtime.reference_max_age==1.44

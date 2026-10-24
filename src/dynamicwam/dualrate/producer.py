@@ -26,6 +26,16 @@ from .data import (EpisodeRecords, produce_future_labels, normalize_future,
 
 SCHEMA = "dualrate-domino-lazy-v2"
 CODEC_ID = "wan22_first_plus_four_causal_native_v2"
+CODEC_TEMPORAL_CONTRACT = {
+    "future_interval_semantics": "nominal_requested_forecast_target_bins_not_causal_dependency",
+    "future_input_frames": "source_RGB_index_0_then_eight_requested_future_RGB_frames_1_through_8",
+    "retained_future_vae_slices": [1, 2],
+    "retained_future_causal_input_indices": [list(range(5)), list(range(9))],
+    "causal_dependency_note": "second_retained_slice_can_depend_on_source_and_all_eight_future_inputs_via_encoder_cache",
+    "hidden_dependency_note": "native_DiT_joint_global_attention_mixes_video_and_action_tokens_not_local_causal_features",
+    "readout_mask_note": "target_bins_limit_direct_reads_not_all_indirect_information_paths",
+    "source_view_fraction_semantics": "new_input_image_area_fractions_not_exact_neural_receptive_field",
+}
 CAMERAS = ("head_camera", "left_camera", "right_camera")
 DT = .18
 RGB_TOLERANCE = .030001
@@ -587,6 +597,7 @@ def build_manifests(config, output, *, max_episodes=None):
                   'visual_target_semantics':'projected_local_context_not_visible_object','occlusion_status':'unknown_no_segmentation_or_depth','support_pose_status':'unavailable_masked',
                   'future_field_support':field_support.reshape(16,134).tolist(),'contact_field_support':contact_support.reshape(16,2).tolist(),
                   'source_stride_seconds':.36,'query_ages_seconds':list(QUERY_AGES),'action_interval_seconds':DT,'codec_id':CODEC_ID,
+                  'codec_temporal_contract':CODEC_TEMPORAL_CONTRACT,
                   'rgb_size':config.get('rgb_size',[240,320]),'rgb_view_sizes':config.get('rgb_view_sizes',[[240,320],[120,160],[120,160]]),
                   'flow_contract':native['absolute_motion']['flow_contract'],'motion_representation':'raw_absolute_motion_v2','action_representation':'checkpoint_mean_std',
                   'action_resampling':'bounded_linear_arm_drive_targets_previous_event_gripper_last_duplicate',

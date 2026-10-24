@@ -375,6 +375,10 @@ def supervise(args, repo: Path, out: Path) -> int:
         if guard is not None:
             if devices is not None and len(guard.handles) == len(devices) and proc is not None:
                 try:
+                    # GPU utilization covers a prior sampling window. After
+                    # confirmed worker/session exit, allow that window to expire
+                    # before the single release query. This is not a retry loop.
+                    time.sleep(2.)
                     post = telemetry(devices, out, "postflight")
                     require_idle(post, args.gpu)
                 except BaseException as exc:
