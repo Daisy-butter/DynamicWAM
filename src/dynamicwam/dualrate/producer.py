@@ -308,10 +308,10 @@ def available_condition_frame(times, event_time, *, delay=CAMERA_AVAILABILITY_SE
                               tolerance=CONDITION_FRAME_TOLERANCE_SECONDS):
     """Real frame exposed one camera delay before the event.
 
-    The delay is physical. The tolerance only absorbs timestamp noise and is
-    smaller than one raw frame, so an exact two-frame shift cannot land on the
-    previous sample. Before that delay has elapsed, the earliest real frame is
-    kept with its own timestamp.
+    Require exposure + delay <= event (apart from numerical roundoff).
+    The match tolerance bounds how much older the selected real frame may be;
+    it never permits an unavailable newer frame. Before that delay has elapsed,
+    the explicit pre-activation bootstrap keeps the earliest real frame.
     """
     event, delay = float(event_time), float(delay)
     _require(math.isfinite(event) and math.isfinite(delay) and delay >= 0 and tolerance > 0,
@@ -319,15 +319,17 @@ def available_condition_frame(times, event_time, *, delay=CAMERA_AVAILABILITY_SE
     values = np.asarray(times, dtype=np.float64)
     indices = unique_last_indices(values)
     _require(len(indices) > 0, "no camera timestamps")
-    anchor = int(indices[-1])
     earliest = int(indices[0])
     target = event - delay
     if target < float(values[earliest]) - NUMERIC_TIME_EPSILON:
         _require(float(values[earliest]) <= event + NUMERIC_TIME_EPSILON, "no real frame before the event")
         return earliest
-    found = _nearest_index(values, target, anchor=anchor, tolerance=tolerance)
-    _require(found is not None, "no real frame within requested tolerance")
-    return int(found)
+    candidates = indices[values[indices] <= target + NUMERIC_TIME_EPSILON]
+    _require(len(candidates) > 0, "no camera frame available before the event")
+    found = int(candidates[-1])
+    _require(target - float(values[found]) <= tolerance + NUMERIC_TIME_EPSILON,
+             "no real frame within requested tolerance")
+    return found
 
 
 def flow_history_selection(times, frame, *, tolerance=FLOW_ENDPOINT_TOLERANCE_SECONDS):
@@ -653,7 +655,7 @@ def _cache_pair_matches(flow_cache, end_index, start_time, end_time):
             and abs(end - float(end_time)) <= NUMERIC_TIME_EPSILON)
 
 
-def _flow_features(handle, times, frame, flow_cache, flow_contract):
+def _flow_features(handle, times, frame, flow_cache, flow_contract, *, return_flow_rgb=False):
     """Time-matched raw numeric history plus freshly computed spatial flow, CPU only."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
@@ -677,10 +679,15 @@ def _flow_features(handle, times, frame, flow_cache, flow_contract):
         acceleration = acceleration & valid & torch.tensor(agree[:-1], dtype=torch.bool)
         numeric = torch.where(valid[:, None], numeric, torch.zeros_like(numeric))
         intervals = np.stack([values[indices[1:-1]], values[selected]], -1)
+        if return_flow_rgb:
+            flow_images = [flow_cache['flow_rgb'][i].copy() if ok else
+                           np.zeros_like(flow_cache['flow_rgb'][i])
+                           for i, ok in zip(selected, returned)]
     else:
         # A time-matched pair is not the cached index-stride row. Recompute that
         # physical window instead of training on the other history.
         displacement, starts, ends, flags = [], [], [], []
+        flow_images = []
         for start_slot, end_slot in slots:
             start_i, end_i = int(indices[start_slot]), int(indices[end_slot])
             starts.append(float(values[start_i]))
@@ -688,20 +695,23 @@ def _flow_features(handle, times, frame, flow_cache, flow_contract):
             if start_i == end_i or values[end_i] <= values[start_i] or not matched[start_slot] or not matched[end_slot]:
                 displacement.append(np.zeros(4, np.float32))
                 flags.append(False)
+                flow_images.append(np.zeros((*flow_contract['compute_size'], 3), np.uint8))
                 continue
-            _, stats, _, quality = compute_flow_observation(
+            rgb, stats, _, quality = compute_flow_observation(
                 _rgb(handle, start_i, CAMERAS[0]), _rgb(handle, end_i, CAMERAS[0]),
                 compute_size=tuple(flow_contract['compute_size']),
                 normalization_percentile=float(flow_contract['normalization_percentile']),
                 farneback=flow_contract['farneback'], quality=flow_contract['quality'])
             displacement.append(np.asarray(stats, dtype=np.float32))
             flags.append(bool(quality))
+            flow_images.append(rgb)
         features, mask, accel = build_motion_features(
             np.stack(displacement), np.asarray(starts, np.float64), np.asarray(ends, np.float64), np.asarray(flags, bool))
         numeric = torch.from_numpy(features[1:].copy())
         valid = torch.from_numpy(mask[1:].copy())
         acceleration = torch.from_numpy(accel[1:].copy())
         intervals = np.stack([starts[1:], ends[1:]], -1)
+        flow_images = flow_images[1:]
     _require(np.isfinite(intervals[valid.numpy()]).all() and (intervals[valid.numpy(), 1] <= values[int(frame)] + NUMERIC_TIME_EPSILON).all(),
              "future/nonfinite valid flow in observation")
     # Invalid historical intervals do not acquire invented support from a cache
@@ -724,7 +734,8 @@ def _flow_features(handle, times, frame, flow_cache, flow_contract):
                     fraction=float(mask.mean())
                     if mask.any() and fraction>=.1:
                         d=part[mask].mean(0);spatial[k]=torch.tensor([d[0],d[1],d[0]/(pair[1]-pair[0]),d[1]/(pair[1]-pair[0]),fraction]);spatial_valid[k]=True
-    return numeric,valid,acceleration,torch.from_numpy(intervals),spatial,spatial_valid,torch.from_numpy(pair)
+    result = (numeric,valid,acceleration,torch.from_numpy(intervals),spatial,spatial_valid,torch.from_numpy(pair))
+    return result + (np.stack(flow_images),) if return_flow_rgb else result
 
 
 class DominoPhysicalDataset(Dataset):
@@ -805,11 +816,11 @@ class DominoPhysicalDataset(Dataset):
             try:visual_frames.append(select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE))
             except ValueError:visual_frames.append(-1)
         with h5py.File(ep['raw_path'],'r') as h:
-            sm,smv,sma,smi,_,_,_=_flow_features(h,t,source_frame,flow,self.manifest['flow_contract'])
+            sm,smv,sma,smi,_,_,_,source_flow_rgb=_flow_features(
+                h,t,source_frame,flow,self.manifest['flow_contract'],return_flow_rgb=True)
             motion,mv,ma,mi,spatial,spatial_valid,spatial_times=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'])
             rgb,pixelvalid=zip(*[_letterbox(_rgb(h,query_frame,c),tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v])) for v,c in enumerate(CAMERAS)])
-            endpoints=[max(0,source_frame-k) for k in (36,24,12,0)]
-            condition=np.stack([cv2.resize(flow['flow_rgb'][i],(320,384)) for i in endpoints]+[_composite(h,source_frame,(384,320))])
+            condition=np.stack([cv2.resize(image,(320,384)) for image in source_flow_rgb]+[_composite(h,source_frame,(384,320))])
             future=np.stack([_composite(h,source_frame,(192,160))]+[_composite(h,i,(192,160)) for i in video_frames])
             needed=sorted(set(i for i in visual_frames if i>=0 and i not in visual_cache))
             if needed:
