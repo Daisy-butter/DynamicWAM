@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from dynamicwam.dualrate.deployment import capture_timing,dispatch_due_queries,warm_camera
+from dynamicwam.dualrate.deployment import (
+    bind_gil_releasing_physx_step,capture_timing,dispatch_due_queries,warm_camera)
 from dynamicwam.dualrate.producer import CONDITION_RGB_MAX_AGE_SECONDS
 from dynamicwam.dualrate.online import ObservationHistory
 from dynamicwam.dualrate.timing import ExecutionQueue,TimedPlan,DeadlineMiss,BufferUnderrun
@@ -129,6 +130,36 @@ def test_native_batch_called_once_in_original_four_camera_order():
     assert all(result[name]['rgb'].flags.owndata for name,_ in cameras)
     with pytest.raises(ValueError):
         _read_submitted_rgb_batch(cameras,lambda handles:([np.zeros((2,3,4),np.uint8)]*4,[.01]*4),lambda:0.)
+
+
+def test_gil_release_stays_inside_the_scene_step_clock():
+    calls=[]
+    class Clock:
+        def __init__(self):
+            self._original_step=lambda: calls.append("original")
+            self.step_index=0
+            self.time_seconds=0.
+        def snapshot(self):
+            return SimpleNamespace(time_seconds=self.time_seconds)
+    class Scene:
+        physx_system="physx"
+        def __init__(self, clock):
+            self.clock=clock
+        def step(self):
+            self.clock._original_step()
+            self.clock.step_index+=1
+            self.clock.time_seconds+=.004
+    clock=Clock();scene=Scene(clock)
+    env=SimpleNamespace(_scene_step_clock=clock,scene=scene)
+    def step_physx(system):
+        assert system=="physx"
+        calls.append("physx")
+    bind_gil_releasing_physx_step(env, step_physx)
+    scene.step()
+    assert calls==["physx"]
+    assert clock.step_index==1 and clock.time_seconds==.004
+    with pytest.raises(RuntimeError, match="SceneStepClock is not installed"):
+        bind_gil_releasing_physx_step(SimpleNamespace(scene=scene), step_physx)
 
 
 def test_owner_simulator_calls_release_the_gil():

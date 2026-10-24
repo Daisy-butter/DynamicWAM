@@ -14,8 +14,12 @@ only finishes quickly because the owner sleeps and releases the GIL.
 
 This change keeps the DualRate model, periods, age ceiling, and backlog gate.
 The native bridge releases the GIL around each camera `takePicture` and around
-the installed `PhysxSystemCpu::step` symbol. The owner polls again after a
-blocking capture and before `action_at`, so a plan that finishes during render
-can be committed on that tick. A deadline miss still cancels the lease only
+the installed `PhysxSystemCpu::step` symbol. That PhysX call replaces the
+function saved by `SceneStepClock.install`; the deployment loop still calls
+`scene.step()`, so the clock advances by one timestep after every successful
+step. Calling PhysX directly leaves the counter at zero and trips the 0.25 s
+backlog gate immediately. The owner polls again after a blocking capture and
+before `action_at`, so a plan that finishes during render can be committed on
+that tick. A deadline miss still cancels the lease only
 through the existing timing rules; this note does not add a second in-flight
 fast job.

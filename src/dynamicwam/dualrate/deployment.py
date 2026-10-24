@@ -11,6 +11,24 @@ from .actuators import ActuatorProjection
 PROTOCOL='dualrate_v3_continuous_fast_only_dt018_v1'
 
 
+def bind_gil_releasing_physx_step(env, step_physx) -> None:
+    """Release the GIL under the installed scene-step clock, not around it.
+
+    SceneStepClock counts time only after its saved ``scene.step`` returns.
+    A direct PhysX call leaves that counter at zero, so wall time runs ahead
+    and the backlog gate fires before the first capture.
+    """
+    clock = getattr(env, "_scene_step_clock", None)
+    if clock is None or getattr(clock, "_original_step", None) is None:
+        raise RuntimeError("SceneStepClock is not installed")
+    physx = env.scene.physx_system
+
+    def releasing_step():
+        step_physx(physx)
+
+    clock._original_step = releasing_step
+
+
 def capture_timing(captured, *, owner_processed_wall):
     """Partition real wall latency; do not relabel exposure or availability."""
     points=[float(captured.capture_wall_perf_s),float(captured.render_submitted_wall_perf_s),
@@ -139,7 +157,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         wall0=time.perf_counter();max_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture=initial+frame_period
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
-        physx_system=session.env.scene.physx_system
+        bind_gil_releasing_physx_step(session.env, _sapien_color_reader.step_cpu_physx)
         accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={}
         while terminal is None:
             now=clock();elapsed=time.perf_counter()-wall0;lag=elapsed-(now-initial)
@@ -196,7 +214,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             robot.set_arm_joints(position[7:13],velocity[7:13],'right')
             robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
             session.env._update_kinematic_tasks()
-            _sapien_color_reader.step_cpu_physx(physx_system)
+            session.env.scene.step()
             session.env._update_transient_checks();session._consume_events()
             terminal=session.stop_reason()
             row_complete=clock()>=initial+(row+1)*queue.dt-1e-9
