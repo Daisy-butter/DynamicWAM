@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from dynamicwam.dualrate.deployment import capture_timing,dispatch_due_queries,warm_camera
+from dynamicwam.dualrate.producer import CONDITION_RGB_MAX_AGE_SECONDS
 from dynamicwam.dualrate.online import ObservationHistory
 from dynamicwam.dualrate.timing import ExecutionQueue,TimedPlan,DeadlineMiss,BufferUnderrun
 from dynamicwam.runtime.domino_rt.camera_capture import _read_submitted_rgb_batch
@@ -61,6 +62,34 @@ def test_stale_frames_defer_without_lease_and_fresh_arrival_keeps_actual_grid():
     # Deferral does not buy a new ceiling-grid action or excuse a late return.
     plan=TimedPlan(.36,.18,tuple((100.+i,) for i in range(16)),1,.4,lease)
     with pytest.raises(DeadlineMiss):queue.replace(plan,now=.711)
+
+
+def test_measured_readback_age_is_current_and_keeps_its_exposure():
+    measured=(0.0800000038,0.06400000304,0.11200000532,0.11600000551,0.05600000266,
+              0.18000000855,0.11600000551,0.11200000532,0.10000000475,0.09600000456,
+              0.11600000551,0.1200000057,0.06800000323,0.14000000665,0.11200000532,
+              0.09600000456,0.11600000551,0.06000000285,0.228000010829,0.05200000247,
+              0.10000000475,0.09200000437)
+    assert sum(age<=.060001 for age in measured)==3
+    assert all(age<=CONDITION_RGB_MAX_AGE_SECONDS for age in measured)
+    queue=ExecutionQueue(TimedPlan(0.,.18,tuple((float(i),) for i in range(16)),0,0.))
+    queue.action_at(.36)
+    runtime=FakeRuntime(queue);history=ObservationHistory()
+    history.append(observation(),exposure=0.,available=.05)
+    conditions=[]
+    builder=SimpleNamespace(max_observation_age=CONDITION_RGB_MAX_AGE_SECONDS,
+        current=lambda frames,**kw:conditions.append(frames[-1].exposure),
+        source=lambda frames,**kw:None)
+    events=[];deferred={};seen=set()
+    dispatch_due_queries(runtime,builder,history,queue,now=.36,initial=0.,vae=None,
+        emit=events.append,deferred=deferred,seen_references=seen)
+    assert set(deferred)=={'fast','slow'} and not conditions
+    history.append(observation(),exposure=.248,available=.36)
+    runtime.fast.clear();deferred.clear()
+    dispatch_due_queries(runtime,builder,history,queue,now=.36,initial=0.,vae=None,
+        emit=events.append,deferred=deferred,seen_references=seen)
+    assert runtime.fast[0].observation_time==pytest.approx(.248)
+    assert conditions==[.248] and not deferred
 
 
 def test_deferred_queries_do_not_prevent_queue_underflow():

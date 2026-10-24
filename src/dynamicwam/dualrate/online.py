@@ -1,8 +1,9 @@
 """Causal online observations using the same pixels/flow/units as the dataset.
 
 No target actor pose, contacts, segmentation or future frames are read here.
-History stride is twelve *captured* frames, as in the native cache; every pair
-retains its actual exposure timestamps. Missing captures are never fabricated.
+History endpoints sit on the raw-frame durations used by the native cache
+(12 frames = 0.72 s). Each endpoint keeps the exposure of the matched capture.
+Missing captures are never fabricated.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -14,7 +15,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .producer import CAMERAS, DT, _letterbox, view_overlap
+from .producer import (CAMERAS, CAMERA_AVAILABILITY_SECONDS, CONDITION_RGB_MAX_AGE_SECONDS,
+    DT, FLOW_ENDPOINT_TOLERANCE_SECONDS, FLOW_HISTORY_OFFSETS_FRAMES, NUMERIC_TIME_EPSILON,
+    RAW_FRAME_SECONDS,
+    _letterbox, view_overlap)
 from .timing import TimingError
 
 
@@ -68,19 +72,53 @@ def composite(images, shape):
     return cv2.resize(np.concatenate((head,bottom),axis=0),(shape[1],shape[0]))
 
 
+def history_endpoints(frames):
+    """Match raw-frame offsets to captures already available at the anchor.
+
+    Offset 0 is the anchor itself and is always matched. Every earlier offset
+    is the capture nearest its 0.72 s target, within one raw frame. A miss
+    keeps a placeholder so shapes stay fixed, and its mask entry is false.
+    The placeholder must not be treated as that endpoint.
+    """
+    frames = tuple(frames)
+    if not frames:
+        raise ValueError('empty captured history')
+    anchor = frames[-1]
+    selected, matched = [], []
+    for offset in FLOW_HISTORY_OFFSETS_FRAMES:
+        if offset == 0:
+            selected.append(anchor)
+            matched.append(True)
+            continue
+        target = anchor.exposure - offset * RAW_FRAME_SECONDS
+        chosen = None
+        best_error = None
+        for frame in frames:
+            if frame.exposure > anchor.exposure + NUMERIC_TIME_EPSILON:
+                break
+            error = abs(float(frame.exposure) - target)
+            if error > FLOW_ENDPOINT_TOLERANCE_SECONDS + NUMERIC_TIME_EPSILON:
+                continue
+            if chosen is None or error < best_error - NUMERIC_TIME_EPSILON or (
+                    abs(error - best_error) <= NUMERIC_TIME_EPSILON and frame.exposure >= chosen.exposure):
+                chosen, best_error = frame, error
+        selected.append(anchor if chosen is None else chosen)
+        matched.append(chosen is not None)
+    return tuple(selected), tuple(matched)
+
+
 def history_features(frames, contract):
-    """Reproduce raw_stride=12 flow cache, including preceding acceleration pair."""
+    """Reproduce the 0.72 s flow windows, including the preceding acceleration pair."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
     frames = tuple(frames)
     if not frames:
         raise ValueError('empty captured history')
-    end = len(frames)-1
-    indices = [max(0,end-offset) for offset in (60,48,36,24,12,0)]
-    selected = [frames[i] for i in indices]
+    selected, matched = history_endpoints(frames)
+    selected = list(selected)
     flows, displacement, starts, ends, valid = [], [], [], [], []
-    for a,b in zip(selected,selected[1:]):
-        ok = a.frame_id != b.frame_id and b.exposure > a.exposure
+    for index, (a, b) in enumerate(zip(selected, selected[1:])):
+        ok = matched[index] and matched[index + 1] and a.frame_id != b.frame_id and b.exposure > a.exposure
         if ok:
             rgb, stats, _, quality = compute_flow_observation(a.images[0],b.images[0],
                 compute_size=tuple(contract['compute_size']),
@@ -125,7 +163,12 @@ class OnlineBatchBuilder:
         if language['context'].shape!=(512,4096) or language['mask'].shape!=(512,) or not language['mask'].any():
             raise ValueError('exact episode-bound T5 context required')
         self.language=language
-        self.max_observation_age=float(manifest.get('condition_rgb_max_age_seconds',.060001))
+        self.camera_availability_seconds=float(manifest.get('camera_availability_seconds',CAMERA_AVAILABILITY_SECONDS))
+        self.max_observation_age=float(manifest.get('condition_rgb_max_age_seconds',CONDITION_RGB_MAX_AGE_SECONDS))
+        if (not math.isfinite(self.camera_availability_seconds) or self.camera_availability_seconds < 0 or
+                not math.isfinite(self.max_observation_age) or
+                self.max_observation_age + 1e-9 < self.camera_availability_seconds):
+            raise ValueError('camera availability must fit inside the condition age gate')
         self.entity_roles=tuple(manifest.get('active_entity_roles',('object','support','left_gripper','right_gripper')))
         if not self.entity_roles or len(set(self.entity_roles))!=len(self.entity_roles):
             raise ValueError('distinct ordered entity roles required')

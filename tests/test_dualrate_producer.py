@@ -3,9 +3,11 @@ import pytest
 import torch
 
 from dynamicwam.dualrate.producer import (
-    unique_last_indices,select_frame,resample_actions,view_overlap,materialize_native_latents,
+    unique_last_indices,select_frame,available_condition_frame,resample_actions,view_overlap,materialize_native_latents,
+    flow_history_selection,_cache_pair_matches,
     _letterbox,
     file_stat_identity,verify_file_stat,
+    CAMERA_AVAILABILITY_SECONDS, FLOW_ENDPOINT_TOLERANCE_SECONDS,
 )
 
 
@@ -15,6 +17,46 @@ def test_duplicates_last_and_past_only():
     assert select_frame(times,.10,past_only=True,tolerance=.060001)==2
     assert select_frame(times,.10,past_only=False,tolerance=.030001)==3
     with pytest.raises(ValueError):select_frame(times,.10,past_only=True,tolerance=.03)
+
+
+def test_condition_frame_is_the_image_available_after_measured_readback():
+    times=np.arange(40)*.06
+    event=2.28+CAMERA_AVAILABILITY_SECONDS
+    frame=available_condition_frame(times,event)
+    assert times[frame]==pytest.approx(2.28)
+    assert event-times[frame]==pytest.approx(CAMERA_AVAILABILITY_SECONDS)
+    assert available_condition_frame(times,0.)==0
+    assert available_condition_frame(np.array([0.,.24]),.36)==1
+    with pytest.raises(ValueError):
+        available_condition_frame(np.array([0.,.36]),.36)
+
+
+def test_two_frame_delay_does_not_select_three_frames():
+    grid=(np.arange(8,dtype=np.float32)*np.float32(.06)).astype(np.float64)
+    event=float(np.float32(.06)*np.float32(6))
+    frame=available_condition_frame(grid,event)
+    assert grid[frame]==pytest.approx(float(np.float32(.24)))
+    assert abs((event-CAMERA_AVAILABILITY_SECONDS)-grid[frame])<.03
+    with pytest.raises(ValueError):
+        available_condition_frame(np.array([0.,.18,.36]),event)
+
+
+def test_flow_cache_accepts_only_the_physical_time_pair():
+    times=np.arange(61)*.06
+    indices,matched=flow_history_selection(times,60)
+    assert matched==[True]*6
+    assert indices==[60-k for k in (60,48,36,24,12,0)]
+    cache=dict(interval_start_time_seconds=np.array([times[max(0,i-12)] for i in range(61)]),
+               interval_end_time_seconds=times.copy())
+    assert _cache_pair_matches(cache,60,times[48],times[60])
+    shifted=times.copy();shifted[48]=shifted[47]
+    indices,matched=flow_history_selection(shifted,60)
+    slot=4  # offset 12, the sample 0.72 s before the anchor
+    assert indices[slot]==49 and matched[slot]
+    shifted_cache=dict(interval_start_time_seconds=np.array([shifted[max(0,i-12)] for i in range(61)]),
+                       interval_end_time_seconds=shifted.copy())
+    assert not _cache_pair_matches(shifted_cache,60,shifted[indices[slot]],shifted[60])
+    assert abs(shifted[indices[slot]]-shifted[48])>FLOW_ENDPOINT_TOLERANCE_SECONDS
 
 
 def test_action_arm_interpolation_and_gripper_event_hold():

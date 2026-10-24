@@ -40,6 +40,21 @@ CAMERAS = ("head_camera", "left_camera", "right_camera")
 DT = .18
 RGB_TOLERANCE = .030001
 INTERPOLATION_GAP = .060001
+RAW_FRAME_SECONDS = .06
+# Float noise only. It is not part of the physical delay and must stay far
+# below one raw frame, so a 60 ms grid cannot step back an extra sample.
+NUMERIC_TIME_EPSILON = 1e-6
+# Readback measured 2026-10-24 is about two raw frames (smoke04 median 106 ms,
+# 1x probe median 112 ms). The delay is exactly that span. Half a raw frame is
+# the match tolerance, so the neighboring sample 60 ms away is not eligible.
+CAMERA_AVAILABILITY_SECONDS = 2 * RAW_FRAME_SECONDS
+CONDITION_FRAME_TOLERANCE_SECONDS = .5 * RAW_FRAME_SECONDS
+# After it becomes readable, the same image remains the latest one for about
+# one more capture. Four raw frames is that age ceiling, not a closed-loop
+# action deadline.
+CONDITION_RGB_MAX_AGE_SECONDS = 4 * RAW_FRAME_SECONDS
+FLOW_HISTORY_OFFSETS_FRAMES = (60, 48, 36, 24, 12, 0)
+FLOW_ENDPOINT_TOLERANCE_SECONDS = RAW_FRAME_SECONDS
 QUERY_AGES = (.36, .72)
 LEGACY_ENTITY_ROLES = ('tracked_dynamic_target','support','left_gripper','right_gripper')
 ACTIVE_ENTITY_ROLES = ('tracked_dynamic_target','left_gripper','right_gripper')
@@ -270,6 +285,73 @@ def select_frame(times, target, *, past_only, tolerance):
     return int(indices[j])
 
 
+def _nearest_index(times, target, *, anchor, tolerance):
+    """Nearest real row to target at or before anchor. None when none is close enough."""
+    best = None
+    best_error = None
+    values = np.asarray(times, dtype=np.float64)
+    limit = float(values[int(anchor)]) + NUMERIC_TIME_EPSILON
+    for index in unique_last_indices(values):
+        index = int(index)
+        if index > int(anchor) or float(values[index]) > limit:
+            break
+        error = abs(float(values[index]) - float(target))
+        if error > float(tolerance) + NUMERIC_TIME_EPSILON:
+            continue
+        if best is None or error < best_error - NUMERIC_TIME_EPSILON or (
+                abs(error - best_error) <= NUMERIC_TIME_EPSILON and index > best):
+            best, best_error = index, error
+    return best
+
+
+def available_condition_frame(times, event_time, *, delay=CAMERA_AVAILABILITY_SECONDS,
+                              tolerance=CONDITION_FRAME_TOLERANCE_SECONDS):
+    """Real frame exposed one camera delay before the event.
+
+    The delay is physical. The tolerance only absorbs timestamp noise and is
+    smaller than one raw frame, so an exact two-frame shift cannot land on the
+    previous sample. Before that delay has elapsed, the earliest real frame is
+    kept with its own timestamp.
+    """
+    event, delay = float(event_time), float(delay)
+    _require(math.isfinite(event) and math.isfinite(delay) and delay >= 0 and tolerance > 0,
+             "camera availability delay must be finite and non-negative")
+    values = np.asarray(times, dtype=np.float64)
+    indices = unique_last_indices(values)
+    _require(len(indices) > 0, "no camera timestamps")
+    anchor = int(indices[-1])
+    earliest = int(indices[0])
+    target = event - delay
+    if target < float(values[earliest]) - NUMERIC_TIME_EPSILON:
+        _require(float(values[earliest]) <= event + NUMERIC_TIME_EPSILON, "no real frame before the event")
+        return earliest
+    found = _nearest_index(values, target, anchor=anchor, tolerance=tolerance)
+    _require(found is not None, "no real frame within requested tolerance")
+    return int(found)
+
+
+def flow_history_selection(times, frame, *, tolerance=FLOW_ENDPOINT_TOLERANCE_SECONDS):
+    """Physical-time flow endpoints, with an explicit match mask.
+
+    Offset 0 is the anchor frame. Every earlier offset is the raw sample nearest
+    its 60 ms target. A miss stays masked; the anchor is not reused as that sample.
+    """
+    values = np.asarray(times, dtype=np.float64)
+    anchor = int(frame)
+    _require(0 <= anchor < len(values), "flow anchor is outside the episode")
+    anchor_time = float(values[anchor])
+    indices, matched = [], []
+    for offset in FLOW_HISTORY_OFFSETS_FRAMES:
+        if offset == 0:
+            indices.append(anchor)
+            matched.append(True)
+            continue
+        found = _nearest_index(values, anchor_time - offset * RAW_FRAME_SECONDS, anchor=anchor, tolerance=tolerance)
+        indices.append(anchor if found is None else int(found))
+        matched.append(found is not None)
+    return indices, matched
+
+
 def resample_actions(times, values, targets, *, max_gap=INTERPOLATION_GAP):
     """Arm drive targets interpolate; gripper commands use previous-event hold.
 
@@ -367,7 +449,7 @@ def eligible_timing_rows(times, source_stride, query_ages):
     for grid in range(count):
         source=float(t[0]+grid*source_stride)
         try:
-            select_frame(t,source,past_only=True,tolerance=INTERPOLATION_GAP)
+            available_condition_frame(t,source)
             for target in source+np.arange(1,9)*2*DT:
                 select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE)
         except ValueError:
@@ -379,7 +461,7 @@ def eligible_timing_rows(times, source_stride, query_ages):
             if query+16*DT>t[-1]+1e-8:
                 continue
             try:
-                select_frame(t,query,past_only=True,tolerance=INTERPOLATION_GAP)
+                available_condition_frame(t,query)
             except ValueError:
                 continue
             if _action_targets_supported(t,query+np.arange(1,17)*DT).all():
@@ -444,6 +526,9 @@ def derive_timing_manifests(source, output, *, query_ages_seconds, completion_di
         array=output/f'{split}_rows.npy';np.save(array,np.asarray(rows[split],dtype=np.int64))
         new.update(rows_file=str(array),rows_sha256=sha256_file(array),query_ages_seconds=ages,
                    completion_distribution=distribution,latency_provenance=distribution['kind']+':'+distribution['provenance'],
+                   camera_availability_seconds=CAMERA_AVAILABILITY_SECONDS,
+                   condition_rgb_max_age_seconds=CONDITION_RGB_MAX_AGE_SECONDS,
+                   condition_rgb_rule='latest_real_frame_at_or_before_event_minus_camera_availability',
                    parent_manifest=str(source/f'{split}.json'),parent_manifest_sha256=sha256_file(source/f'{split}.json'),
                    audit_file=str(output/'timing_audit.json'),
                    timing_derivation='real_timestamp_complete_action_and_native_video_support_v1')
@@ -556,23 +641,79 @@ def read_episode_records(path, row, visual_encoder_id):
     return r,actions
 
 
+def _cache_pair_matches(flow_cache, end_index, start_time, end_time):
+    """True when the precomputed index-stride row is exactly this physical pair.
+
+    Endpoint search may sit one raw frame off a capture. The cache row is a
+    different window unless its recorded endpoints are the same timestamps.
+    """
+    start = float(flow_cache['interval_start_time_seconds'][end_index])
+    end = float(flow_cache['interval_end_time_seconds'][end_index])
+    return (abs(start - float(start_time)) <= NUMERIC_TIME_EPSILON
+            and abs(end - float(end_time)) <= NUMERIC_TIME_EPSILON)
+
+
 def _flow_features(handle, times, frame, flow_cache, flow_contract):
-    """Original raw numeric history plus freshly computed spatial flow, CPU only."""
-    from dynamicwam.absolute_motion import compute_dense_flow, filter_flow_by_forward_backward_consistency
-    endpoints=[max(0,frame-k) for k in (48,36,24,12,0)]
-    selected=endpoints[1:]
-    numeric=torch.from_numpy(flow_cache['motion_features'][selected].copy())
-    valid=torch.from_numpy(flow_cache['interval_valid'][selected].copy())
-    acceleration=torch.from_numpy(flow_cache['acceleration_valid'][selected].copy())
-    intervals=np.stack([flow_cache['interval_start_time_seconds'][selected],flow_cache['interval_end_time_seconds'][selected]],-1)
-    _require(np.isfinite(intervals[valid.numpy()]).all() and (intervals[valid.numpy(),1]<=times[frame]+1e-8).all(),"future/nonfinite valid flow in observation")
+    """Time-matched raw numeric history plus freshly computed spatial flow, CPU only."""
+    from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
+        compute_dense_flow, filter_flow_by_forward_backward_consistency)
+    indices, matched = flow_history_selection(times, int(frame))
+    values = np.asarray(times, dtype=np.float64)
+    # The first pair is the predecessor used only for acceleration. The four
+    # returned intervals are the same 0.72 s windows the online path returns.
+    slots = ((0, 1), (1, 2), (2, 3), (3, 4), (4, 5))
+    both, agree = [], []
+    for start_slot, end_slot in slots:
+        ok = matched[start_slot] and matched[end_slot]
+        both.append(ok)
+        agree.append(ok and _cache_pair_matches(
+            flow_cache, indices[end_slot], values[indices[start_slot]], values[indices[end_slot]]))
+    if all(agree[i] or not both[i] for i in range(len(slots))):
+        returned = agree[1:]
+        selected = np.asarray(indices[2:], dtype=np.int64)
+        numeric = torch.from_numpy(flow_cache['motion_features'][selected].copy())
+        valid = torch.from_numpy(flow_cache['interval_valid'][selected].copy()) & torch.tensor(returned, dtype=torch.bool)
+        acceleration = torch.from_numpy(flow_cache['acceleration_valid'][selected].copy())
+        acceleration = acceleration & valid & torch.tensor(agree[:-1], dtype=torch.bool)
+        numeric = torch.where(valid[:, None], numeric, torch.zeros_like(numeric))
+        intervals = np.stack([values[indices[1:-1]], values[selected]], -1)
+    else:
+        # A time-matched pair is not the cached index-stride row. Recompute that
+        # physical window instead of training on the other history.
+        displacement, starts, ends, flags = [], [], [], []
+        for start_slot, end_slot in slots:
+            start_i, end_i = int(indices[start_slot]), int(indices[end_slot])
+            starts.append(float(values[start_i]))
+            ends.append(float(values[end_i]))
+            if start_i == end_i or values[end_i] <= values[start_i] or not matched[start_slot] or not matched[end_slot]:
+                displacement.append(np.zeros(4, np.float32))
+                flags.append(False)
+                continue
+            _, stats, _, quality = compute_flow_observation(
+                _rgb(handle, start_i, CAMERAS[0]), _rgb(handle, end_i, CAMERAS[0]),
+                compute_size=tuple(flow_contract['compute_size']),
+                normalization_percentile=float(flow_contract['normalization_percentile']),
+                farneback=flow_contract['farneback'], quality=flow_contract['quality'])
+            displacement.append(np.asarray(stats, dtype=np.float32))
+            flags.append(bool(quality))
+        features, mask, accel = build_motion_features(
+            np.stack(displacement), np.asarray(starts, np.float64), np.asarray(ends, np.float64), np.asarray(flags, bool))
+        numeric = torch.from_numpy(features[1:].copy())
+        valid = torch.from_numpy(mask[1:].copy())
+        acceleration = torch.from_numpy(accel[1:].copy())
+        intervals = np.stack([starts[1:], ends[1:]], -1)
+    _require(np.isfinite(intervals[valid.numpy()]).all() and (intervals[valid.numpy(), 1] <= values[int(frame)] + NUMERIC_TIME_EPSILON).all(),
+             "future/nonfinite valid flow in observation")
     # Invalid historical intervals do not acquire invented support from a cache
     # sentinel such as time zero. A finite masked point is only a placeholder.
-    intervals[~valid.numpy()]=times[frame]
-    spatial=torch.zeros(16,5);spatial_valid=torch.zeros(16,dtype=torch.bool)
-    pair=np.array([times[endpoints[-2]],times[frame]])
-    if bool(valid[-1]) and pair[1]>pair[0]:
-        a=_rgb(handle,endpoints[-2],CAMERAS[0]);b=_rgb(handle,frame,CAMERAS[0])
+    intervals[~valid.numpy()] = values[int(frame)]
+    spatial = torch.zeros(16, 5)
+    spatial_valid = torch.zeros(16, dtype=torch.bool)
+    previous = int(indices[-2]) if matched[-2] else int(frame)
+    pair = np.array([values[previous], values[int(frame)]])
+    if bool(valid[-1]) and pair[1] > pair[0]:
+        a = _rgb(handle, previous, CAMERAS[0])
+        b = _rgb(handle, int(frame), CAMERAS[0])
         forward=compute_dense_flow(a,b,compute_size=(64,64),farneback=flow_contract['farneback'])
         backward=compute_dense_flow(b,a,compute_size=(64,64),farneback=flow_contract['farneback'])
         flow,reliable,_,quality=filter_flow_by_forward_backward_consistency(forward,backward,quality=flow_contract['quality'])
@@ -647,8 +788,9 @@ class DominoPhysicalDataset(Dataset):
         t=records.timestamps.numpy();s=ep['first_time']+grid*self.manifest['source_stride_seconds']
         age=self.manifest['query_ages_seconds'][age_id];q=s+age
         completed=s+completion_latency_seconds(self.completion_distribution,ep['episode_uid'],grid,age)
-        source_frame=select_frame(t,s,past_only=True,tolerance=.060001)
-        query_frame=select_frame(t,q,past_only=True,tolerance=.060001)
+        delay=float(self.manifest.get('camera_availability_seconds',CAMERA_AVAILABILITY_SECONDS))
+        source_frame=available_condition_frame(t,s,delay=delay)
+        query_frame=available_condition_frame(t,q,delay=delay)
         starts=s+np.arange(16)*DT;fast_starts=q+np.arange(16)*DT
         source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+DT)
         fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+DT)
@@ -838,7 +980,7 @@ def build_manifests(config, output, *, max_episodes=None):
         for grid in range(grid_count):
             s=t[0]+grid*.36;audit['source_windows']+=1
             try:
-                select_frame(t,s,past_only=True,tolerance=INTERPOLATION_GAP)
+                available_condition_frame(t,s)
                 for target in s+np.arange(1,9)*2*DT:select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE)
             except ValueError:audit['rejected_rgb_tolerance']+=1;continue
             _,sv,_=resample_actions(t,actions.numpy(),s+np.arange(1,17)*DT)
@@ -846,6 +988,8 @@ def build_manifests(config, output, *, max_episodes=None):
             for ai,age in enumerate(QUERY_AGES):
                 q=s+age
                 if q+16*DT>t[-1]+1e-8:continue
+                try:available_condition_frame(t,q)
+                except ValueError:audit['rejected_rgb_tolerance']+=1;continue
                 _,fv,_=resample_actions(t,actions.numpy(),q+np.arange(1,17)*DT)
                 if not fv.all():audit['rejected_action_support']+=1;continue
                 rows[split].append([idx,grid,ai]);audit['rows']+=1;taskcounts['rows']+=1
@@ -887,7 +1031,10 @@ def build_manifests(config, output, *, max_episodes=None):
                   'rgb_size':config.get('rgb_size',[240,320]),'rgb_view_sizes':config.get('rgb_view_sizes',[[240,320],[120,160],[120,160]]),
                   'flow_contract':native['absolute_motion']['flow_contract'],'motion_representation':'raw_absolute_motion_v2','action_representation':'checkpoint_mean_std',
                   'action_resampling':'bounded_linear_arm_drive_targets_previous_event_gripper_last_duplicate',
-                  'future_rgb_rule':'nearest_real_frame_abs_error_le_0.030001','condition_rgb_rule':'latest_at_or_before_source_or_query_max_age_0.060001',
+                  'future_rgb_rule':'nearest_real_frame_abs_error_le_0.030001',
+                  'camera_availability_seconds':CAMERA_AVAILABILITY_SECONDS,
+                  'condition_rgb_max_age_seconds':CONDITION_RGB_MAX_AGE_SECONDS,
+                  'condition_rgb_rule':'latest_real_frame_at_or_before_event_minus_camera_availability',
                   'latency_provenance':'synthetic_completion_0.18s_not_measured','time_grid_cache_rebuilt':True,'formal_training_ready':False,
                   'text_index':'text/index.json','native_latents':'main_process_frozen_native_vae_or_identity_bound_cache','audit_file':'audit.json'}
         (output/f'{split}.json').write_text(json.dumps(manifest,indent=2))
