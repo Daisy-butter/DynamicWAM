@@ -55,6 +55,14 @@ def dependency_helpers():
     return module
 
 
+def renderer_helpers():
+    path = Path(__file__).resolve().parents[1] / "src/dynamicwam/dualrate/renderer_runtime.py"
+    spec = importlib.util.spec_from_file_location("dualrate_renderer_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def source_identity(root: Path) -> str:
     """Keep byte-identical to train.source_identity; do not import torch here."""
     value = hashlib.sha256()
@@ -215,7 +223,7 @@ def storage_directory(path: Path, root: Path) -> Path:
     return path
 
 
-def worker_environment(repo: Path, out: Path, gpu: str, dependency_binding=None) -> dict:
+def worker_environment(repo: Path, out: Path, gpu: str, dependency_binding=None, config=None) -> dict:
     env = os.environ.copy()
     env.update(CUDA_VISIBLE_DEVICES=gpu, WORLD_SIZE="1", PYTHONDONTWRITEBYTECODE="1",
                OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="2")
@@ -230,6 +238,8 @@ def worker_environment(repo: Path, out: Path, gpu: str, dependency_binding=None)
         path = out / "cache" / name.lower()
         path.mkdir(parents=True, exist_ok=True)
         env[name] = str(path)
+    if config is not None and config.get("run_kind") == "domino_deployment_smoke":
+        env.update(renderer_helpers().renderer_environment(config, env))
     return env
 
 

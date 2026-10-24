@@ -170,7 +170,11 @@ def supervise(args, repo, out):
             base.require_idle(rows, uuid)
         if base.kernel_evidence() != before:
             raise RuntimeError("new driver evidence during initial telemetry")
-        env = base.worker_environment(repo, out, ",".join(selected), binding)
+        env = base.worker_environment(repo, out, ",".join(selected), binding, config=config)
+        if mode == "domino_deployment_smoke":
+            base.atomic(out / "renderer_runtime_before.json", config["renderer_runtime"])
+            base.atomic(out / "renderer_environment.json",
+                        base.renderer_helpers().verify_renderer_environment(config, env))
         env.pop("WORLD_SIZE", None)
         # Native communication settings: no driver/P2P recovery flags or retries.
         env.update(TORCH_NCCL_ASYNC_ERROR_HANDLING="1", TORCH_DISTRIBUTED_DEBUG="OFF")
@@ -269,6 +273,9 @@ def supervise(args, repo, out):
                     base.atomic(out / "dependencies_after.json", final)
                     if final != binding:
                         errors.append("dependency overlay changed during job")
+                if config is not None and config.get("run_kind") == "domino_deployment_smoke":
+                    renderer = base.renderer_helpers().validate_renderer_runtime(config)
+                    base.atomic(out / "renderer_runtime_after.json", renderer)
             except BaseException as exc:
                 errors.append(f"final binding verification failed: {exc!r}")
         for lock in locks:

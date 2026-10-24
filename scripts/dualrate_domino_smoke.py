@@ -2,6 +2,7 @@
 """Guarded finite real DOMINO deployment. No retry or hardware recovery."""
 from __future__ import annotations
 import argparse
+import faulthandler
 import hashlib
 from dataclasses import asdict,is_dataclass
 import json
@@ -40,10 +41,13 @@ def verify_deployment_artifacts(config, file_hash):
 
 
 def main():
+    faulthandler.enable(all_threads=True)
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',required=True)
     p.add_argument('--device',choices=['cuda'],required=True);p.add_argument('--authorization',required=True)
     args=p.parse_args();config=json.loads(Path(args.config).read_text())
     if config.get('run_kind')!='domino_deployment_smoke':raise ValueError('explicit deployment mode required')
+    from dynamicwam.dualrate.renderer_runtime import verify_renderer_environment
+    renderer_environment=verify_renderer_environment(config,os.environ)
     from dynamicwam.dualrate.dependencies import validate_dependency_overlay,activate_dependency_overlay,probe_dependency_imports
     dependencies=validate_dependency_overlay(config);activate_dependency_overlay(dependencies)
     import torch
@@ -57,11 +61,17 @@ def main():
         device_type='cuda',torch_version=str(torch.__version__))
     _gpu_authorization(Path(args.authorization),identity,output,expected_mode='domino_deployment_smoke',
                        expected_dependencies=dependencies)
+    def stage(name,**details):
+        receipt=dict(stage=name,time_unix=time.time(),monotonic=time.monotonic(),**details)
+        save(output/'initialization_stage.json',receipt)
+        print(json.dumps(receipt),flush=True)
+    stage('authorized',renderer_environment=renderer_environment)
     probe_dependency_imports(config,require_flash_attention=True)
     torch.set_num_threads(1);torch.set_num_interop_threads(1)
     import cv2
     cv2.setNumThreads(1)
     uuids=os.environ['CUDA_VISIBLE_DEVICES'].split(',');policy_index=1 if len(uuids)==2 else 0
+    stage('cuda_device_initializing',policy_index=policy_index)
     device=torch.device('cuda',policy_index);torch.cuda.set_device(device)
     # Verify renderer selection against proc inventory; no independent telemetry.
     pci=None
@@ -71,9 +81,13 @@ def main():
     if pci is None:raise RuntimeError('renderer UUID/PCI mapping missing')
     os.environ['DYNAMICWAM_GPU_PCI']=pci
     from dynamicwam.runtime.domino_rt.gpu_binding import install_gpu_binding
+    stage('sapien_binding_initializing',renderer_pci=pci)
     binding=install_gpu_binding()
+    stage('sapien_binding_ready',renderer=binding)
     from dynamicwam.dualrate.factory import build_system
+    stage('model_initializing')
     system=build_system(config,device=device).eval().requires_grad_(False)
+    stage('model_initialized')
     checkpoint=Path(config['deployment_checkpoint']).resolve(strict=True)
     if file_sha256(checkpoint)!=config['deployment_checkpoint_sha256']:raise ValueError('deployment weights hash mismatch')
     payload=torch.load(checkpoint,map_location='cpu',weights_only=True,mmap=True)
@@ -83,6 +97,7 @@ def main():
     if contract.get('source_sha256')!=identity['source_sha256']:
         raise ValueError('deployment checkpoint was not trained by current frozen source')
     system.load_state_dict(payload['model'],strict=True)
+    stage('checkpoint_loaded')
     checkpoint_meta={k:payload.get(k) for k in ('schema','phase','phase_step','global_step','run_kind')};del payload
     import yaml
     from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language
@@ -116,10 +131,12 @@ def main():
             native=output/'eval_result'/task/'dualrate_dynamicwam'/dep['task_config']/checkpoint.stem/dep['result_stamp']
             native.mkdir(parents=True,exist_ok=True)
             try:
+                stage('scene_preparing',task=task,episode=episode,requested_seed=next_seed)
                 with SapienInitLock():
                     requested_seed=next_seed
                     env,prepared=prepare_level1_env(domino,task_name=task,task_config=dep['task_config'],
                         start_seed=requested_seed,instruction_type=dep.get('instruction_type','seen'))
+                stage('scene_ready',task=task,episode=episode,accepted_seed=int(prepared['seed']))
                 next_seed=int(prepared['seed'])+1
                 info=getattr(env,'_rt_episode_info',None)
                 if not info or 'info' not in info:raise ValueError('actual episode language bindings missing')
