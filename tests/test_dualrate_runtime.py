@@ -101,6 +101,19 @@ def test_actual_runtime_wires_model_output_into_leased_queue():
         assert queue.action_at(.2)==(102.,)
         assert events[-1]["event"]=="fast_committed"
     finally: runtime.close()
+
+
+def test_slow_prefix_from_previous_episode_is_rejected_before_model_work():
+    queue=ExecutionQueue(initial(),episode_id='current')
+    old=ExecutionQueue(initial(),episode_id='previous').snapshot_committed(0.)
+    runtime=DualRateRuntime(RuntimeModelFixture().eval(),queue,lambda:0.,RuntimeConfig(.1),
+        action_mean=[0.],action_scale=[1.])
+    try:
+        with pytest.raises(StalePlan,match='another episode'):
+            runtime.start_slow({},old)
+        assert runtime.slow_job is None
+    finally:runtime.close()
+
 def test_candidate_runtime_configuration_is_executable():
     import json
     from pathlib import Path

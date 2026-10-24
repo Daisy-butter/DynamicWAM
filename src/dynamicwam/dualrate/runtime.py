@@ -11,7 +11,7 @@ import math
 from typing import Callable
 import torch
 from .timing import (CompletedReferenceStore, ExecutionQueue, TimedPlan,
-                     TimingError, DeadlineMiss, prefix_digest)
+                     TimingError, DeadlineMiss, StalePlan, prefix_digest)
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,8 @@ class DualRateRuntime:
     def start_slow(self, batch, source_prefix):
         if self.closed or self.slow_job is not None:
             raise TimingError("slow slot unavailable")
+        if (source_prefix.episode_id,source_prefix.clock_id)!=(self.queue.episode_id,self.queue.clock_id):
+            raise StalePlan("slow commitment snapshot belongs to another episode/clock")
         batch=detached_batch(batch)
         source=float(batch["source_time"].item())
         now=float(self.clock())

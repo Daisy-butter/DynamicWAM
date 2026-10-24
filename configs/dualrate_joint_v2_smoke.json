@@ -44,7 +44,7 @@
   "save_every": 4,
   "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v2_20261024/full_01/train.json",
   "storage_root": "/SSD_DISK/users/wuruihan",
-  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/dualrate_joint_v2_smoke_20261024_01",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/dualrate_joint_v2_smoke_20261024_02",
   "min_free_bytes": 21474836480,
   "codec_id": "wan22_first_plus_four_causal_native_v2",
   "future_field_support": [
@@ -2302,5 +2302,6 @@
     "submit_margin": 0.01,
     "reference_max_age": 1.44,
     "sample_steps": 10
-  }
+  },
+  "optimizer_kind": "fp32_master_adamw"
 }

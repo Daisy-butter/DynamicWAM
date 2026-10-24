@@ -461,25 +461,38 @@ class DominoPhysicalDataset(Dataset):
 def materialize_native_latents(batch, vae, *, device=None):
     """Frozen native VAE preprocessing in caller-owned main process; never random.
 
-    ``vae`` is the official WanVAE wrapper exposing encode(list[CTHW]). The
-    wrapper handles its native normalization. Full future input is 1+8 frames;
+    ``vae`` is this checkout's Wan2_2_VAE wrapper: encode accepts one BCTHW
+    Tensor and returns one BCTHW Tensor. Its encode owns native CUDA autocast
+    and normalization; this adapter preserves its declared input dtype exactly
+    as the native dataset packer does. Full future input is 1+8 frames;
     retaining latent slices 1: preserves both groups of four future frames.
     """
     if 'source_condition_latent' in batch and 'source_future_latent' in batch:return batch
     _require('source_condition_frames' in batch and 'source_future_frames' in batch,'real native RGB frames missing')
     conditions=batch['source_condition_frames'];future=batch['source_future_frames']
-    _require(conditions.ndim==future.ndim==5 and conditions.shape[2]==5 and future.shape[2]==9,"incorrect native frame/codec layout")
+    _require(conditions.ndim==future.ndim==5 and conditions.shape[0]==future.shape[0] and
+             conditions.shape[1]==future.shape[1]==3 and conditions.shape[2]==5 and future.shape[2]==9,
+             "incorrect native BCTHW frame/codec layout")
     model=getattr(vae,'model',vae)
     if isinstance(model,torch.nn.Module):model.eval()
+    dtype=getattr(vae,'dtype',conditions.dtype)
+    _require(dtype in (torch.float32,torch.float16,torch.bfloat16),'unsupported native VAE dtype')
     def encode(x):
-        if device is not None:x=x.to(device)
-        z=vae.encode(list(x))
-        return torch.stack(z) if isinstance(z,(list,tuple)) else z
+        x=x.to(device=x.device if device is None else device,dtype=dtype)
+        # The production wrapper owns CUDA autocast. CPU callers need their own
+        # matching autocast because that wrapper's CUDA context is disabled there.
+        with torch.autocast(device_type=x.device.type,dtype=dtype,
+                            enabled=x.device.type=='cpu' and dtype in (torch.bfloat16,torch.float16)):
+            z=vae.encode(x)
+        _require(isinstance(z,torch.Tensor) and z.ndim==5 and z.shape[0]==x.shape[0],
+                 'native Wan2_2_VAE must return a batched Tensor')
+        return z
     result=dict(batch)
     result['source_condition_latent']=encode(conditions)
+    _require(result['source_condition_latent'].shape[2]==2,'native 4-flow-plus-RGB codec must produce two slices')
     all_future=encode(future)
     _require(all_future.ndim==5 and all_future.shape[2]==3,'native 1+8 frame codec must produce three slices')
-    result['source_future_latent']=all_future[:,:,1:]
+    result['source_future_latent']=all_future[:,:,1:].contiguous()
     return result
 
 

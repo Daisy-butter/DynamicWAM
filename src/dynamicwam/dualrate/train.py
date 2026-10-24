@@ -180,6 +180,7 @@ def save_training_checkpoint(path: str | Path, system: nn.Module, optimizer: tor
         "step": int(step), "identity": dict(identity), "model": system.state_dict(),
         "optimizer": optimizer.state_dict(), "cursor": cursor.state_dict(),
         "rng": capture_rng(generator), "model_training": system.training,
+        "optimizer_precision": optimizer.precision_report() if hasattr(optimizer, "precision_report") else None,
     }, min_free_bytes=min_free_bytes)
 
 
@@ -319,6 +320,7 @@ def verify_checkpoint_reload(path: str | Path, system: nn.Module,
     try:
         report["checkpoint_sha256"] = file_sha256(path)
         report["parameters"] = parameter_counts(system)
+        report["optimizer_precision"] = optimizer.precision_report() if hasattr(optimizer, "precision_report") else None
         report["cursor_before"] = cursor.state_dict()
         report["before"] = snapshot()
         restored = load_training_checkpoint(path, system, optimizer, cursor, identity, generator=generator)
@@ -420,6 +422,10 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
         raise ValueError("formal training is not ready; set explicit engineering-smoke run_kind")
     if not isinstance(config.get("verify_checkpoint_reload", False), bool):
         raise ValueError("verify_checkpoint_reload must be an explicit boolean")
+    if config.get("optimizer_kind") != "fp32_master_adamw":
+        raise ValueError("mixed native BF16 training requires optimizer_kind='fp32_master_adamw'")
+    if not isinstance(config.get("record_master_updates", True), bool):
+        raise ValueError("record_master_updates must be an explicit boolean")
     required = {"architecture", "init_checkpoint", "init_checkpoint_sha256", "action_normalization_sha256",
                 "motion_normalization_sha256", "slow_lr", "fast_lr", "manifest", "steps", "batch_size",
                 "seed", "output", "storage_root"}
@@ -478,16 +484,19 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
     system = build_system(config, target)
     system.train()
     counts = parameter_counts(system)
-    _atomic_json(output / "parameters.json", counts)
     slow_parameters = [p for p in system.slow.parameters() if p.requires_grad]
     slow_ids = {id(p) for p in slow_parameters}
     fast_parameters = [p for p in system.parameters() if p.requires_grad and id(p) not in slow_ids]
     if not slow_parameters or not fast_parameters:
         raise ValueError("joint optimization requires trainable slow and new modules")
-    optimizer = torch.optim.AdamW([
+    from .optimizer import FP32MasterAdamW
+    optimizer = FP32MasterAdamW([
         {"params": slow_parameters, "lr": float(config["slow_lr"]), "name": "slow"},
         {"params": fast_parameters, "lr": float(config["fast_lr"]), "name": "new"},
-    ], weight_decay=float(config.get("weight_decay", 0.01)))
+    ], weight_decay=float(config.get("weight_decay", 0.01)),
+        record_updates=config.get("record_master_updates", True))
+    counts["optimizer_precision"] = optimizer.precision_report()
+    _atomic_json(output / "parameters.json", counts)
     cursor = EpochCursor(len(dataset), int(config["batch_size"]), seed)
     generator = torch.Generator(device=target).manual_seed(seed + 1)
     start = load_training_checkpoint(resume, system, optimizer, cursor, identity, generator=generator) if resume else 0
@@ -525,6 +534,7 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
         record = {"step": step + 1, "loss": float(loss.detach()), "grad_norm": float(norm),
                   "phase": "warmup" if step < warmup else "joint", "formal_training_ready": False,
                   "losses":{k:float(v.detach()) for k,v in result.items()},"nonzero_finite_gradients":gradients,
+                  "optimizer_update":optimizer.last_step_statistics,
                   "seconds":time.monotonic()-started,"batch_size":len(rows),
                   "peak_allocated_bytes":torch.cuda.max_memory_allocated(target) if target.type=="cuda" else None}
         if step>=warmup and any(gradients[name]==0 for name in ("slow","readout","observation","fast")):

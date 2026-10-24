@@ -199,11 +199,13 @@ class CommittedPrefix:
     dt: float
     actions: tuple[tuple[float, ...], ...]
     queue_version: int
+    episode_id: str = "episode"
+    clock_id: str = "physical"
 
 
 def prefix_digest(prefix: CommittedPrefix) -> str:
     return hashlib.sha256(json.dumps((prefix.start_time, prefix.end_time, prefix.dt,
-        prefix.actions), allow_nan=False, separators=(",", ":")).encode()).hexdigest()
+        prefix.actions,prefix.episode_id,prefix.clock_id), allow_nan=False, separators=(",", ":")).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -297,7 +299,8 @@ class ExecutionQueue:
         # A row already underway is immutable even if not previously reserved.
         last = max(self._committed_end, first + int(now > self.origin + first*self.dt + 1e-9))
         return CommittedPrefix(self.origin+first*self.dt, self.origin+last*self.dt,
-                               self.dt, tuple(self._rows[i] for i in range(first,last)), self._version)
+                               self.dt, tuple(self._rows[i] for i in range(first,last)), self._version,
+                               self.episode_id,self.clock_id)
 
     @_serialized
     def begin_query(self, *, query_time: float, observation_time: float, protect_steps: int,
@@ -360,7 +363,8 @@ class ExecutionQueue:
         self._last_time = query_time
         self._rows = {i: row for i,row in self._rows.items() if i >= first}
         return CommittedPrefix(self.origin + first*self.dt, self.origin + last*self.dt,
-                               self.dt, tuple(self._rows[i] for i in range(first,last)), self._version)
+                               self.dt, tuple(self._rows[i] for i in range(first,last)), self._version,
+                               self.episode_id,self.clock_id)
 
     @_serialized
     def replace(self, plan: TimedPlan, *, now: float) -> int:

@@ -41,14 +41,33 @@ def test_mixed_camera_cells_and_source_flow():
     assert torch.equal(view_overlap(12,10,flow_weight=1.)[:,0],torch.ones(120))
 
 
-def test_vae_codec_keeps_all_eight_future_frames():
-    class VAE:
-        def encode(self,items):
-            return [torch.zeros(48,1+(x.shape[1]-1)//4,12,10) for x in items]
-    batch={'source_condition_frames':torch.zeros(1,3,5,384,320),'source_future_frames':torch.zeros(1,3,9,192,160)}
-    out=materialize_native_latents(batch,VAE())
-    assert out['source_future_latent'].shape==(1,48,2,12,10)
-    assert out['source_condition_latent'].shape[2]==2
+@pytest.mark.parametrize('dtype',[torch.float32,torch.bfloat16])
+def test_real_native_vae_wrapper_tensor_abi_keeps_future_groups(dtype):
+    # Exercise the exact installed class's encode method and patchify, while
+    # replacing only the large learned encoder. No weight load or CUDA work.
+    from dynamicwam.vendor.wan.modules.vae2_2 import Wan2_2_VAE,patchify
+    class Encoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__();self.calls=[]
+        def encode(self,videos,scale):
+            assert isinstance(videos,torch.Tensor)
+            assert videos.dim()==5 and videos.shape[1]==3
+            assert videos.dtype==dtype and not torch.is_grad_enabled()
+            assert self.training is False and scale==[0.,1.]
+            patched=patchify(videos,patch_size=2)
+            assert patched.shape[1]==12
+            self.calls.append(tuple(videos.shape))
+            b,_,t,h,w=videos.shape;n=1+(t-1)//4
+            return torch.arange(n,dtype=dtype).view(1,1,n,1,1).expand(b,48,n,h//16,w//16).clone()
+    vae=object.__new__(Wan2_2_VAE);vae.dtype=dtype;vae.device='cpu';vae.scale=[0.,1.];vae.model=Encoder()
+    batch={'source_condition_frames':torch.zeros(2,3,5,384,320),'source_future_frames':torch.zeros(2,3,9,192,160)}
+    out=materialize_native_latents(batch,vae,device='cpu')
+    assert vae.model.calls==[(2,3,5,384,320),(2,3,9,192,160)]
+    assert out['source_condition_latent'].shape==(2,48,2,24,20)
+    assert out['source_future_latent'].shape==(2,48,2,12,10)
+    assert (out['source_future_latent'][:,:,0]==1).all()
+    assert (out['source_future_latent'][:,:,1]==2).all()
+    assert out['source_future_latent'].is_contiguous()
 
 
 def test_native_camera_resolution_has_explicit_padding_mask():
