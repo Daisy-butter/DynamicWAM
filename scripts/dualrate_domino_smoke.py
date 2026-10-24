@@ -98,6 +98,13 @@ def main():
         raise ValueError('deployment checkpoint was not trained by current frozen source')
     system.load_state_dict(payload['model'],strict=True)
     stage('checkpoint_loaded')
+    # svulkan2 DenoiserOidn::init uses cudaGetDevice, independently of the
+    # Vulkan RenderSystem device. Keep the physics/render owner on renderer0;
+    # policy parameters and both inference worker streams remain on policy1.
+    previous_owner_device=torch.cuda.current_device()
+    torch.cuda.set_device(0)
+    stage('renderer_owner_bound',previous_cuda_device=previous_owner_device,
+          renderer_cuda_device=torch.cuda.current_device(),policy_device=str(device))
     checkpoint_meta={k:payload.get(k) for k in ('schema','phase','phase_step','global_step','run_kind')};del payload
     import yaml
     from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language

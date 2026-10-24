@@ -355,7 +355,8 @@ class DualRateSystem(nn.Module):
             sigma = a.new_full((b,), 1 - step / steps)
             result = self.fast.forward_cached(a, z, sigma, context,
                 known_actions=known, action_known_mask=mask)
-            a = _prefix(a - result["action_velocity"] / steps, known, mask)
+            # The immutable query prefix was validated once before this loop.
+            a = torch.where(mask[..., None], known, a - result["action_velocity"] / steps)
             z = torch.where(fields,z - result["future_velocity"] / steps,z)
         final = self.fast.forward_cached(a, z, a.new_zeros(b), context,
             known_actions=known, action_known_mask=mask)
