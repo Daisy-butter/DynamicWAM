@@ -1,3 +1,5 @@
+Latest .92 DualRate Joint V2 acceptance (2026-10-24): candidate/dualrate-joint-v2-20261024; tested source5e80b18207c0a27e66192c690624de8a0818b4dc. 191CPU and actual full-model single-GPU four-step joint training plus bitwise full-state reload and clean guard/worker/kernel exit passed, peak21.0948GiB. Full10500episode index/train345647/val37087 and1516realT5 ready; VAE/ROI lazy real encoding. FP32master optimizer; isolated hash-bound FA2.7.4.post1. formal_training_ready=false; no8rank/DOMINO1x/SR acceptance. Only.92 writable, .50/.100 untouched. Read docs/dualrate_joint_v2_20261024.md and harness1.19.
+
 Current task: .92 DualRate Joint V2, branch feat/dualrate-joint-v2-20261024. Read harness.md v1.19 and docs/dualrate_joint_refinement_20261024.md. Only .92 writable; .50/.100 no changes. Real data preparation and externally guarded single-GPU engineering training smoke authorized; formal training disabled. Preserve original main and V1. All artifacts on verified SSD.
 
 # DualRate Joint V1 entry

@@ -4,6 +4,8 @@
 
 ## 当前任务优先约束：.92 DualRate Joint V2（2026-10-24）
 
+验收补充（2026-10-24）：V2训练源码5e80b18207c0a27e66192c690624de8a0818b4dc，191CPU回归、真实全模型单GPU4步联合训练、完整checkpoint严格重载及干净退出已通过。训练峰值21.0948GiB。模型BF16前向配FP32 master AdamW，master/moments完整保存；固定SSD FlashAttention2.7.4.post1 overlay与59文件哈希。原始数据/ROI/VAE按需真实编码，T5全量1516项完成。继续保持formal_training_ready=false，八卡DDP/DOMINO异步/1x延迟/SR尚未验收；禁止把本次工程smoke权重当作正式初始化。
+
 用户授权本轮完善架构、准备完整真实数据并通过训练烟测。唯一可写远端是.92；.50/.100禁止文件、进程与GPU改动。V2独立目录 `/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v2-20261024`，分支 `feat/dualrate-joint-v2-20261024`，保留V1和home原项目/AHA-WAM。当前全量准备与GPU工程烟测授权覆盖下方V1“本轮仅CPU”历史表述；不授权正式训练。
 
 完整官方DynamicWAM Video/Action/motion作慢路，source-only可微2+8采样与监督前向分开；导出带真实空间/时间/视角支持的source tokens、第二联合步hidden+clean video latent、最终A10软参考。保留生成阶段差异，不能声称视频已条件于A10。快路384/6/6联合生成A16与Z16，当前/慢路分别attention后门控融合；动作偏差仅来自实际执行与硬承诺，未知未来字段在采样全程保持噪声。原生time MLP保持FP32，其余按原生混合精度。
