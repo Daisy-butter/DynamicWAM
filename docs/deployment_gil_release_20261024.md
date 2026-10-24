@@ -18,7 +18,11 @@ the installed `PhysxSystemCpu::step` symbol. That PhysX call replaces the
 function saved by `SceneStepClock.install`; the deployment loop still calls
 `scene.step()`, so the clock advances by one timestep after every successful
 step. Calling PhysX directly leaves the counter at zero and trips the 0.25 s
-backlog gate immediately. The owner polls again after a blocking capture and
+backlog gate immediately. Releasing the GIL also lets readback finish during
+catch-up, so the next 0.06 s slot submits another ~0.09 s render before the
+first wait has been absorbed. The next submission stays on the capture grid
+and is at least one frame after the measured render wait. The owner polls
+again after a blocking capture and
 before `action_at`, so a plan that finishes during render can be committed on
 that tick. A deadline miss still cancels the lease only
 through the existing timing rules; this note does not add a second in-flight

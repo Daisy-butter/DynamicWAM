@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from dynamicwam.dualrate.deployment import (
-    bind_gil_releasing_physx_step,capture_timing,dispatch_due_queries,warm_camera)
+    bind_gil_releasing_physx_step,capture_timing,dispatch_due_queries,
+    next_capture_deadline,warm_camera)
 from dynamicwam.dualrate.producer import CONDITION_RGB_MAX_AGE_SECONDS
 from dynamicwam.dualrate.online import ObservationHistory
 from dynamicwam.dualrate.timing import ExecutionQueue,TimedPlan,DeadlineMiss,BufferUnderrun
@@ -130,6 +131,15 @@ def test_native_batch_called_once_in_original_four_camera_order():
     assert all(result[name]['rgb'].flags.owndata for name,_ in cameras)
     with pytest.raises(ValueError):
         _read_submitted_rgb_batch(cameras,lambda handles:([np.zeros((2,3,4),np.uint8)]*4,[.01]*4),lambda:0.)
+
+
+def test_next_capture_waits_out_a_render_longer_than_one_frame():
+    # 0.09 s render at exposure 0.06 s lands on 0.18 s, the cadence smoke07 sustained.
+    assert next_capture_deadline(0., .06, .06, .09)==.18
+    assert next_capture_deadline(0., .06, .06, .05)==.12
+    assert next_capture_deadline(0., .18, .06, .094)==.30
+    with pytest.raises(ValueError):
+        next_capture_deadline(0., .06, .06, -1.)
 
 
 def test_gil_release_stays_inside_the_scene_step_clock():

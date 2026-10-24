@@ -29,6 +29,20 @@ def bind_gil_releasing_physx_step(env, step_physx) -> None:
     clock._original_step = releasing_step
 
 
+def next_capture_deadline(initial, now, frame_period, render_wall) -> float:
+    """Schedule the next submission after this render can be absorbed at 1x.
+
+    ``take_picture`` freezes physics for the whole wait. Submitting again on
+    the raw 0.06 s grid stacks that wait faster than the scene can catch up
+    and trips the backlog gate. The returned time stays on the capture grid.
+    """
+    if frame_period <= 0 or render_wall < 0 or not math.isfinite(render_wall):
+        raise ValueError("capture schedule requires a positive frame and a finite render wait")
+    earliest = float(now) + max(float(frame_period), float(render_wall))
+    steps = math.ceil((earliest - float(initial)) / float(frame_period) - 1e-9)
+    return float(initial) + steps * float(frame_period)
+
+
 def capture_timing(captured, *, owner_processed_wall):
     """Partition real wall latency; do not relabel exposure or availability."""
     points=[float(captured.capture_wall_perf_s),float(captured.render_submitted_wall_perf_s),
@@ -182,11 +196,13 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             if now>=next_capture-1e-9:
                 if pending is None:
                     pending=camera.begin(session.env,now)
+                    render_wall=time.perf_counter()-pending.capture_wall_perf_s
                     emit(dict(event='capture_submitted',capture_id=pending.capture_id,exposure=now,
-                        owner_submit_wall_seconds=time.perf_counter()-pending.capture_wall_perf_s))
+                        owner_submit_wall_seconds=render_wall))
+                    next_capture=next_capture_deadline(initial,now,frame_period,render_wall)
                 else:
                     skip_captures+=1
-                next_capture=initial+(math.floor((now-initial)/frame_period+1e-9)+1)*frame_period
+                    next_capture=initial+(math.floor((now-initial)/frame_period+1e-9)+1)*frame_period
             # Only advance when the corresponding real-time tick is due.
             wait=(now-initial)+dt-(time.perf_counter()-wall0)
             if wait>0:
