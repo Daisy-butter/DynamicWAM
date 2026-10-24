@@ -143,7 +143,8 @@ class DualRateRuntime:
             observation_time=observation_time,reference_version=lease.reference_version,
             source_time=reference.source_time if reference else None,
             reference_age=query-reference.source_time if reference else None,
-            protected_until=lease.protected_until,prefix_hash=lease.prefix_hash))
+            protected_until=lease.protected_until,prefix_hash=lease.prefix_hash,
+            remaining_prefix_budget_seconds=lease.protected_until-lease.submit_margin-query))
         def work():
             started=time.perf_counter()
             context=torch.cuda.stream(self.fast_stream) if self.fast_stream is not None else nullcontext()

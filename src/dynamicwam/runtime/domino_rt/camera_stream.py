@@ -52,7 +52,7 @@ class SelectiveAsyncCameraCapture(AsyncCameraCapture):
         submitted_wall = self._clock()
         metadata = {"observation": {"head_camera": {}}, "pointcloud": [],
                     "joint_action": {}, "endpose": {}}
-        future = self._executor.submit(_read_submitted_colors, cameras, self._reader, self._clock)
+        future = self._submit_readback(cameras)
         pending = PendingCapture(self._next_id, timestamp, captured_wall, submitted_wall,
                                  ("head_camera",), metadata, future)
         self._next_id += 1

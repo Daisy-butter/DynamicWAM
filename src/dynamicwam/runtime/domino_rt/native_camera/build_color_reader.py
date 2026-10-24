@@ -41,6 +41,8 @@ def main():
     p.add_argument("--project", type=Path, required=True)
     p.add_argument("--pybind-archive", type=Path, required=True)
     p.add_argument("--prepare-toolchain", action="store_true")
+    p.add_argument("--compile-only", action="store_true",
+                   help="compile and hash only; no SAPIEN import, GPU context or telemetry")
     args = p.parse_args()
     root = args.project.resolve()
     if not (root / "src/dynamicwam/runtime/domino_rt").is_dir():
@@ -123,8 +125,13 @@ print(json.dumps({"import":True,"registered_camera_cast":True,"native_exception_
 '''
     # importlib's extension suffix matching needs the final extension basename.
     temporary.replace(target)
-    result = command([sys.executable, "-c", check, target], capture_output=True, timeout=60)
-    print(result.stdout, flush=True)
+    if args.compile_only:
+        cpu_validation = {"performed":False,"reason":"compile_only_no_sapien_import",
+                          "gpu_scene_created":False,"telemetry_called":False}
+    else:
+        result = command([sys.executable, "-c", check, target], capture_output=True, timeout=60)
+        print(result.stdout, flush=True)
+        cpu_validation = json.loads(result.stdout.strip().splitlines()[-1])
     metadata = {"source_commit": PYBIND_COMMIT, "source_selection": "Latest first-parent commit in official archive/smart_holder before SAPIEN 3.0.0b1 PyPI release 2024-05-22; exact original wheel build commit unrecorded",
         "pybind_archive_sha256": sha(args.pybind_archive), "pybind_repository": "https://github.com/pybind/pybind11.git",
         "expected_internals_id":EXPECTED_ID,"abi_string_evidence":old_string_symbol,
@@ -132,7 +139,7 @@ print(json.dumps({"import":True,"registered_camera_cast":True,"native_exception_
         "compiler_packages":PACKAGES,"arguments":list(map(str,flags)),"python":sys.executable,
         "sapien_version":"3.0.0b1","sapien_binding_sha256":sha(binding),"sapien_library_sha256":sha(library),
         "source_sha256":sha(source),"artifact":str(target),"artifact_sha256":sha(target),
-        "cpu_validation":json.loads(result.stdout.strip().splitlines()[-1]),
+        "cpu_validation":cpu_validation,
         "limits":"CPU import/cast/exception checks do not prove full ABI or renderer thread safety; actual GPU equivalence and physics overlap required before formal evaluation"}
     target.with_name("_sapien_color_reader.build.json").write_text(json.dumps(metadata,indent=2)+"\n")
     print("BRIDGE_READY",target,flush=True)

@@ -105,8 +105,9 @@ def main():
     from dynamicwam.dualrate.runtime import RuntimeConfig
     from dynamicwam.dualrate.deployment import run_episode,PROTOCOL
     from dynamicwam.runtime.domino_rt.domino_session import DominoLevel1Session,prepare_level1_env
-    from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture
+    from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture,validate_native_rgb_conversion
     from dynamicwam.runtime.domino_rt import _sapien_color_reader
+    save(output/'native_rgb_conversion.json',validate_native_rgb_conversion(_sapien_color_reader))
     from dynamicwam.runtime.domino_rt.sapien_init_lock import SapienInitLock
     from video_artifacts import BufferedHeadVideo,validate_video_artifacts,aggregate_native_metrics,write_domino_results
     domino=Path(config['domino_root']).resolve(strict=True)
@@ -179,7 +180,9 @@ def main():
                     lift_actor=prepared['lift_actor'],start_z=prepared['start_z'],instruction=prompt,
                     control_interval_s=runtime_config.action_dt)
                 session.metrics_tracker=EvalMetricsTracker(env,{'use_dynamic':True});session.metrics_tracker.on_episode_start()
-                camera=AsyncCameraCapture(reader=_sapien_color_reader.read_color)
+                if _sapien_color_reader.rgb_batch_contract!='float32_rgba_to_u8_rgb_exact_v1':
+                    raise ValueError('native batch camera bridge contract differs')
+                camera=AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
                 save(episode_dir/'manifest.json',dict(task=task,episode_index=episode,requested_seed=requested_seed,seed=prepared['seed'],instruction=prompt,
                     velocity=prepared['velocity'],initial_target_position=session.object_position(),
                     action_dt=runtime_config.action_dt,checkpoint_sha256=config['deployment_checkpoint_sha256']))
@@ -188,7 +191,8 @@ def main():
                 report=run_episode(session,system,builder,camera,runtime_config,
                     action_limit=min(int(limits[task]),int(dep.get('action_limit',limits[task]))),
                     frame_period=float(dep.get('frame_period',.06)),max_backlog=float(dep.get('max_backlog',.25)),
-                    seed=int(prepared['seed']),video=video)
+                    seed=int(prepared['seed']),video=video,
+                    camera_warmup_captures=int(dep.get('camera_warmup_captures',3)))
                 report.update(task=task,episode_index=episode,seed=prepared['seed'],gpu_count=len(uuids),video_required=True,
                               instruction_mode=dep['instruction_mode'],instruction=prompt)
             except BaseException as exc:

@@ -5,9 +5,10 @@ robot state, metadata, and the simulator timestamp are frozen by ``begin`` on
 the owner thread. The caller updates ``env.now_obs`` and its flow history on
 that same owner thread, using ``CapturedObservation.physics_time_s``.
 
-The native reader must return an owning float32 HWC4 NumPy array and release
-the GIL while waiting/downloading. No Python ``camera.get_picture`` fallback
-is provided: that fallback would reintroduce the physics-blocking failure.
+Production uses one native batch call that releases the GIL across all Color
+downloads and exact float32-to-uint8 conversion. It returns owning RGB arrays.
+The explicit float32 single-camera reader remains a reference/testing API; no
+fallback from a missing or failing native batch reader is allowed.
 """
 from __future__ import annotations
 
@@ -78,6 +79,57 @@ def _read_submitted_colors(cameras: tuple[tuple[str, Any], ...],
     return rgb, started, clock(), durations
 
 
+def _read_submitted_rgb_batch(cameras, batch_reader, clock):
+    """One native call; camera mutation and lifecycle remain on the owner."""
+    started = clock()
+    images, elapsed = batch_reader(tuple(camera for _, camera in cameras))
+    if len(images) != len(cameras) or len(elapsed) != len(cameras):
+        raise ValueError("native RGB batch count differs from submitted cameras")
+    rgb, durations = {}, {}
+    for (name, _), image, duration in zip(cameras, images, elapsed):
+        if (not isinstance(image, np.ndarray) or image.dtype != np.uint8
+                or image.ndim != 3 or image.shape[-1] != 3 or min(image.shape[:2]) < 1
+                or not image.flags.owndata or not image.flags.c_contiguous):
+            raise ValueError(f"native RGB batch requires owning packed uint8 HWC3 for {name}")
+        duration = float(duration)
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError(f"invalid native readback/conversion duration for {name}")
+        rgb[name] = {"rgb": image}
+        durations[name] = duration
+    return rgb, started, clock(), durations
+
+
+def validate_native_rgb_conversion(native):
+    """Numerical acceptance after guarded native import; no render/device call."""
+    rng = np.random.default_rng(736)
+    rgba = rng.integers(0, 2**32, size=(257, 263, 4), dtype=np.uint32).view(np.float32)
+    rgba[~np.isfinite(rgba)] = 0
+    centers = np.arange(256, dtype=np.float32) / np.float32(255)
+    values = np.concatenate([centers, np.nextafter(centers, -np.inf),
+                             np.nextafter(centers, np.inf)])
+    cases = [rgba, np.resize(values, (1, len(values), 4)).astype(np.float32)]
+    for case in cases:
+        with np.errstate(over='ignore', invalid='ignore'):
+            expected = (case * 255).clip(0, 255).astype('uint8')[:, :, :3]
+        actual = native.rgba_to_rgb_u8(case)
+        if (actual.dtype != np.uint8 or not actual.flags.owndata
+                or not actual.flags.c_contiguous or not np.array_equal(actual, expected)):
+            raise ValueError('native RGB conversion differs from native DOMINO pixels')
+    rejected = 0
+    for channel in range(4):
+        for value in (np.nan, np.inf, -np.inf):
+            bad = np.zeros((2, 3, 4), np.float32);bad[0, 0, channel] = value
+            try:
+                native.rgba_to_rgb_u8(bad)
+            except RuntimeError as exc:
+                if 'nonfinite' not in str(exc):raise
+                rejected += 1
+            else:
+                raise ValueError('native RGB conversion accepted nonfinite Color')
+    return dict(passed=True, exact_finite_cases=len(cases), nonfinite_cases_rejected=rejected,
+                contract=native.rgb_batch_contract, rendering_tested=False)
+
+
 class AsyncCameraCapture:
     """At most one snapshot; one reader thread; all lifecycle calls on owner.
 
@@ -87,14 +139,19 @@ class AsyncCameraCapture:
     """
 
     def __init__(self, *, reader: Callable[[Any], np.ndarray] | None = None,
+                 batch_reader: Callable | None = None,
                  expected_camera_count: int = 4,
                  clock: Callable[[], float] = time.perf_counter):
         if expected_camera_count < 1:
             raise ValueError("expected camera count must be positive")
-        if reader is None:
-            from _sapien_color_reader import read_color
-            reader = read_color
-        self._reader = reader
+        if reader is not None and batch_reader is not None:
+            raise ValueError("choose either explicit reference reader or native batch reader")
+        if reader is None and batch_reader is None:
+            from _sapien_color_reader import read_rgb_batch
+            batch_reader = read_rgb_batch
+        self._reader = batch_reader if batch_reader is not None else reader
+        self._read_worker = (_read_submitted_rgb_batch if batch_reader is not None
+                             else _read_submitted_colors)
         self._clock = clock
         self._expected_camera_count = expected_camera_count
         self._owner_thread = threading.get_ident()
@@ -102,6 +159,9 @@ class AsyncCameraCapture:
         self._pending: PendingCapture | None = None
         self._next_id = 0
         self._closed = False
+
+    def _submit_readback(self, cameras):
+        return self._executor.submit(self._read_worker, cameras, self._reader, self._clock)
 
     def _owner(self) -> None:
         if threading.get_ident() != self._owner_thread:
@@ -176,7 +236,7 @@ class AsyncCameraCapture:
             "right_arm": right[:-1], "right_gripper": right[-1],
             "vector": np.array(list(left) + list(right)),
         }
-        future = self._executor.submit(_read_submitted_colors, cameras, self._reader, self._clock)
+        future = self._submit_readback(cameras)
         pending = PendingCapture(self._next_id, timestamp, captured_wall, render_submitted_wall,
                                  names, observation, future)
         self._next_id += 1

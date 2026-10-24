@@ -11,8 +11,79 @@ from .actuators import ActuatorProjection
 PROTOCOL='dualrate_v3_continuous_fast_only_dt018_v1'
 
 
+def capture_timing(captured, *, owner_processed_wall):
+    """Partition real wall latency; do not relabel exposure or availability."""
+    points=[float(captured.capture_wall_perf_s),float(captured.render_submitted_wall_perf_s),
+        float(captured.readback_started_wall_perf_s),float(captured.readback_finished_wall_perf_s),
+        float(captured.finished_wall_perf_s),float(owner_processed_wall)]
+    if any(not math.isfinite(x) for x in points) or any(b<a for a,b in zip(points,points[1:])):
+        raise TimingError('capture wall timestamps are invalid')
+    names=('render_submit','metadata_and_reader_dispatch','readback_and_conversion',
+           'readback_complete_to_owner_finish','owner_history_and_video')
+    parts={name+'_wall_seconds':b-a for name,a,b in zip(names,points,points[1:])}
+    return dict(parts,total_wall_seconds=points[-1]-points[0],
+        camera_readback_seconds=dict(captured.camera_readback_seconds),
+        wall_timestamps=points,clock='process_monotonic_perf_counter')
+
+
+def warm_camera(camera, session, *, count, emit):
+    """Fixed pre-activation warmup, with no duplicate frames in model history."""
+    if isinstance(count,bool) or int(count)!=count or count<1:
+        raise ValueError('camera warmup count must be a positive integer')
+    source=float(session.physics_time());captured=None
+    for index in range(int(count)):
+        camera.begin(session.env,source)
+        captured=camera.finish()
+        if float(session.physics_time())!=source or captured.physics_time_s!=source:
+            raise TimingError('camera warmup advanced the inactive episode clock')
+        emit(dict(event='camera_warmup',index=index,count=count,exposure=source,
+                  timing=capture_timing(captured,owner_processed_wall=time.perf_counter())))
+    return captured
+
+
+def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,deferred,seen_references):
+    """Wait for genuinely fresh available pixels while physics/queue continue.
+
+    Deferral never advances the route's last-query tick. A later lease uses its
+    actual physical time and the original floor-grid/protect_steps deadline.
+    """
+    fast_due,slow_due=runtime.due(now)
+    if not (fast_due or slow_due):return
+    snapshot=history.snapshot(now)
+    age=now-snapshot[-1].exposure
+    fresh=0<=age<=builder.max_observation_age+1e-8
+    for route,due in (('fast',fast_due),('slow',slow_due)):
+        if not due:continue
+        if not fresh:
+            if route not in deferred:
+                deferred[route]=now
+                emit(dict(event='query_deferred',route=route,physical_time=now,
+                    observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
+                    observation_age=age,max_observation_age=builder.max_observation_age,
+                    reason='no_fresh_completed_capture'))
+            continue
+        if route in deferred:
+            began=deferred.pop(route)
+            emit(dict(event='query_resumed',route=route,physical_time=now,
+                deferred_seconds=now-began,observation_time=snapshot[-1].exposure,
+                observation_age=age))
+        if route=='fast':
+            ref=runtime.store.snapshot(now)
+            if ref:seen_references.add(ref.version)
+            trace=queue.completed_execution_trace(initial,now)
+            runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
+                builder.current(snapshot,query_time=lease.query_time,action_start=lease.prefix.start_time,
+                                executed=trace),observation_time=snapshot[-1].exposure)
+        else:
+            prefix=queue.snapshot_committed(now)
+            runtime.start_slow(lambda snapshot=snapshot,now=now,prefix=prefix:
+                builder.source(snapshot,source_time=now,action_start=prefix.start_time,vae=vae),
+                prefix,source_time=now)
+
+
 def run_episode(session, system, builder, camera, runtime_config, *, action_limit,
-                frame_period=.06, max_backlog=.25, record=None, seed=0, video=None):
+                frame_period=.06, max_backlog=.25, record=None, seed=0, video=None,
+                camera_warmup_captures=3):
     """One owner thread steps 250 Hz physics; two workers preprocess and infer.
 
     Initial reference and fast plan are established before activation, explicitly
@@ -35,8 +106,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('action grid must lie on integer physics ticks')
     clock=lambda:float(session.physics_time())
     bootstrap_started=time.perf_counter()
-    camera.begin(session.env,initial)
-    captured=camera.finish()
+    captured=warm_camera(camera,session,count=camera_warmup_captures,emit=emit)
     history.append(captured.observation,exposure=captured.physics_time_s,available=initial)
     if video:video.append(captured.observation['observation']['head_camera']['rgb'],
                          physics_time_s=initial,capture_wall_perf_s=captured.capture_wall_perf_s)
@@ -68,7 +138,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                   held_prefix_seconds=runtime_config.protect_steps*queue.dt))
         wall0=time.perf_counter();max_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture=initial+frame_period
-        accepted_captures=1;skip_captures=0;seen_references=set();terminal=None
+        accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={}
         while terminal is None:
             now=clock();elapsed=time.perf_counter()-wall0;lag=elapsed-(now-initial)
             if now>=initial+action_limit*queue.dt-1e-9:
@@ -84,26 +154,16 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 if video:video.append(c.observation['observation']['head_camera']['rgb'],
                     physics_time_s=c.physics_time_s,capture_wall_perf_s=c.capture_wall_perf_s)
                 emit(dict(event='capture',exposure=c.physics_time_s,available=clock(),
-                    readback_wall_seconds=c.readback_finished_wall_perf_s-c.readback_started_wall_perf_s))
-            now=clock();fast_due,slow_due=runtime.due(now)
-            # Never block the physics owner waiting for a camera or preprocessing.
-            if fast_due:
-                snapshot=history.snapshot(now)
-                ref=runtime.store.snapshot(now)
-                if ref:seen_references.add(ref.version)
-                trace=queue.completed_execution_trace(initial,now)
-                runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
-                    builder.current(snapshot,query_time=lease.query_time,action_start=lease.prefix.start_time,
-                                    executed=trace),observation_time=snapshot[-1].exposure)
-            if slow_due:
-                snapshot=history.snapshot(now);prefix=queue.snapshot_committed(now)
-                runtime.start_slow(lambda snapshot=snapshot,now=now,prefix=prefix:
-                    builder.source(snapshot,source_time=now,action_start=prefix.start_time,vae=vae),
-                    prefix,source_time=now)
+                    timing=capture_timing(c,owner_processed_wall=time.perf_counter())))
+            now=clock()
+            dispatch_due_queries(runtime,builder,history,queue,now=now,initial=initial,vae=vae,
+                                 emit=emit,deferred=deferred,seen_references=seen_references)
             now=clock()
             if now>=next_capture-1e-9:
                 if pending is None:
                     pending=camera.begin(session.env,now)
+                    emit(dict(event='capture_submitted',capture_id=pending.capture_id,exposure=now,
+                        owner_submit_wall_seconds=time.perf_counter()-pending.capture_wall_perf_s))
                 else:
                     skip_captures+=1
                 next_capture=initial+(math.floor((now-initial)/frame_period+1e-9)+1)*frame_period
@@ -144,6 +204,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             physical_duration=clock()-initial,active_wall_seconds=time.perf_counter()-wall0,max_backlog_s=max_lag,
             action_limit=action_limit,started_targets=last_row+1,completed_targets=completed_rows,
             captures=accepted_captures,skipped_capture_requests=skip_captures,
+            camera_warmup_captures=camera_warmup_captures,unfinished_query_deferrals=deferred,
             reference_versions_consumed=sorted(seen_references),events=events,
             executable_action_source='fast_only',on_policy_training_distribution=False)
         return report
