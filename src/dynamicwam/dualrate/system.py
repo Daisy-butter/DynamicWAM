@@ -186,17 +186,24 @@ class DualRateSystem(nn.Module):
             world_intervals=world["world_intervals"],
             world_types=world["world_types"],world_action_delta=action_delta,
             world_action_delta_valid=action_delta_valid,
-            target_times=torch.cat((batch["action_times"], batch["future_times"]), dim=1),
+            # A row is the drive target reached at its interval END. Its start
+            # remains the execution/commitment identity, not the prediction time.
+            target_times=torch.cat((batch["action_intervals"][..., 1], batch["future_times"]), dim=1),
             query_time=batch["query_time"], source_time=world["source_time"],
             completed_time=world["completed_time"])
-        # Task-known entity existence may gate requested slots. Future visibility
-        # and label availability must NEVER be used as this conditioning mask.
+        # Task-known entity existence and STATIC trained output capabilities may
+        # gate requested slots. A role with no trained continuous/contact fields
+        # must not inject meaningless fixed noise into joint A/Z attention.
+        # Per-example future visibility/GT label masks NEVER condition this path.
+        capability = self.future_field_support.any(-1) | self.contact_field_support.any(-1)
         if "query_entity_valid" in batch:
             presence = batch["query_entity_valid"]
             c = self.fast.config
             if presence.shape != (batch["query_time"].shape[0], c.future_entities) or presence.dtype != torch.bool:
                 raise ValueError("query_entity_valid must be boolean [B,entities] task-known presence")
-            result["future_valid"] = presence.repeat_interleave(c.future_tokens // c.future_entities,dim=1)
+            result["future_valid"] = presence.repeat_interleave(c.future_tokens // c.future_entities,dim=1) & capability[None]
+        elif not bool(capability.all()):
+            result["future_valid"] = capability[None].expand(batch["query_time"].shape[0], -1)
         return result
 
     @staticmethod
@@ -271,13 +278,21 @@ class DualRateSystem(nn.Module):
         nv, na, nf, nz = [self._noise(x.shape, x, generator) for x in (source_video, source_action, action, future)]
 
         # Supervised source pass has its own noisy GT and exposes no reusable cache.
-        supervised = self.slow.supervised_forward(self.source(batch),
-            fm_input(source_video, sigmas[0], nv), fm_input(source_action, sigmas[1], na),
-            sigmas[0], sigmas[1], batch["source_known_actions"], batch["source_known_mask"])
-        losses = {
-            "slow_video": (supervised["video_pred"].float() - (nv - source_video).float()).square().mean(),
-            "slow_action": masked_mean((supervised["action_pred"].float() - (na - source_action).float()).square(), ~batch["source_known_mask"][..., None]),
-        }
+        if any(parameter.requires_grad for parameter in self.slow.parameters()):
+            supervised = self.slow.supervised_forward(self.source(batch),
+                fm_input(source_video, sigmas[0], nv), fm_input(source_action, sigmas[1], na),
+                sigmas[0], sigmas[1], batch["source_known_actions"], batch["source_known_mask"])
+            losses = {
+                "slow_video": (supervised["video_pred"].float() - (nv - source_video).float()).square().mean(),
+                "slow_action": masked_mean((supervised["action_pred"].float() - (na - source_action).float()).square(), ~batch["source_known_mask"][..., None]),
+            }
+        else:
+            # Short interface warmup freezes the complete native slow model.
+            # Its supervised pass cannot train anything and need not run. The
+            # separate source-only prediction below still produces genuine M;
+            # readout/current/fast modules retain their ordinary live gradients.
+            losses = {"slow_video": action.new_zeros((), dtype=torch.float32),
+                      "slow_action": action.new_zeros((), dtype=torch.float32)}
         # A separate source-only prediction creates reference, with gradients live.
         world = self.world_readout(self.predict_reference(batch, generator=generator))
         keep = torch.rand((b, 1), device=device, generator=generator) >= cfg.cache_dropout
@@ -292,6 +307,10 @@ class DualRateSystem(nn.Module):
         known_actions = torch.where(action_conditioned[:, None, None], action, batch["fast_known_actions"])
         # Missing future labels must not become artificial clean zero states.
         noisy_future=torch.where(future_mask,fm_input(future,sigmas[2],nz),nz)
+        # Universally unsupported fields are constant padding, not random
+        # pseudo-world variables. This STATIC capability is known at inference;
+        # sample-specific missing GT above remains noise and never a condition.
+        noisy_future=torch.where(self.future_field_support[None],noisy_future,torch.zeros_like(noisy_future))
         result = self.fast(fm_input(action, sigmas[2], nf), noisy_future, sigmas[2],
             action_known_mask=known_mask, known_actions=known_actions, **conditions)
         losses["fast_action"] = masked_mean((result["action_velocity"].float() - (nf - action).float()).square(), ~known_mask[..., None])
@@ -323,14 +342,15 @@ class DualRateSystem(nn.Module):
         like = batch["state"]
         a = self._noise((b, c.chunk_size, c.action_dim), like, generator)
         z = self._noise((b, c.future_tokens, c.future_dim), like, generator)
+        z = torch.where(self.future_field_support[None],z,torch.zeros_like(z))
         known, mask = batch["fast_known_actions"], batch["fast_known_mask"]
         a = _prefix(a, known, mask)
         conditions = self.conditions(batch, world)
         context=self.fast.prepare_context(**conditions)
         valid=conditions.get("future_valid",torch.ones(z.shape[:2],dtype=torch.bool,device=z.device))
         fields=valid[...,None] & self.future_field_support[None]
-        # Training supplies pure, fixed noise for unsupported fields. Their
-        # unsupervised velocities must not feed back into the joint action path.
+        # Static unsupported fields stay zero in both training and inference;
+        # their unsupervised velocities cannot alter joint action generation.
         for step in range(steps):
             sigma = a.new_full((b,), 1 - step / steps)
             result = self.fast.forward_cached(a, z, sigma, context,

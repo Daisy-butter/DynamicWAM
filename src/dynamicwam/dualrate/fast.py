@@ -107,7 +107,10 @@ class _JointBlock(nn.Module):
         self.modulation = nn.Sequential(nn.SiLU(), nn.Linear(cfg.dim, 6 * cfg.dim))
         nn.init.zeros_(self.modulation[-1].weight)
         nn.init.zeros_(self.modulation[-1].bias)
-        self.slow_gate = nn.Linear(cfg.dim + 1, 1)
+        # The gate must be able to respond to *current* evidence, not only age
+        # and executed-plan disagreement. The latest-observation attention
+        # response is query-specific and already available in this block.
+        self.slow_gate = nn.Linear(2 * cfg.dim + 1, 1)
         nn.init.zeros_(self.slow_gate.weight)
         nn.init.constant_(self.slow_gate.bias, math.log(cfg.slow_gate_init / (1 - cfg.slow_gate_init)))
         self.ff = nn.Sequential(nn.Linear(cfg.dim, cfg.dim * cfg.mlp_ratio), nn.GELU(), nn.Linear(cfg.dim * cfg.mlp_ratio, cfg.dim))
@@ -140,9 +143,11 @@ class _JointBlock(nn.Module):
         q, k, v = self.qkv(self.norm_self(x) * (1 + sc) + sa).chunk(3, -1)
         mixed = F.scaled_dot_product_attention(self.q_norm(self._heads(q)), self.k_norm(self._heads(k)), self._heads(v), attn_mask=valid[:, None, None, :])
         x = x + self.self_output(self._merge(mixed))
-        x = x + self._cross(self.norm_current(x) * (1 + cc) + ca, kv[0], kv[1], current_allowed)
+        latest = self._cross(self.norm_current(x) * (1 + cc) + ca, kv[0], kv[1], current_allowed)
+        x = x + latest
         slow = self._cross(self.norm_slow(x) * (1 + cc) + ca, kv[2], kv[3], slow_allowed)
-        gate = self.slow_gate(torch.cat((condition, deviation[:, None, None].expand(-1, x.shape[1], 1)), -1)).sigmoid()
+        gate = self.slow_gate(torch.cat((condition, self.norm_current(latest),
+            deviation[:, None, None].expand(-1, x.shape[1], 1)), -1)).sigmoid()
         x = x + gate * slow
         x = x + self.ff(self.norm_ff(x) * (1 + fc) + fa)
         return torch.where(valid[..., None], x, torch.zeros_like(x))
@@ -234,7 +239,9 @@ class FastJointWAM(nn.Module):
         observed, predicted, action = (world_types == i for i in range(3))
         obs_allowed = observed[:, None] & (end[:, None] <= query_time[:, None, None])
         pred_allowed = predicted[:, None] & (end[:, None] >= query_time[:, None, None]) & (target_times[..., None] >= start[:, None]) & (target_times[..., None] <= end[:, None])
-        action_allowed = action[:, None] & (end[:, None] >= source_time[:, None, None]) & (start[:, None] <= target_times[..., None])
+        # Keep the relevant source-to-target plan history. At an exact boundary
+        # the ending command belongs to the target; the next row has not begun.
+        action_allowed = action[:, None] & (end[:, None] >= source_time[:, None, None]) & (start[:, None] < target_times[..., None] - 1e-8)
         allowed = eligible[:, None] & (obs_allowed | pred_allowed | action_allowed)
         readable = allowed.any(1)
         slow = self.world_in(torch.where(readable[..., None], world_tokens, torch.zeros_like(world_tokens)).to(self.world_in.weight.dtype)) + self.type_embedding.weight[3] + self.world_type_embedding(world_types)

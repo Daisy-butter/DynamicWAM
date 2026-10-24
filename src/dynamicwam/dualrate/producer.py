@@ -41,6 +41,8 @@ DT = .18
 RGB_TOLERANCE = .030001
 INTERPOLATION_GAP = .060001
 QUERY_AGES = (.36, .72)
+LEGACY_ENTITY_ROLES = ('tracked_dynamic_target','support','left_gripper','right_gripper')
+ACTIVE_ENTITY_ROLES = ('tracked_dynamic_target','left_gripper','right_gripper')
 SCENE_PREFIX = "The whole scene is in a realistic, industrial art style with three views: a fixed rear camera, a movable left arm camera, and a movable right arm camera. The aloha robot is currently performing the following task: "
 # The templates were checked against each task's full_description; several
 # upstream first 'seen' prompts omit task steps or reference missing objects.
@@ -145,6 +147,115 @@ def attach_stat_identity(output):
     return dict(episodes=len(episodes),path=str(path),sha256=digest,identity_kind=sidecar['identity_kind'])
 
 
+def bound_metadata_path(manifest, root, key, default=None):
+    """Resolve and verify immutable metadata even when row hashing is disabled."""
+    value=manifest.get(key,default)
+    _require(isinstance(value,str) and bool(value),f'missing metadata path {key}')
+    path=(Path(root)/value).resolve(strict=True)
+    digest=manifest.get(key+'_sha256')
+    if manifest.get('metadata_binding_schema')=='dualrate-static-metadata-v1':
+        _require(isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest) is not None,
+                 f'missing metadata hash {key}')
+    if digest is not None:
+        _require(sha256_file(path)==digest,f'{key} metadata hash changed')
+    return path
+
+
+def role_token_indices(manifest):
+    """Explicit model role selection, independent of future GT availability."""
+    roles=tuple(manifest.get('active_entity_roles',LEGACY_ENTITY_ROLES))
+    _require(roles in (LEGACY_ENTITY_ROLES,ACTIVE_ENTITY_ROLES),'unverified future entity role layout')
+    indices=[4*LEGACY_ENTITY_ROLES.index(role)+h for role in roles for h in range(4)]
+    if 'future_token_indices' in manifest:
+        _require(manifest['future_token_indices']==indices,'role/token identity mismatch')
+    return roles,torch.tensor(indices,dtype=torch.long)
+
+
+def _tracked_actor_provenance(episodes):
+    """Read the recorded target identity; never infer its pose from a scene seed."""
+    import pickle
+    result=[]
+    for index,episode in enumerate(episodes):
+        episode=dict(episode)
+        raw=Path(episode['raw_path']).resolve(strict=True)
+        trajectory=raw.parents[1]/'_traj_data'/(raw.stem+'.pkl')
+        payload=trajectory.read_bytes()
+        recorded=pickle.loads(payload)
+        actor=recorded.get('dynamic_motion_info',{}).get('target_actor_name')
+        _require(isinstance(actor,str) and bool(actor),'recorded tracked target actor identity missing')
+        episode.update(tracked_actor_name=actor,tracked_actor_identity_source=str(trajectory),
+                       tracked_actor_identity_source_sha256=hashlib.sha256(payload).hexdigest(),
+                       tracked_pose_field='interception/target_pose_wxyz')
+        result.append(episode)
+        if (index+1)%1000==0:
+            print(json.dumps({'tracked_actor_identities':index+1}),flush=True)
+    return result
+
+
+def bind_metadata_manifests(source, output, *, active_entity_roles=None,
+                            capture_tracked_actor_identity=False):
+    """Create small V3 manifests referring to unchanged V2 data/cache files.
+
+    No raw/flow/text payload is copied or modified. The new manifests bind the
+    episode clocks/roles and the complete text-index mapping as immutable bytes.
+    """
+    source=Path(source).resolve(strict=True);output=Path(output).resolve()
+    _require(not output.exists(),'metadata binding output already exists')
+    manifests={};bound_episodes=None
+    if active_entity_roles is not None:
+        roles,indices=role_token_indices({'active_entity_roles':list(active_entity_roles)})
+        _require(roles==ACTIVE_ENTITY_ROLES,'V3 production binding requires three supervised roles')
+        _require(capture_tracked_actor_identity,'V3 roles require recorded target identity provenance')
+        bound_episodes=_tracked_actor_provenance(json.loads((source/'episodes.json').read_text()))
+    for split in ('train','validation'):
+        parent=source/f'{split}.json';m=json.loads(parent.read_text())
+        _require(m['schema_version']==SCHEMA and m['split']==split,'wrong parent manifest')
+        for key in ('rows_file','episodes_file','source_file_stats','text_index'):
+            path=(source/m[key]).resolve(strict=True)
+            m[key]=str(path)
+        prompts=(source/m.get('prompts_file','prompts.json')).resolve(strict=True)
+        m['prompts_file']=str(prompts)
+        _require(sha256_file(Path(m['rows_file']))==m['rows_sha256'],'parent rows changed')
+        _require(sha256_file(Path(m['source_file_stats']))==m['source_file_stats_sha256'],'parent stat sidecar changed')
+        for key in ('episodes_file','text_index','prompts_file'):
+            m[key+'_sha256']=sha256_file(Path(m[key]))
+        text=json.loads(Path(m['text_index']).read_text())
+        _require(text.get('complete') is True,'complete parent text bank required')
+        _require(text['identity']['prompt_manifest_sha256']==m['prompts_file_sha256'],
+                 'parent text bank prompt manifest mismatch')
+        if m.get('audit_file'):
+            m['audit_file']=str((source/m['audit_file']).resolve(strict=True))
+        m.update(metadata_binding_schema='dualrate-static-metadata-v1',
+                 parent_manifest=str(parent),parent_manifest_sha256=sha256_file(parent))
+        if active_entity_roles is not None:
+            m.update(active_entity_roles=list(roles),future_token_indices=indices.tolist(),
+                label_entity_roles=list(LEGACY_ENTITY_ROLES),future_role_schema='tracked-target-hands-v1',
+                future_field_support=[m['future_field_support'][i] for i in indices.tolist()],
+                contact_field_support=[m['contact_field_support'][i] for i in indices.tolist()],
+                omitted_role_reason='second_related_or_support_entity_has_no_recorded_trajectory',
+                visual_target_semantics='projected_local_image_context_including_possible_occluders',
+                visual_validity_semantics='actual_frame_and_projection_valid_not_true_object_visibility',
+                occlusion_status='not_a_predicted_head_or_visibility_label',
+                flow_raw_stride_frames=12,flow_raw_offsets_frames=[48,36,24,12,0],
+                flow_acceleration_previous_interval='raw_frame_index_minus_12_actual_center_time_difference',
+                statistics_reuse='same_134_field_train_statistics_missing_legacy_support_never_contributed')
+        manifests[split]=m
+    output.mkdir(parents=True)
+    if bound_episodes is not None:
+        episode_path=output/'episodes.json'
+        episode_path.write_text(json.dumps(bound_episodes,indent=2))
+        for m in manifests.values():
+            m.update(episodes_file=str(episode_path),episodes_file_sha256=sha256_file(episode_path))
+    result={}
+    for split,m in manifests.items():
+        path=output/f'{split}.json';path.write_text(json.dumps(m,indent=2))
+        result[split]=dict(path=str(path),sha256=sha256_file(path),
+                           episodes_file_sha256=m['episodes_file_sha256'],
+                           text_index_sha256=m['text_index_sha256'],
+                           prompts_file_sha256=m['prompts_file_sha256'])
+    return result
+
+
 def select_frame(times, target, *, past_only, tolerance):
     """Return a real frame index; duplicate timestamps select the last whole row."""
     indices = unique_last_indices(times)
@@ -183,6 +294,162 @@ def resample_actions(times, values, targets, *, max_gap=INTERPOLATION_GAP):
         v[[6,13]] = x[lo,[6,13]]
         out.append(v); valid.append(True); errors.append(min(target-t[lo],t[hi]-target))
     return np.asarray(out), np.asarray(valid), np.asarray(errors)
+
+
+def validate_completion_distribution(value, *, verify_evidence=True):
+    """A declared latency distribution, never a disguised clipped timestamp."""
+    _require(isinstance(value,dict),'explicit completion distribution required')
+    result=dict(value)
+    _require(result.get('schema')=='dualrate-completion-discrete-v1','unknown completion distribution')
+    _require(result.get('kind') in ('synthetic','measured_quantiles'),'unknown completion provenance')
+    _require(result.get('clock_domain')=='simulation_seconds','latencies must use the physical model clock')
+    _require(result.get('selection')=='row_hash_uniform_conditioned_available','unknown latency selection')
+    values=result.get('latencies_seconds',[])
+    _require(bool(values) and all(isinstance(x,(int,float)) and math.isfinite(x) and x>0 for x in values),
+             'completion latencies must be positive finite seconds')
+    _require(values==sorted(values),'completion quantiles must be ordered')
+    _require(isinstance(result.get('seed'),int),'completion selection seed required')
+    _require(isinstance(result.get('provenance'),str) and bool(result['provenance']),'completion provenance explanation required')
+    if result['kind']=='measured_quantiles':
+        levels=result.get('quantile_levels',[])
+        _require(len(levels)==len(values) and all(isinstance(x,(int,float)) and math.isfinite(x) and 0<=x<=1 for x in levels)
+                 and all(b>a for a,b in zip(levels,levels[1:])),'ordered measured quantile levels required')
+        path=Path(result.get('trace_path',''))
+        digest=result.get('trace_sha256','')
+        _require(path.is_absolute() and re.fullmatch('[0-9a-f]{64}',digest) is not None,
+                 'measured latencies require an absolute trace and SHA256')
+        if verify_evidence:
+            _require(sha256_file(path)==digest,'measured completion trace changed')
+    return result
+
+
+def manifest_completion_distribution(manifest):
+    value=manifest.get('completion_distribution')
+    if value is None:
+        _require('timing_derivation' not in manifest,'derived timing manifest lost completion distribution')
+        value=dict(schema='dualrate-completion-discrete-v1',kind='synthetic',clock_domain='simulation_seconds',
+                   selection='row_hash_uniform_conditioned_available',latencies_seconds=[.18],seed=0,
+                   provenance='legacy_v2_v3_full01_fixed_0.18s_not_measured')
+    result=validate_completion_distribution(value)
+    for age in manifest.get('query_ages_seconds',QUERY_AGES):
+        _require(math.isfinite(age) and age>0,'positive finite query ages required')
+        completion_latency_seconds(result,'availability_validation',0,age)
+    return result
+
+
+def completion_latency_seconds(distribution, episode_uid, source_grid, query_age):
+    """Deterministic conditional selection; impossible references are rejected."""
+    available=[float(x) for x in distribution['latencies_seconds'] if float(x)<=float(query_age)]
+    _require(bool(available),'no completed reference is available at this query age')
+    identity=f"{distribution['seed']}:{episode_uid}:{int(source_grid)}:{float(query_age).hex()}"
+    index=int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8],'big')%len(available)
+    return available[index]
+
+
+def _action_targets_supported(times, targets, max_gap=INTERPOLATION_GAP):
+    """The same exact/bracket guard as resample_actions, without encoding labels."""
+    t=np.asarray(times,dtype=np.float64)[unique_last_indices(times)]
+    requested=np.asarray(targets,dtype=np.float64)
+    hi=np.searchsorted(t,requested,side='left');lo=hi-1
+    hsafe=np.minimum(hi,len(t)-1);lsafe=np.maximum(lo,0)
+    exact=((hi<len(t)) & (np.abs(t[hsafe]-requested)<=1e-8)) | ((lo>=0) & (np.abs(t[lsafe]-requested)<=1e-8))
+    bracket=(lo>=0) & (hi<len(t)) & ((t[hsafe]-t[lsafe])<=max_gap)
+    return exact | bracket
+
+
+def eligible_timing_rows(times, source_stride, query_ages):
+    """Return source-grid/age IDs with real condition and complete A/video support."""
+    t=np.asarray(times,dtype=np.float64);unique_last_indices(t)
+    _require(math.isfinite(source_stride) and source_stride>0,'positive source stride required')
+    _require(bool(query_ages) and all(math.isfinite(age) and age>0 for age in query_ages),'positive query ages required')
+    count=max(0,int(math.floor((t[-1]-t[0]-16*DT)/source_stride))+1)
+    rows=[]
+    for grid in range(count):
+        source=float(t[0]+grid*source_stride)
+        try:
+            select_frame(t,source,past_only=True,tolerance=INTERPOLATION_GAP)
+            for target in source+np.arange(1,9)*2*DT:
+                select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE)
+        except ValueError:
+            continue
+        if not _action_targets_supported(t,source+np.arange(1,17)*DT).all():
+            continue
+        for age_id,age in enumerate(query_ages):
+            query=source+age
+            if query+16*DT>t[-1]+1e-8:
+                continue
+            try:
+                select_frame(t,query,past_only=True,tolerance=INTERPOLATION_GAP)
+            except ValueError:
+                continue
+            if _action_targets_supported(t,query+np.arange(1,17)*DT).all():
+                rows.append((grid,age_id))
+    return rows
+
+
+def derive_timing_manifests(source, output, *, query_ages_seconds, completion_distribution):
+    """CPU-only timing-index derivation; preserve all raw labels and split/stat identities.
+
+    Invoke only after selecting the explicit synthetic or measured distribution.
+    Reads timestamps, never generates image/latent labels or runs a simulator.
+    """
+    import h5py
+    source=Path(source).resolve(strict=True);output=Path(output).resolve()
+    _require(not output.exists(),'timing derivation output already exists')
+    ages=[float(x) for x in query_ages_seconds]
+    _require(bool(ages) and ages==sorted(set(ages)),'query ages must be ordered and distinct')
+    distribution=validate_completion_distribution(completion_distribution)
+    for age in ages:
+        _require(math.isfinite(age) and age>0 and abs(age/DT-round(age/DT))<=1e-7,
+                 'query ages must be positive aligned physical action-grid multiples')
+        completion_latency_seconds(distribution,'availability_validation',0,age)
+    parents={split:json.loads((source/f'{split}.json').read_text()) for split in ('train','validation')}
+    m=parents['train']
+    _require(m.get('metadata_binding_schema')=='dualrate-static-metadata-v1','bound parent metadata required')
+    episode_path=bound_metadata_path(m,source,'episodes_file')
+    episodes=json.loads(episode_path.read_text())
+    stat_path=(source/m['source_file_stats']).resolve(strict=True)
+    _require(sha256_file(stat_path)==m['source_file_stats_sha256'],'parent source stat sidecar changed')
+    for parent in parents.values():
+        _require(parent.get('metadata_binding_schema')=='dualrate-static-metadata-v1' and
+                 parent['episodes_file_sha256']==m['episodes_file_sha256'] and
+                 parent['source_stride_seconds']==m['source_stride_seconds'] and
+                 parent['source_file_stats_sha256']==m['source_file_stats_sha256'],
+                 'parent split metadata mismatch')
+        for key in ('episodes_file','text_index','prompts_file'):
+            bound_metadata_path(parent,source,key)
+    stats=json.loads(stat_path.read_text())['episodes'];rows={'train':[],'validation':[]}
+    for index,episode in enumerate(episodes):
+        verify_file_stat(episode['raw_path'],stats[episode['episode_uid']]['raw'])
+        with h5py.File(episode['raw_path'],'r') as handle:
+            times=handle['interception/sim_time_seconds'][:]
+        _require(float(times[0])==episode['first_time'] and float(times[-1])==episode['last_time'],
+                 'episode metadata clock endpoints changed')
+        split=episode['split'];_require(split in rows,'unknown parent split')
+        rows[split].extend((index,grid,age) for grid,age in eligible_timing_rows(times,m['source_stride_seconds'],ages))
+        if (index+1)%1000==0:
+            print(json.dumps({'timing_episodes':index+1,'rows':{k:len(v) for k,v in rows.items()}}),flush=True)
+    _require(all(rows.values()),'timing derivation lost a complete split')
+    output.mkdir(parents=True)
+    audit=dict(schema='dualrate-timing-index-derivation-v1',episodes=len(episodes),query_ages_seconds=ages,
+               completion_distribution=distribution,raw_images_encoded=0,simulator_started=False,
+               row_counts={key:len(value) for key,value in rows.items()},
+               availability_semantics='latency distribution conditioned on completion at or before query; never clipped')
+    (output/'timing_audit.json').write_text(json.dumps(audit,indent=2))
+    result={}
+    for split,parent in parents.items():
+        new=dict(parent)
+        for key in ('episodes_file','text_index','prompts_file','source_file_stats'):
+            new[key]=str((source/parent[key]).resolve(strict=True))
+        array=output/f'{split}_rows.npy';np.save(array,np.asarray(rows[split],dtype=np.int64))
+        new.update(rows_file=str(array),rows_sha256=sha256_file(array),query_ages_seconds=ages,
+                   completion_distribution=distribution,latency_provenance=distribution['kind']+':'+distribution['provenance'],
+                   parent_manifest=str(source/f'{split}.json'),parent_manifest_sha256=sha256_file(source/f'{split}.json'),
+                   audit_file=str(output/'timing_audit.json'),
+                   timing_derivation='real_timestamp_complete_action_and_native_video_support_v1')
+        path=output/f'{split}.json';path.write_text(json.dumps(new,indent=2))
+        result[split]=dict(path=str(path),sha256=sha256_file(path),rows=len(rows[split]))
+    return dict(manifests=result,audit=audit)
 
 
 def view_overlap(grid_h, grid_w, *, flow_weight=0.):
@@ -281,7 +548,7 @@ def read_episode_records(path, row, visual_encoder_id):
         actions=torch.from_numpy(h['joint_action/vector'][:]).float()
     entity_valid=torch.ones(len(times),4,dtype=torch.bool);entity_valid[:,1]=False
     r=EpisodeRecords(row['episode_uid'],row['scene_id'],row['split'],visual_encoder_id,
-                     ('tracked_dynamic_target',None,'left_gripper','right_gripper'),times,xyz,hands,
+                     ('tracked:'+row.get('tracked_actor_name','dynamic_target'),None,'left_gripper','right_gripper'),times,xyz,hands,
                      torch.zeros(len(times),4,128),entity_valid,torch.ones(len(times),2,dtype=torch.bool),
                      torch.zeros(len(times),4,dtype=torch.bool),torch.zeros(len(times),4,dtype=torch.bool),
                      torch.tensor([0,-1,2,3]).repeat(len(times),1),contacts,torch.ones_like(contacts,dtype=torch.bool),
@@ -330,22 +597,24 @@ class DominoPhysicalDataset(Dataset):
         self.path=Path(manifest_path).resolve();self.manifest=json.loads(self.path.read_text())
         m=self.manifest;_require(m['schema_version']==SCHEMA,"wrong DOMINO schema")
         _require(m['action_interval_seconds']==DT and m['codec_id']==CODEC_ID,"unverified timing/codec contract")
+        self.completion_distribution=manifest_completion_distribution(m)
         for k in ('native_checkpoint_sha256','action_normalization_sha256','motion_normalization_sha256'):
             _require(bool(re.fullmatch('[0-9a-f]{64}',m.get(k,''))),f'missing {k}')
         _require(m['statistics']['fit_split']=='train',"statistics are not train-only")
         self.rows=np.load(self.path.parent/m['rows_file'],mmap_mode='r')
         _require(self.rows.ndim==2 and self.rows.shape[1]==3,"rows must be episode/start/age triples")
         if verify_hash:_require(sha256_file(self.path.parent/m['rows_file'])==m['rows_sha256'],"row index changed")
-        self.episodes=json.loads((self.path.parent/m['episodes_file']).read_text())
+        self.episodes=json.loads(bound_metadata_path(m,self.path.parent,'episodes_file').read_text())
         stat_path=self.path.parent/m['source_file_stats']
         _require(sha256_file(stat_path)==m['source_file_stats_sha256'],'source stat sidecar changed')
         self.source_stats=json.loads(stat_path.read_text())
         _require(self.source_stats['identity_kind']=='resolved_path_size_mtime_ns_not_content_hash','unknown source stat semantics')
-        self.text_root=self.path.parent/m.get('text_index','text/index.json')
+        self.text_root=bound_metadata_path(m,self.path.parent,'text_index','text/index.json')
         _require(self.text_root.is_file(),f'episode-specific frozen text cache missing: {self.text_root}')
         text_index=json.loads(self.text_root.read_text())
         if require_complete_text:_require(text_index.get('complete') is True,"complete episode text bank required for training")
-        _require(text_index['identity']['prompt_manifest_sha256']==sha256_file(self.path.parent/'prompts.json'),"text bank binds a different prompt manifest")
+        prompt_path=bound_metadata_path(m,self.path.parent,'prompts_file','prompts.json')
+        _require(text_index['identity']['prompt_manifest_sha256']==sha256_file(prompt_path),"text bank binds a different prompt manifest")
         self.text_index=text_index['items'];self.text_episodes=text_index['episodes']
         for ep in self.episodes:
             _require(self.text_episodes[ep['episode_uid']]==ep['prompt_id'],"text bank episode binding mismatch")
@@ -353,6 +622,7 @@ class DominoPhysicalDataset(Dataset):
         self.teacher=None
         self.action_mean=torch.tensor(m['action_statistics']['mean']).float()
         self.action_std=torch.tensor(m['action_statistics']['std']).float().clamp_min(1e-6)
+        self.active_entity_roles,self.future_token_indices=role_token_indices(m)
 
     def __len__(self):return len(self.rows)
 
@@ -374,7 +644,9 @@ class DominoPhysicalDataset(Dataset):
         cv2.setNumThreads(1)
         epi,grid,age_id=map(int,self.rows[index]);ep=self.episodes[epi]
         records,raw_actions,flow,visual_cache=self._episode(epi)
-        t=records.timestamps.numpy();s=ep['first_time']+grid*self.manifest['source_stride_seconds'];q=s+self.manifest['query_ages_seconds'][age_id]
+        t=records.timestamps.numpy();s=ep['first_time']+grid*self.manifest['source_stride_seconds']
+        age=self.manifest['query_ages_seconds'][age_id];q=s+age
+        completed=s+completion_latency_seconds(self.completion_distribution,ep['episode_uid'],grid,age)
         source_frame=select_frame(t,s,past_only=True,tolerance=.060001)
         query_frame=select_frame(t,q,past_only=True,tolerance=.060001)
         starts=s+np.arange(16)*DT;fast_starts=q+np.arange(16)*DT
@@ -406,7 +678,8 @@ class DominoPhysicalDataset(Dataset):
         for frame in set(i for i in visual_frames if i>=0):features[frame],context_valid[frame]=visual_cache[frame]
         r=replace(records,frozen_visual_features=features,projectability=context_valid,visual_context_valid=context_valid)
         labels=produce_future_labels(r,q,max_interpolation_gap=INTERPOLATION_GAP,max_contact_age=INTERPOLATION_GAP,duplicate_policy='last',max_visual_time_error=RGB_TOLERANCE)
-        item=labels.tensors();item['future']=normalize_future(item['future'],item['future_loss_valid'],self.manifest['statistics'])
+        item={key:value.index_select(0,self.future_token_indices) for key,value in labels.tensors().items()}
+        item['future']=normalize_future(item['future'],item['future_loss_valid'],self.manifest['statistics'])
         textrow=self.text_index[ep['prompt_id']];p=(self.text_root.parent/textrow['path']).resolve()
         _require(textrow['text_sha256']==ep['prompt_id'],"episode prompt identity mismatch")
         _require(sha256_file(p)==textrow['sha256'],"text cache hash mismatch")
@@ -443,16 +716,16 @@ class DominoPhysicalDataset(Dataset):
                     spatial_flow=spatial,spatial_flow_valid=spatial_valid,spatial_flow_times=spatial_times,
                     state=(raw_actions[query_frame]-self.action_mean)/self.action_std,state_time=torch.tensor(t[query_frame],dtype=torch.float64),
                     text=language['context'],text_valid=language['mask'],source_time=torch.tensor(s,dtype=torch.float64),
-                    completed_time=torch.tensor(s+min(.18,q-s),dtype=torch.float64),query_time=torch.tensor(q,dtype=torch.float64),
+                    completed_time=torch.tensor(completed,dtype=torch.float64),query_time=torch.tensor(q,dtype=torch.float64),
                     action_times=torch.from_numpy(fast_starts),action_intervals=torch.from_numpy(np.stack([fast_starts,fast_starts+DT],-1)),
-                    query_entity_valid=torch.ones(4,dtype=torch.bool),
+                    query_entity_valid=torch.ones(len(self.active_entity_roles),dtype=torch.bool),
                     executed_actions=source_action.clone(),executed_action_intervals=source_intervals.clone(),
                     executed_action_valid=source_intervals[:,1]<=q+1e-8,
                     source_action_valid=torch.from_numpy(sv),fast_action_valid=torch.from_numpy(fv),
                     source_rgb_actual_times=torch.tensor(t[source_frame],dtype=torch.float64),
                     future_rgb_actual_times=torch.from_numpy(t[video_frames].copy()),future_rgb_time_errors=torch.from_numpy(t[video_frames]-future_requests),
-                    future_visibility_known=torch.zeros(16,dtype=torch.bool),
-                    future_visual_actual_times=torch.tensor([t[i] if i>=0 else q for i in visual_frames],dtype=torch.float64).repeat(4))
+                    future_visibility_known=torch.zeros(len(self.future_token_indices),dtype=torch.bool),
+                    future_visual_actual_times=torch.tensor([t[i] if i>=0 else q for i in visual_frames],dtype=torch.float64).repeat(len(self.active_entity_roles)))
         item['executed_actions'][~item['executed_action_valid']]=0
         return item
 

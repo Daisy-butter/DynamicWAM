@@ -14,7 +14,7 @@ from torch import nn
 
 
 class FP32MasterAdamW(torch.optim.Optimizer):
-    """A single-process eager optimizer; no AMP scaler, DDP or CUDA-graph claim.
+    """Eager optimizer with one device per process, including DDP ranks.
 
     FP32 model parameters go directly to torch.optim.AdamW. Low-precision model
     parameters use FP32 proxy Parameters, so native AdamW also allocates FP32
@@ -57,6 +57,8 @@ class FP32MasterAdamW(torch.optim.Optimizer):
             raise ValueError("engineering master optimizer requires a single parameter device")
         self._adamw = torch.optim.AdamW(groups, **defaults)
         self.last_step_statistics = None
+        self._accumulated = None
+        self._accumulation_steps = 0
         self._initialized = True
         self._refresh_public_state()
 
@@ -96,6 +98,51 @@ class FP32MasterAdamW(torch.optim.Optimizer):
         return torch.cat(values) if values else None
 
     @torch.no_grad()
+    def accumulate_gradients(self, scale=1.):
+        """Accumulate each already-DDP-reduced microbatch in FP32.
+
+        DDP synchronizes every microbatch. Clearing model .grad after the copy
+        prevents the next backward from adding into a rounded BF16 buffer.
+        Checkpoints are allowed only after step(), at an update boundary.
+        """
+        if self._accumulated is None:
+            self._accumulated = [[None for _ in group["params"]] for group in self.param_groups]
+        for group, buffers in zip(self.param_groups, self._accumulated):
+            for index, parameter in enumerate(group["params"]):
+                grad = parameter.grad
+                if grad is not None:
+                    if grad.is_sparse:
+                        raise RuntimeError("dense microbatch gradients required")
+                    value = grad.detach().float()
+                    if buffers[index] is None:
+                        buffers[index] = value.clone().mul_(scale)
+                    else:
+                        buffers[index].add_(value, alpha=scale)
+                parameter.grad = None
+        self._accumulation_steps += 1
+
+    def accumulated_gradients(self):
+        if self._accumulated is None:
+            raise RuntimeError("no accumulated microbatch gradients")
+        return [(parameter, grad) for group, buffers in zip(self.param_groups, self._accumulated)
+                for parameter, grad in zip(group["params"], buffers) if grad is not None]
+
+    @torch.no_grad()
+    def clip_accumulated_grad_norm_(self, max_norm, *, total_norm=None):
+        gradients = [grad for _, grad in self.accumulated_gradients()]
+        if not gradients:
+            raise RuntimeError("training update has no gradients")
+        # Keep FP32 buffers: assigning an FP32 grad to a BF16 model is illegal.
+        norm = (torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g) for g in gradients]))
+                if total_norm is None else total_norm)
+        if not bool(torch.isfinite(norm)):
+            raise FloatingPointError("nonfinite accumulated gradient norm")
+        scale = (float(max_norm) / (norm + 1e-6)).clamp(max=1.)
+        for grad in gradients:
+            grad.mul_(scale)
+        return norm
+
+    @torch.no_grad()
     def step(self, closure=None):
         loss = None
         if closure is not None:
@@ -105,17 +152,20 @@ class FP32MasterAdamW(torch.optim.Optimizer):
         before = self._samples() if self.record_updates else None
         before_forward = self._samples(forward=True) if self.record_updates else None
         active_master_tensors = 0
-        for group, masters, layout in zip(self.param_groups, self._masters, self._layout):
-            for original, master, expected in zip(group["params"], masters, layout):
+        for group_index, (group, masters, layout) in enumerate(zip(self.param_groups, self._masters, self._layout)):
+            for index, (original, master, expected) in enumerate(zip(group["params"], masters, layout)):
                 if list(original.shape) != expected["shape"] or str(original.dtype) != expected["dtype"]:
                     raise ValueError("model parameter shape/dtype changed after optimizer construction")
+                gradient = original.grad if self._accumulated is None else self._accumulated[group_index][index]
                 if master is None:
+                    if self._accumulated is not None:
+                        original.grad = gradient
                     continue
                 if original.device != master.device:
                     raise ValueError("model/master devices differ")
                 if original.grad is not None and original.grad.is_sparse:
                     raise RuntimeError("AdamW does not support sparse gradients")
-                master.grad = None if original.grad is None else original.grad.detach().float()
+                master.grad = None if gradient is None else gradient.detach().float()
                 active_master_tensors += int(master.grad is not None)
         try:
             self._adamw.step()
@@ -130,6 +180,8 @@ class FP32MasterAdamW(torch.optim.Optimizer):
                 for master in masters:
                     if master is not None:
                         master.grad = None
+            self._accumulated = None
+            self._accumulation_steps = 0
         if before is not None:
             after = self._samples()
             after_forward = self._samples(forward=True)
@@ -150,6 +202,8 @@ class FP32MasterAdamW(torch.optim.Optimizer):
     def zero_grad(self, set_to_none=True):
         super().zero_grad(set_to_none=set_to_none)
         self._adamw.zero_grad(set_to_none=set_to_none)
+        self._accumulated = None
+        self._accumulation_steps = 0
 
     def precision_report(self):
         low = sum(master.numel() for masters in self._masters for master in masters if master is not None)
@@ -163,6 +217,8 @@ class FP32MasterAdamW(torch.optim.Optimizer):
             foreach=False, forward_parameter_dtypes_unchanged=True)
 
     def state_dict(self):
+        if self._accumulated is not None:
+            raise RuntimeError("checkpoint requires a completed optimizer update, not a partial accumulation")
         self._sync_groups()
         return dict(schema=self.schema, precision=self.precision_report(), layout=copy.deepcopy(self._layout),
             master_params=[[None if master is None else master.detach() for master in masters] for masters in self._masters],

@@ -1,6 +1,22 @@
 # 动态物体 WAM 项目开发与实验约定
 
-版本：v1.19 · 2026-10-24 · 目标投稿：CVPR 2027
+版本：v1.20 · 2026-10-24 · 目标投稿：CVPR 2027
+
+## 当前任务优先约束：.92 DualRate Joint V3 部署与八卡训练（2026-10-24）
+
+用户本轮明确授权：对照原 DynamicWAM 精度实现，补齐真实 DOMINO 部署和训推对齐，审查设计并在验收后启动八卡正式多阶段训练。这覆盖下方 V1/V2 历史“未授权正式训练”的范围；不能以旧条目另行索要批准。唯一可写远端仍为 .92，.50/.100 不改文件、进程或 GPU。独立候选 `/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v3-20261024`、分支 `feat/dualrate-joint-v3-20261024` 从 V2 c3a0b6b 创建，保留原项目和 V1/V2。
+
+数据与模型裁决（用户本轮委托判断）：当前生产版 Z 改为 `tracked_dynamic_target / left_gripper / right_gripper × .1/.2/.4/.8s` 共 12 token，删除无逐帧记录的第二相关物体/support 槽位。tracked target 可是篮子、盘子、秤等动态接收实体，不能一概称作被抓物。原始记录没有全部 actor 逐帧状态、深度或分割；不以初始姿态或近似重放伪造 support/遮挡标签。完整慢路 M 和当前多视角继续提供其他场景实体信息。
+
+视觉监督正式定义为实际未来图像中的 projected local image context，允许其中出现遮挡物，不宣称无遮挡对象 embedding 或可见性估计；仅检查真实图像/投影/裁剪有效性。几何和接触仍来自真实 tracked target 与双手记录。没有额外遮挡预测头。12 token 的标签/统计/mask/实体身份/部署请求必须同源，保留旧16 token版但不用于本次正式训练。未来若加入第二实体预测，必须新采集有明确 actor 绑定、逐帧状态及可见性依据的数据，再做独立版本。
+
+精度遵循原生 Accelerate/DeepSpeed BF16：Video BF16 前向，time MLP/归一化按原生 FP32，FP32 master、梯度累计和 AdamW moments；不得将 FP32 master 说成关闭 BF16。完整恢复包含每 rank RNG、数据游标、优化器和主权重。源 DynamicWAM_full.pt 初始化正式首阶段；后续阶段只接上一正式阶段，绝不使用工程 smoke 权重。
+
+执行端必须为真实 DOMINO 连续仿真：初始参考建立后仅执行快路；慢路后台发布不可变、保留源时间的最新完成参考；执行队列是硬前缀唯一所有者，参考动作仅软条件。严格按相同绝对物理目标时间读取；当前证据可降低旧参考作用；超时/队列空/参考过期有显式失败或无参考语义，禁止静默重复旧动作、平均两路动作或切换慢路控制。全部观测编码与 flow/history/state/action normalization 在训练/推理中保持相同语义，真实完成时间不能伪造；不暗中降低仿真速度。
+
+正式启动前应完成当前源码的 CPU 回归、三个阶段实际八卡短训和完整严格恢复、真实连续 DOMINO 部署/原生 MP4 验收、干净 worker/guard 退出及无新增驱动错误；每项能力独立记证据。采样离线专家轨迹不等于 on-policy；support pose/真实遮挡等缺失标签不伪造，显式 mask 不监督并披露能力边界。
+
+启动使用一次性顺序阶段控制器，阶段正常完成并检查恢复后接下一阶段，任何失败停止且不自动重试。阶段内 source/config 冻结；GPU all8 FD 先于任何 NVML，空闲 UUID 绑定、退出闭合；首阶段正式初始稳定至少 300 秒后停止额外巡检，保留必要阶段/清理控制器。所有大文件 SSD wuruihan 目录；禁止 GPU/驱动/PCI 恢复。
 
 ## 当前任务优先约束：.92 DualRate Joint V2（2026-10-24）
 

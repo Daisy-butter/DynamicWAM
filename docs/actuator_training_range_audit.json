@@ -1,0 +1,42 @@
+{
+  "episodes": 10500,
+  "raw_rows": 1924472,
+  "urdf": "/SSD_DISK/users/wuruihan/wam/external/DOMINO/assets/embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf",
+  "urdf_sha256": "097c59fb19a7b482249c6097df8319586ea7cfd268c015516f103b289a7e761a",
+  "bounds_source": "URDF static audit; deployment independently reads actual SAPIEN joint.get_limits",
+  "raw_drive_target_min": [
+    -3.361980676651001,
+    -0.5571006536483765,
+    -0.08533769845962524,
+    -1.9558565616607666,
+    -1.4559500217437744,
+    -6.750584125518799,
+    0.0,
+    -6.6279778480529785,
+    -0.6113601922988892,
+    -0.08535687625408173,
+    -2.187342643737793,
+    -2.0382182598114014,
+    -8.376461029052734,
+    0.0
+  ],
+  "raw_drive_target_max": [
+    6.436583995819092,
+    3.8960254192352295,
+    5.783482551574707,
+    1.7742420434951782,
+    1.6858882904052734,
+    6.299940586090088,
+    1.0,
+    6.739133834838867,
+    3.7496497631073,
+    5.14924955368042,
+    1.957255482673645,
+    1.5695585012435913,
+    8.833769798278809,
+    1.0
+  ],
+  "violations": [],
+  "all_raw_expert_arm_targets_within_urdf_limits": true,
+  "grippers_in_0_1": true
+}

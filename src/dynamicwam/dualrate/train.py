@@ -107,10 +107,13 @@ class EpochCursor:
         self._order_epoch, self._order = None, None
 
 
-def capture_rng(generator: torch.Generator | None = None) -> dict:
+def capture_rng(generator: torch.Generator | None = None, *, cuda_device=None) -> dict:
     result = {"python": random.getstate(), "torch_cpu": torch.get_rng_state(),
-              "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else [],
+              "torch_cuda": ([torch.cuda.get_rng_state(cuda_device)] if cuda_device is not None
+                             else torch.cuda.get_rng_state_all()) if torch.cuda.is_initialized() else [],
               "generator": generator.get_state() if generator is not None else None}
+    if cuda_device is not None:
+        result["cuda_device"] = str(cuda_device)
     try:
         import numpy as np
         kind, keys, pos, has_gauss, cached = np.random.get_state()
@@ -126,7 +129,12 @@ def restore_rng(state: Mapping, generator: torch.Generator | None = None) -> Non
     if state["torch_cuda"]:
         if not torch.cuda.is_initialized():
             raise ValueError("CUDA checkpoint cannot silently resume on CPU")
-        torch.cuda.set_rng_state_all([x.cpu() for x in state["torch_cuda"]])
+        if "cuda_device" in state:
+            if len(state["torch_cuda"]) != 1:
+                raise ValueError("rank checkpoint must contain only its owned CUDA RNG")
+            torch.cuda.set_rng_state(state["torch_cuda"][0].cpu(), state["cuda_device"])
+        else:
+            torch.cuda.set_rng_state_all([x.cpu() for x in state["torch_cuda"]])
     if (state["generator"] is None) != (generator is None):
         raise ValueError("dedicated noise-generator identity changed")
     if generator is not None:
@@ -368,7 +376,8 @@ def _validate_normalization(config: Mapping, manifest: Mapping) -> None:
 
 
 def _gpu_authorization(path: Path, identity: Mapping, output: Path, *,
-                       expected_mode="single_process_engineering_smoke", expected_dependencies=None) -> None:
+                       expected_mode="single_process_engineering_smoke", expected_dependencies=None,
+                       rank=None, world_size=1) -> None:
     """Validate external supervisor receipt without CUDA/NVML/driver telemetry."""
     receipt = json.loads(path.read_text(encoding="utf-8"))
     if receipt.get("mode") != expected_mode or receipt.get("authorized") is not True:
@@ -378,8 +387,23 @@ def _gpu_authorization(path: Path, identity: Mapping, output: Path, *,
     if expected_dependencies is not None and receipt.get("python_dependencies") != expected_dependencies:
         raise ValueError("GPU authorization dependency overlay differs from the validated files")
     visibility = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-    if visibility != receipt.get("cuda_visible_devices") or not visibility.startswith("GPU-") or "," in visibility:
-        raise ValueError("single UUID-pinned compute GPU required")
+    if expected_mode == "domino_deployment_smoke":
+        uuids = receipt.get("gpu_uuids", [])
+        if (not 1 <= len(uuids) <= 2 or len(set(uuids)) != len(uuids)
+                or any(not value.startswith("GPU-") for value in uuids)
+                or visibility != ",".join(uuids) or visibility != receipt.get("cuda_visible_devices")
+                or receipt.get("world_size") != 1):
+            raise ValueError("deployment requires one or two explicit UUIDs with one policy worker")
+    elif rank is None:
+        if visibility != receipt.get("cuda_visible_devices") or not visibility.startswith("GPU-") or "," in visibility:
+            raise ValueError("single UUID-pinned compute GPU required")
+    else:
+        uuids = receipt.get("gpu_uuids", [])
+        if (world_size != 8 or receipt.get("world_size") != world_size or len(uuids) != world_size
+                or len(set(uuids)) != world_size or any(not value.startswith("GPU-") for value in uuids)
+                or not 0 <= rank < world_size or visibility != ",".join(uuids)
+                or visibility != receipt.get("cuda_visible_devices")):
+            raise ValueError("eight ordered UUID-pinned ranks required")
     guard = receipt.get("external_guard", {})
     pid = int(guard.get("pid", -1))
     proc = Path(f"/proc/{pid}")
@@ -400,7 +424,7 @@ def _gpu_authorization(path: Path, identity: Mapping, output: Path, *,
         ancestor = int(ancestor_fields[1])
     if ancestor != pid:
         raise ValueError("device guard must be an ancestor supervisor")
-    claim = path.with_suffix(path.suffix + ".consumed")
+    claim = path.with_suffix(path.suffix + (".consumed" if rank is None else f".rank_{rank}.consumed"))
     storage = Path(receipt.get("storage_root", "/nonexistent")).resolve(strict=True)
     if storage.name != "wuruihan" or not output.is_relative_to(storage) or not claim.resolve().is_relative_to(storage):
         raise ValueError("authorization receipt must live on the declared artifact disk")
@@ -418,6 +442,9 @@ def _device_batch(value, device):
 
 def run(config: dict, *, device: str = "cpu", resume: str | None = None,
         authorization: str | None = None, stop_after: int | None = None) -> dict:
+    if config.get("run_kind") in {"distributed_training_smoke", "formal_distributed_training"}:
+        from .train_distributed import run_distributed
+        return run_distributed(config, device=device, resume=resume, authorization=authorization, stop_after=stop_after)
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise RuntimeError("DDP/eight-rank support is not accepted; refusing launch")
     if config.get("run_kind") != "single_process_engineering_smoke":
@@ -569,7 +596,7 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--device", required=True, choices=("cpu", "cuda:0"))
+    parser.add_argument("--device", required=True)
     parser.add_argument("--resume")
     parser.add_argument("--authorization")
     parser.add_argument("--stop-after",type=int)

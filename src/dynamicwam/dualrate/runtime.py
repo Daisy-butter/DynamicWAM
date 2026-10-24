@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import math
 from typing import Callable
+from contextlib import nullcontext
+import time
 import torch
 from .timing import (CompletedReferenceStore, ExecutionQueue, TimedPlan,
                      TimingError, DeadlineMiss, StalePlan, prefix_digest)
@@ -46,13 +48,14 @@ class DualRateRuntime:
     Call close before releasing the external device-lifetime guard.
     """
     def __init__(self, system, queue: ExecutionQueue, clock: Callable[[],float],
-                 config: RuntimeConfig, *, action_mean, action_scale, seed=0, record=None):
+                 config: RuntimeConfig, *, action_mean, action_scale, seed=0, record=None, action_projection=None):
         if abs(queue.dt-config.action_dt) > 1e-10:
             raise ValueError("runtime/queue action grid differs")
         if system.training:
             raise ValueError("runtime requires eval mode; no optimizer shares deployment weights")
         self.system,self.queue,self.clock,self.config = system,queue,clock,config
         self.record = record or (lambda event: None)
+        self.action_projection=action_projection
         self.store = CompletedReferenceStore(episode_id=queue.episode_id,clock_id=queue.clock_id,
                                             max_age=config.reference_max_age)
         self.mean = torch.as_tensor(action_mean,dtype=torch.float32)
@@ -62,6 +65,9 @@ class DualRateRuntime:
             raise ValueError("exact checkpoint action normalization required")
         self.pool = ThreadPoolExecutor(max_workers=2,thread_name_prefix="dualrate")
         device = next(system.fast.parameters()).device
+        self.device = device
+        self.fast_stream = torch.cuda.Stream(device=device,priority=-1) if device.type=='cuda' else None
+        self.slow_stream = torch.cuda.Stream(device=device) if device.type=='cuda' else None
         self.fast_rng = torch.Generator(device=device).manual_seed(seed)
         self.slow_rng = torch.Generator(device=device).manual_seed(seed+1)
         self.fast_job = self.slow_job = None
@@ -89,32 +95,39 @@ class DualRateRuntime:
             mask[0,slots] = True
         batch[kind+"_known_actions"],batch[kind+"_known_mask"] = known,mask
 
-    def start_slow(self, batch, source_prefix):
+    def start_slow(self, batch, source_prefix, *, source_time=None):
         if self.closed or self.slow_job is not None:
             raise TimingError("slow slot unavailable")
         if (source_prefix.episode_id,source_prefix.clock_id)!=(self.queue.episode_id,self.queue.clock_id):
             raise StalePlan("slow commitment snapshot belongs to another episode/clock")
-        batch=detached_batch(batch)
-        source=float(batch["source_time"].item())
+        source=float(source_time if callable(batch) else batch["source_time"].item())
         now=float(self.clock())
         if source>now or source_prefix.start_time>source+1e-9:
             raise TimingError("source/commitment snapshot is in the future")
-        self._prefix(batch,source_prefix,"source")
-        # Placeholder only while computing; real completion is installed below.
-        batch["completed_time"]=batch["source_time"].clone()
-        batch["query_time"]=batch["source_time"].clone()
         self.slow_version += 1
         version=self.slow_version
+        self.record(dict(event='slow_started',source_time=source,version=version,
+                         source_queue_version=source_prefix.queue_version,
+                         source_prefix_hash=prefix_digest(source_prefix),
+                         prefix_start=source_prefix.start_time,prefix_end=source_prefix.end_time))
         self.last_slow_tick=math.floor((now-self.queue.origin)/self.queue.dt+1e-9)
         def work():
-            with torch.no_grad():
-                reference=self.system.predict_reference(batch,generator=self.slow_rng)
+            started=time.perf_counter()
+            context=torch.cuda.stream(self.slow_stream) if self.slow_stream is not None else nullcontext()
+            with context, torch.no_grad():
+                local=detached_batch(batch() if callable(batch) else batch)
+                if float(local['source_time'].item())!=source:
+                    raise TimingError('source preprocessing changed the captured source time')
+                self._prefix(local,source_prefix,"source")
+                local["completed_time"]=local["source_time"].clone()
+                local["query_time"]=local["source_time"].clone()
+                reference=self.system.predict_reference(local,generator=self.slow_rng)
                 world=self.system.world_readout(reference)
                 # CPU transfer waits for GPU writes before taking completed_time.
                 world={k:v.detach().cpu() if isinstance(v,torch.Tensor) else v for k,v in world.items()}
                 completed=float(self.clock())
                 world["completed_time"]=torch.tensor([completed],dtype=torch.float64)
-                return world,completed
+                return world,completed,time.perf_counter()-started
         self.slow_job=(self.pool.submit(work),source,source_prefix,version)
 
     def start_fast(self,batch_factory,*,observation_time):
@@ -126,8 +139,15 @@ class DualRateRuntime:
             protect_steps=self.config.protect_steps,submit_margin=self.config.submit_margin,
             reference_version=reference.version if reference else -1)
         self.last_fast_tick=math.floor((query-self.queue.origin)/self.queue.dt+1e-9)
+        self.record(dict(event='fast_started',query_id=lease.query_id,query_time=query,
+            observation_time=observation_time,reference_version=lease.reference_version,
+            source_time=reference.source_time if reference else None,
+            reference_age=query-reference.source_time if reference else None,
+            protected_until=lease.protected_until,prefix_hash=lease.prefix_hash))
         def work():
-            with torch.no_grad():
+            started=time.perf_counter()
+            context=torch.cuda.stream(self.fast_stream) if self.fast_stream is not None else nullcontext()
+            with context, torch.no_grad():
                 batch=detached_batch(batch_factory(lease,reference))
                 if float(batch["query_time"].item()) != query:
                     raise TimingError("batch query differs from queue lease")
@@ -139,16 +159,31 @@ class DualRateRuntime:
                     world=self.system.empty_world(batch)
                 output=self.system.sample_fast(batch,world,steps=self.config.sample_steps,generator=self.fast_rng)
                 raw=output["actions"][0].float().cpu()*self.scale+self.mean
+                known_cpu=batch['fast_known_mask'][0].cpu()
+                # Reuse authoritative queue values, avoiding normalization round-trip
+                # changes even in the returned executable-action diagnostic.
+                if lease.prefix.actions:
+                    raw[known_cpu]=torch.tensor(lease.prefix.actions,dtype=raw.dtype)
+                if self.action_projection is not None:
+                    raw,projection=self.action_projection(raw,known_cpu)
+                    if projection['forecast_invalidated']:
+                        output=dict(output)
+                        for key in ('future_valid','future_field_valid','contact_valid'):
+                            output[key]=torch.zeros_like(output[key])
+                        for key in ('future','contact_probability'):
+                            output[key]=torch.zeros_like(output[key])
+                    output['executable_actions_raw']=raw.clone()
+                    self.record(dict(event='actuator_projection',query_id=lease.query_id,**projection))
                 start=float(batch["action_times"][0,0])
                 return TimedPlan(start,self.config.action_dt,tuple(map(tuple,raw.tolist())),
-                                 lease.base_queue_version+1,query,lease),output
+                                 lease.base_queue_version+1,query,lease),output,time.perf_counter()-started
         self.fast_job=(self.pool.submit(work),lease)
 
     def poll(self):
         """Caller invokes alongside continuous physics; never waits on unfinished work."""
         if self.slow_job is not None and self.slow_job[0].done():
             job,source,prefix,version=self.slow_job;self.slow_job=None
-            world,completed=job.result()
+            world,completed,duration=job.result()
             payload={k:v for k,v in world.items() if isinstance(v,torch.Tensor)}
             intervals=payload["world_intervals"][0][payload["world_types"][0]==1]
             times=tuple(sorted(set(intervals.flatten().tolist())))
@@ -158,18 +193,20 @@ class DualRateRuntime:
                 episode_id=self.queue.episode_id,clock_id=self.queue.clock_id,
                 source_queue_version=prefix.queue_version,source_prefix_hash=prefix_digest(prefix))
             self.record(dict(event="slow_completed",source_time=source,completed_time=completed,
-                             version=version,accepted=accepted))
+                             version=version,accepted=accepted,wall_seconds=duration))
         if self.fast_job is not None and self.fast_job[0].done():
             job,lease=self.fast_job;self.fast_job=None
             try:
-                plan,output=job.result()
+                plan,output,duration=job.result()
                 discarded=self.queue.replace(plan,now=float(self.clock()))
             except BaseException as exc:
                 self.queue.cancel_query(lease)
                 self.record(dict(event="fast_rejected",query_id=lease.query_id,error=type(exc).__name__))
                 raise
             self.record(dict(event="fast_committed",query_id=lease.query_id,discarded_rows=discarded,
-                             protected_until=lease.protected_until))
+                             protected_until=lease.protected_until,query_time=lease.query_time,
+                             commit_time=float(self.clock()),observation_time=lease.observation_time,
+                             reference_version=lease.reference_version,wall_seconds=duration))
             return output
         return None
 

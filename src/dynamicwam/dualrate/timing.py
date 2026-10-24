@@ -293,6 +293,20 @@ class ExecutionQueue:
                      if self.origin+i*self.dt < until and self.origin+(i+1)*self.dt > since)
 
     @_serialized
+    def completed_execution_trace(self, since: float, query_time: float) -> tuple:
+        """Completed issued rows at a fresh query, excluding the active row.
+
+        The caller owns the current physical clock. This does not promote rows
+        from the future queue into history and does not mutate commitment.
+        """
+        _finite(since, query_time)
+        if since > query_time or query_time < self._last_time-1e-9:
+            raise TimingError('invalid completed execution trace clock')
+        return tuple((self.origin+i*self.dt,self.origin+(i+1)*self.dt,row)
+                     for i,row in sorted(self._executed.items())
+                     if self.origin+(i+1)*self.dt<=query_time+1e-9 and self.origin+(i+1)*self.dt>since)
+
+    @_serialized
     def snapshot_committed(self, now: float) -> CommittedPrefix:
         self._coverage(now)
         first = self._floor(now)
