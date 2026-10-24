@@ -88,8 +88,10 @@ def worker_command(repo, config, frozen, authorization, resume=None):
     if mode in TRAIN_MODES:
         if config.get("world_size") != 8:
             raise ValueError("configuration must explicitly require world_size=8")
-        return [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nnodes=1",
-                "--nproc-per-node=8", "--max-restarts=0", "-m", "dynamicwam.dualrate.train", *common,
+        # Torch elastic puts each rank in a new session, defeating session-owned
+        # cleanup if its parent crashes. The fixed launcher deliberately retains
+        # every rank in this supervisor-created worker session.
+        return [sys.executable, str(repo / "scripts/dualrate_rank_launcher.py"), *common,
                 *(["--resume", str(resume)] if resume is not None else [])]
     if mode == "domino_deployment_smoke":
         return [sys.executable, str(repo / "scripts/dualrate_domino_smoke.py"), *common]

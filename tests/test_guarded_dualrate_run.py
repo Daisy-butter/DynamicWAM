@@ -25,13 +25,16 @@ def test_requires_eight_exact_distinct_training_devices():
     assert runner.selected_uuids(",".join(ids[:2]), inventory, "domino_deployment_smoke") == ids[:2]
 
 
-def test_only_fixed_workers_and_no_torchrun_restart(tmp_path):
+def test_only_fixed_workers_and_explicit_resume(tmp_path):
     command = runner.worker_command(tmp_path, {"run_kind":"distributed_training_smoke", "world_size":8},
                                     tmp_path/"config.json", tmp_path/"auth.json")
-    assert "--max-restarts=0" in command and "--nproc-per-node=8" in command
+    assert command[1] == str(tmp_path/"scripts/dualrate_rank_launcher.py")
     assert command[-4:] == ["--device", "cuda", "--authorization", str(tmp_path/"auth.json")]
     with pytest.raises(ValueError):
         runner.worker_command(tmp_path, {"run_kind":"arbitrary_script"}, None, None)
+    resumed = runner.worker_command(tmp_path,{"run_kind":"distributed_training_smoke","world_size":8},
+        tmp_path/"config.json",tmp_path/"auth.json",tmp_path/"last.pt")
+    assert resumed[-2:] == ["--resume",str(tmp_path/"last.pt")]
 
 
 def test_phase_acceptance_binds_semantic_profile_and_evidence(tmp_path):

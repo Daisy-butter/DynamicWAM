@@ -429,7 +429,10 @@ def _gpu_authorization(path: Path, identity: Mapping, output: Path, *,
     if storage.name != "wuruihan" or not output.is_relative_to(storage) or not claim.resolve().is_relative_to(storage):
         raise ValueError("authorization receipt must live on the declared artifact disk")
     with claim.open("x", encoding="utf-8") as handle:
-        json.dump({"pid": os.getpid(), "output": str(output), "receipt_sha256": file_sha256(path)}, handle)
+        own_fields = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
+        json.dump({"pid": os.getpid(), "start_ticks": own_fields[19],
+                   "session": int(own_fields[3]), "pgrp": int(own_fields[2]),
+                   "output": str(output), "receipt_sha256": file_sha256(path)}, handle)
 
 
 def _device_batch(value, device):

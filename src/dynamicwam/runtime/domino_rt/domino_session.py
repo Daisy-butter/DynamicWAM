@@ -318,14 +318,86 @@ class DominoLevel1Session:
         if not getattr(self.env, "use_dynamic", False):
             return
         if (
-            self.env.check_gripper_contact_dynamic_object()
+            _strict_gripper_contact(self.env)
             and self.stop_on_contact
         ):
-            self.env.stop_dynamic_object_motion()
+            _strict_stop_dynamic_motion(self.env)
         if not getattr(self.env, "_dynamic_object_stopped", False):
-            if not self.env.check_dynamic_object_boundary():
+            if not _strict_dynamic_boundary(self.env):
                 self.env.eval_fail = True
                 self._stop_reason = "out_of_bounds"
+
+
+def _strict_dynamic_boundary(env: Any) -> bool:
+    """Native DOMINO boundary rule, with simulator read failures propagated."""
+    if not env.use_dynamic or env.eval_table_bounds is None:
+        return True
+    target_actor = getattr(env, "_eval_target_actor", None)
+    if target_actor is None:
+        return True
+    current_pos = target_actor.actor.get_pose().p
+    x_min, x_max, y_min, y_max = env.eval_table_bounds
+    margin = 0.02
+    if (
+        current_pos[0] < x_min - margin
+        or current_pos[0] > x_max + margin
+        or current_pos[1] < y_min - margin
+        or current_pos[1] > y_max + margin
+    ):
+        print(
+            f"Dynamic object out of bounds: pos=({current_pos[0]:.3f}, "
+            f"{current_pos[1]:.3f}), bounds=({x_min}, {x_max}, {y_min}, {y_max})"
+        )
+        return False
+    return True
+
+
+def _strict_gripper_contact(env: Any) -> bool:
+    """Native actor-contact predicate, without converting read errors to False."""
+    if not env.use_dynamic:
+        return False
+    target_actor = getattr(env, "_eval_target_actor", None)
+    if target_actor is None:
+        return False
+    actor_name = target_actor.get_name()
+    contact_positions = env.get_gripper_actor_contact_position(actor_name)
+    return len(contact_positions) > 0
+
+
+def _strict_stop_dynamic_motion(env: Any) -> bool:
+    """Native contact-stop mutations; any failed mutation aborts the episode.
+
+    These three helpers are session-local copies of the audited DOMINO rules.
+    The original environment class and all other callers remain unchanged.
+    """
+    if not env.use_dynamic:
+        return False
+    target_actor = getattr(env, "_eval_target_actor", None)
+    if target_actor is None:
+        return False
+    if getattr(env, "_dynamic_object_stopped", False):
+        return True
+    import sapien
+
+    actor_entity = target_actor.actor
+    tasks_to_remove = []
+    for i, task in enumerate(env.active_kinematic_tasks):
+        if task.get("component") is not None:
+            if task["component"].entity == actor_entity:
+                tasks_to_remove.append(i)
+    for i in reversed(tasks_to_remove):
+        task = env.active_kinematic_tasks[i]
+        if "component" in task:
+            task["component"].set_kinematic(False)
+        env.active_kinematic_tasks.pop(i)
+    for component in actor_entity.get_components():
+        if isinstance(component, sapien.physx.PhysxRigidDynamicComponent):
+            component.set_linear_velocity(np.zeros(3))
+            component.set_angular_velocity(np.zeros(3))
+            component.set_linear_damping(100.0)
+            component.set_angular_damping(100.0)
+    env._dynamic_object_stopped = True
+    return True
 
 
 def _expert_velocity(env: Any) -> np.ndarray:
@@ -422,10 +494,9 @@ def prepare_level1_env(
             raise RuntimeError(f"accepted A2 motion replay failed at seed {seed}; no substitution")
         init_failures += 1
         print(f"dynamic motion init failed for seed {seed}, retrying", flush=True)
-        try:
-            env.close_env()
-        except Exception:
-            traceback.print_exc()
+        # A geometric rejection can advance the seed only after clean teardown.
+        # Renderer/device/cleanup failures are not another rejected scene.
+        env.close_env()
         env.release_episode_resources()
         if init_failures >= 2000:
             raise RuntimeError(
@@ -510,8 +581,8 @@ def _read_yaml(path: str, yaml_module: Any) -> dict[str, Any]:
 def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstable: type) -> int:
     seed = int(start_seed)
     render_freq = args["render_freq"]
-    # Native DOMINO keeps skipping unstable scenes until one is feasible.
-    # A short cap makes the caller retry an almost identical window.
+    # Skip only declared unstable scenes and ordinary unsuccessful expert plans.
+    # Unexpected renderer/CUDA/runtime errors are fatal, never seed retries.
     for _attempt in range(2000):
         args["render_freq"] = 0
         print(f"expert check seed {seed}", flush=True)
@@ -519,22 +590,21 @@ def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstabl
             env.setup_demo(now_ep_num=0, seed=seed, is_test=True, **args)
             episode_info = env.play_once()
             saved_motion = getattr(env, "_saved_dynamic_motion_info", None)
-            env.close_env()
         except unstable:
-            env.close_env()
-            seed += 1
             args["render_freq"] = render_freq
+            env.close_env()  # Cleanup failure must abort, not try another GPU scene.
+            seed += 1
             continue
         except Exception:
-            traceback.print_exc()
+            args["render_freq"] = render_freq
             try:
                 env.close_env()
             except Exception:
+                # Keep the original error while retaining cleanup diagnostics.
                 traceback.print_exc()
-            seed += 1
-            args["render_freq"] = render_freq
-            continue
+            raise
         args["render_freq"] = render_freq
+        env.close_env()  # Do not retry a failed normal teardown either.
         if env.plan_success and env.check_success():
             env._rt_episode_info = episode_info
             env._saved_dynamic_motion_info = saved_motion

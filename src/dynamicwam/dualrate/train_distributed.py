@@ -295,7 +295,7 @@ def run_distributed(config, *, device="cuda", resume=None, authorization=None, s
     validate_phase_config(config)
     rank, local_rank, world = (int(os.environ.get(key, "-1")) for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE"))
     if world != 8 or rank != local_rank or not 0 <= rank < world or not str(device).startswith("cuda"):
-        raise ValueError("single-node torchrun with eight local CUDA ranks required")
+        raise ValueError("single-node guarded launcher with eight local CUDA ranks required")
     target = torch.device(f"cuda:{local_rank}")
     output = base._validate_storage(config)
     from .dependencies import validate_dependency_overlay, activate_dependency_overlay, probe_dependency_imports
