@@ -24,3 +24,14 @@ Slow-reference completion/expiry must be checked alongside fast action latency.
 11 CPU scheduler/runtime regressions passed. No GPU run was launched; smoke10
 is NOT declared fixed/accepted. formal_training_ready=false. Preserve smoke10 and
 run a fresh guarded deployment against this frozen commit before formal training.
+
+## Admission after the per-operator measurement
+
+Per-operator yielding kept fast samples inside the 0.35 s budget and stretched
+slow completion to 4.59 s, past the 1.44 s reference lifetime. The runtime no
+longer drains every slow operator. Streams still run together. Each slow job
+admits one fast query; a later fast query waits until that slow job finishes,
+then starts within 0.04 s after an action-row boundary so the protected-prefix
+budget stays near 0.35 s. The 0.25 s backlog and 1.44 s reference age are
+unchanged. A fresh GPU smoke has to show the overlapped fast commit, the
+following fast commit on the new reference, and the backlog.
