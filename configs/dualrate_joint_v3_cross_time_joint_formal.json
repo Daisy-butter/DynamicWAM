@@ -1831,7 +1831,7 @@
     0.72
   ],
   "acceptance_receipt": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_joint_v3_20261024/acceptance.json",
-  "acceptance_receipt_sha256": "PENDING_EIGHT_RANK_AND_DEPLOYMENT_ACCEPTANCE_SHA256",
+  "acceptance_receipt_sha256": "ff44e2d2c41a8c159e1ad7f29fd037db1699d25a172cbaa0f8c5b28efd1852c1",
   "active_entity_roles": [
     "tracked_dynamic_target",
     "left_gripper",
