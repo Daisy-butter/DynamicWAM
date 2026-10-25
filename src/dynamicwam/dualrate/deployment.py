@@ -38,7 +38,10 @@ def next_capture_deadline(initial, now, frame_period, render_wall) -> float:
     """
     if frame_period <= 0 or render_wall < 0 or not math.isfinite(render_wall):
         raise ValueError("capture schedule requires a positive frame and a finite render wait")
-    earliest = float(now) + max(float(frame_period), float(render_wall))
+    # One extra frame covers owner stepping and readback. Spacing by the render
+    # wait alone still left about 0.01 s unrecovered per capture, which crossed
+    # the 0.25 s backlog during an episode. The image-age gate stays 0.24 s.
+    earliest = float(now) + max(float(frame_period), float(render_wall)) + float(frame_period)
     steps = math.ceil((earliest - float(initial)) / float(frame_period) - 1e-9)
     return float(initial) + steps * float(frame_period)
 

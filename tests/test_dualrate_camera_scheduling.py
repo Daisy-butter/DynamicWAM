@@ -134,10 +134,10 @@ def test_native_batch_called_once_in_original_four_camera_order():
 
 
 def test_next_capture_waits_out_a_render_longer_than_one_frame():
-    # 0.09 s render at exposure 0.06 s lands on 0.18 s, the cadence smoke07 sustained.
-    assert next_capture_deadline(0., .06, .06, .09)==.18
-    assert next_capture_deadline(0., .06, .06, .05)==.12
-    assert next_capture_deadline(0., .18, .06, .094)==.30
+    # 0.09 s render plus one owner frame at exposure 0.06 s lands on 0.24 s.
+    assert next_capture_deadline(0., .06, .06, .09)==.24
+    assert next_capture_deadline(0., .06, .06, .05)==.18
+    assert next_capture_deadline(0., .18, .06, .094)==.36
     with pytest.raises(ValueError):
         next_capture_deadline(0., .06, .06, -1.)
 
