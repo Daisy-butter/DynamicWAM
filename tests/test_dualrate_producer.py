@@ -38,7 +38,7 @@ def test_two_frame_delay_does_not_select_three_frames():
     assert grid[frame]==pytest.approx(float(np.float32(.24)))
     assert abs((event-CAMERA_AVAILABILITY_SECONDS)-grid[frame])<.03
     with pytest.raises(ValueError):
-        available_condition_frame(np.array([0.,.18,.36]),event)
+        available_condition_frame(np.array([0.,.12,.36]),event)
 
 
 def test_flow_cache_accepts_only_the_physical_time_pair():

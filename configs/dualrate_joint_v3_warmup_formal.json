@@ -43,7 +43,7 @@
   "save_every": 500,
   "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v3_20261024/full_01/train.json",
   "storage_root": "/SSD_DISK/users/wuruihan",
-  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/dualrate_joint_v3_formal_20261024/warmup",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/dualrate_joint_v3_formal_20261025/warmup",
   "min_free_bytes": 21474836480,
   "codec_id": "wan22_first_plus_four_causal_native_v2",
   "future_field_support": [
@@ -1830,7 +1830,7 @@
     0.36
   ],
   "acceptance_receipt": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_joint_v3_20261024/acceptance.json",
-  "acceptance_receipt_sha256": "ff44e2d2c41a8c159e1ad7f29fd037db1699d25a172cbaa0f8c5b28efd1852c1",
+  "acceptance_receipt_sha256": "a6e8bf8c11b26d23997106639023c553b12acf536595ccde7ab3064b426b7cc9",
   "active_entity_roles": [
     "tracked_dynamic_target",
     "left_gripper",

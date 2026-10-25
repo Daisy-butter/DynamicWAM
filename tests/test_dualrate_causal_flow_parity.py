@@ -20,9 +20,13 @@ def test_condition_cannot_choose_later_side_of_delay_target():
     # A future-side row alone cannot rescue missing past camera support.
     with pytest.raises(ValueError):
         producer.available_condition_frame(np.array([0., .255]), .36)
+    # The latest readable sample one capture earlier is eligible. Two captures are not.
+    assert producer.available_condition_frame(np.array([0., .18, .26]), .36) == 1
     with pytest.raises(ValueError):
-        producer.available_condition_frame(np.array([0., .18, .26]), .36)
+        producer.available_condition_frame(np.array([0., .12, .26]), .36)
     assert producer.available_condition_frame(np.array([0., .23, .26]), .36) == 1
+    # Measured episode phase: the next capture is 4 ms after the ideal exposure.
+    assert producer.available_condition_frame(np.array([0., .184, .244]), .36) == 1
     grid = (np.arange(8, dtype=np.float32) * np.float32(.06)).astype(np.float64)
     event = float(np.float32(.06) * np.float32(6))
     assert producer.available_condition_frame(grid, event) == 4

@@ -45,10 +45,13 @@ RAW_FRAME_SECONDS = .06
 # below one raw frame, so a 60 ms grid cannot step back an extra sample.
 NUMERIC_TIME_EPSILON = 1e-6
 # Readback measured 2026-10-24 is about two raw frames (smoke04 median 106 ms,
-# 1x probe median 112 ms). The delay is exactly that span. Half a raw frame is
-# the match tolerance, so the neighboring sample 60 ms away is not eligible.
+# 1x probe median 112 ms). The delay is exactly that span. Every stored episode
+# then steps 4 ms once and captures every 60 ms, while the query grid is
+# anchored at the episode origin. The ideal exposure therefore falls up to one
+# capture after the latest readable frame (measured gap 56 ms, never two
+# captures). One raw frame is the match tolerance. A skipped capture stays out.
 CAMERA_AVAILABILITY_SECONDS = 2 * RAW_FRAME_SECONDS
-CONDITION_FRAME_TOLERANCE_SECONDS = .5 * RAW_FRAME_SECONDS
+CONDITION_FRAME_TOLERANCE_SECONDS = RAW_FRAME_SECONDS + 1e-6
 # After it becomes readable, the same image remains the latest one for about
 # one more capture. Four raw frames is that age ceiling, not a closed-loop
 # action deadline.
