@@ -114,25 +114,26 @@ def test_slow_prefix_from_previous_episode_is_rejected_before_model_work():
         assert runtime.slow_job is None
     finally:runtime.close()
 
-def test_one_fast_overlaps_a_slow_job_then_resumes_on_an_action_boundary():
+def test_fast_and_slow_never_share_the_device():
     now=[0.];events=[]
     queue=ExecutionQueue(TimedPlan(0.,.18,((0.,),)*16,1,0.))
     runtime=DualRateRuntime(RuntimeModelFixture().eval(),queue,lambda:now[0],RuntimeConfig(.18),
         action_mean=[0.],action_scale=[1.],record=events.append)
     try:
         runtime.last_fast_tick=runtime.last_slow_tick=-10**12
-        assert runtime.due(.36)==(True,True)
+        # Both periods are due and the device is idle: the slow reference starts,
+        # and the fast query waits rather than sharing the GPU.
+        assert runtime.due(.72)==(False,True)
         runtime.slow_job=('future',.72,None,2)
-        runtime.slow_fast_used=False
-        assert runtime.due(.36)[0] is True
-        runtime.slow_fast_used=True
-        assert runtime.due(1.08)==(False,False)
+        runtime.last_slow_tick=4
+        assert runtime.due(.72)==(False,False)
         assert runtime.fast_align_boundary
         assert events[-1]['event']=='fast_held' and events[-1]['slow_version']==2
         assert runtime.due(1.10)[0] is False
         runtime.slow_job=None
-        assert runtime.due(1.50)[0] is False
-        assert runtime.due(1.62)==(True,True)
+        # Mid-row resume would shrink the 0.35 s budget, and slow stays parked.
+        assert runtime.due(1.50)==(False,False)
+        assert runtime.due(1.62)==(True,False)
     finally:
         runtime.slow_job=None
         runtime.close()

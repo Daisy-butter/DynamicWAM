@@ -74,10 +74,10 @@ class DualRateRuntime:
         self.slow_version = 0
         self.closed = False
         self.last_fast_tick = self.last_slow_tick = -10**12
-        # One fast query may share the device with a slow job. The next fast
-        # query waits for that job, then starts near an action boundary so its
-        # protected-prefix budget stays intact.
-        self.slow_fast_used = False
+        # Fast and slow never share the device. A running slow job holds the
+        # next fast query; that query then runs alone on an action boundary
+        # before the following slow job is admitted. Concurrent kernels made
+        # the resumed fast miss the 0.35 s protected-prefix budget.
         self.fast_align_boundary = False
 
     def _row_offset(self, now):
@@ -89,19 +89,22 @@ class DualRateRuntime:
     def due(self, now):
         tick = math.floor((now-self.queue.origin)/self.queue.dt + 1e-9)
         period=self.fast_job is None and tick-self.last_fast_tick>=self.config.fast_period_steps
-        if self.slow_job is not None and self.slow_fast_used:
+        if self.slow_job is not None:
             if period and not self.fast_align_boundary:
                 self.fast_align_boundary=True
                 version=self.slow_job[3]
-                self.record(dict(event='fast_held',reason='one_fast_already_overlaps_slow',
+                self.record(dict(event='fast_held',reason='slow_job_owns_the_device',
                                  physics_time=float(now),slow_version=version))
-            fast=False
-        elif self.fast_align_boundary:
-            fast=period and self._row_offset(now)<=.04
-        else:
-            fast=period
-        slow=self.slow_job is None and tick-self.last_slow_tick>=self.config.slow_period_steps
-        return fast,slow
+            return False,False
+        if self.fast_job is not None or self.fast_align_boundary:
+            # Finish the fast query that waited out the previous slow job
+            # before admitting another slow job.
+            fast=self.fast_align_boundary and period and self._row_offset(now)<=.04
+            return fast,False
+        slow=tick-self.last_slow_tick>=self.config.slow_period_steps
+        if slow:
+            return False,True
+        return period,False
 
     def _prefix(self,batch,prefix,kind):
         times = batch["source_action_times" if kind=="source" else "action_times"]
@@ -134,7 +137,6 @@ class DualRateRuntime:
                          source_prefix_hash=prefix_digest(source_prefix),
                          prefix_start=source_prefix.start_time,prefix_end=source_prefix.end_time))
         self.last_slow_tick=math.floor((now-self.queue.origin)/self.queue.dt+1e-9)
-        self.slow_fast_used=self.fast_job is not None
         def work():
             started=time.perf_counter()
             context=torch.cuda.stream(self.slow_stream) if self.slow_stream is not None else nullcontext()
@@ -206,8 +208,6 @@ class DualRateRuntime:
         except BaseException:
             self.queue.cancel_query(lease)
             raise
-        if self.slow_job is not None:
-            self.slow_fast_used=True
         self.fast_align_boundary=False
 
     def poll(self):

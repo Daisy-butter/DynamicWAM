@@ -35,3 +35,15 @@ then starts within 0.04 s after an action-row boundary so the protected-prefix
 budget stays near 0.35 s. The 0.25 s backlog and 1.44 s reference age are
 unchanged. A fresh GPU smoke has to show the overlapped fast commit, the
 following fast commit on the new reference, and the backlog.
+
+## Exclusive device after smoke15
+
+smoke15 let the fast query released at 1.440 s start together with the next
+slow job. That sample finished only as physics reached 1.800 s, past the
+0.01 s submit margin. One earlier overlap did commit inside 0.35 s; the same
+start is not reliable. Fast and slow now take the device one at a time. A due
+slow job starts ahead of a routine fast query. While it runs, further fast
+queries wait, then the next one starts within 0.04 s of an action boundary
+before another slow job is admitted. Deadlines, the 0.25 s backlog and the
+1.44 s reference age are unchanged. A reference can be between jobs for a
+fraction of a second; no fast query is issued in that interval.
