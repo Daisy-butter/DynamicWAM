@@ -183,7 +183,7 @@ def test_wall_late_fast_result_cannot_receive_catchup_credit():
 
 
 def test_pending_fast_worker_cannot_continue_past_deadline_using_old_tail():
-    runtime,q,p,w=runtime_fixture()
+    runtime,q,p,w=runtime_fixture();events=[];runtime.record=events.append
     lease=q.begin_query(query_time=0.,observation_time=0.,protect_steps=2,
         reference_version=-1,submit_margin=.01)
     job=Future();runtime.fast_job=(job,lease)
@@ -193,8 +193,16 @@ def test_pending_fast_worker_cannot_continue_past_deadline_using_old_tail():
         assert not job.done() and q._inflight is None and q._version==1
         with pytest.raises(TimingError,match='has failed'):runtime.poll()
     finally:
-        job.set_result(None)  # close still owns and joins this unfinished worker
+        # The timed-out worker finishes later. Close records its actual timing,
+        # but never commits the returned plan or resumes execution.
+        plan=TimedPlan(0.,.1,((0.,),)*16,2,0.,lease)
+        job.set_result((plan,{},100.3,dict(wall_seconds=.3,gpu_done_wall_time=100.29)))
         runtime.close()
+    discarded=[e for e in events if e['event']=='worker_finished_discarded']
+    assert len(discarded)==1 and discarded[0]['query_id']==lease.query_id
+    assert discarded[0]['ready_wall_time']==100.3 and discarded[0]['wall_seconds']==.3
+    assert not discarded[0]['commit_performed_during_close'] and q._version==1
+    assert not any(e['event']=='fast_committed' for e in events)
 
 
 def test_host_commit_crossing_wall_deadline_is_rejected_not_reported_accepted():

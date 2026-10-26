@@ -336,6 +336,17 @@ class DualRateSystem(nn.Module):
     def forward(self,batch,generator=None):
         return self.training_loss(batch,generator=generator)
 
+    def enable_fast_graph(self):
+        """Explicit deployment setup; no parameters, training changes or capture yet."""
+        if self.training:
+            raise ValueError('fast CUDA Graph deployment requires eval mode')
+        from .fast_graph import FastGraphSampler
+        if getattr(self, '_fast_graph_sampler', None) is not None:
+            raise ValueError('fast CUDA Graph sampler already installed')
+        engine = FastGraphSampler(self.fast)
+        self._fast_graph_sampler = engine
+        return engine
+
     @torch.no_grad()
     def sample_fast(self, batch, world, *, steps=10, generator=None):
         """Joint A/Z Euler flow with known prefix clamped at EVERY step.
@@ -358,6 +369,10 @@ class DualRateSystem(nn.Module):
         context=self.fast.prepare_context(**conditions)
         valid=conditions.get("future_valid",torch.ones(z.shape[:2],dtype=torch.bool,device=z.device))
         fields=valid[...,None] & self.future_field_support[None]
+        contacts=valid[...,None] & self.contact_field_support[None]
+        graph = getattr(self, '_fast_graph_sampler', None)
+        if graph is not None:
+            return graph.sample(a,z,known,mask,context,fields,contacts,steps=steps)
         # Static unsupported fields stay zero in both training and inference;
         # their unsupervised velocities cannot alter joint action generation.
         for step in range(steps):
@@ -369,7 +384,6 @@ class DualRateSystem(nn.Module):
             z = torch.where(fields,z - result["future_velocity"] / steps,z)
         final = self.fast.forward_cached(a, z, a.new_zeros(b), context,
             known_actions=known, action_known_mask=mask)
-        contacts=valid[...,None] & self.contact_field_support[None]
         return dict(actions=a, future=torch.where(fields,z,torch.zeros_like(z)),
             contact_probability=torch.where(contacts,final["contact_logits"].sigmoid(),
                                             torch.zeros_like(final["contact_logits"])),

@@ -212,8 +212,14 @@ def main():
                               inference_device_map=placement,video_required=True,
                               instruction_mode=dep['instruction_mode'],instruction=prompt)
             except BaseException as exc:
+                failed_events=getattr(exc,'dualrate_events',[])
+                graph_events=[e for e in failed_events if e['event'] in
+                              ('fast_graph_prepared','fast_graph_preparation_failed')]
+                graph_status=graph_events[-1]['acceptance'] if graph_events else dict(
+                    enabled=runtime_config.fast_cuda_graph,passed=False,sealed=False,shape_count=0)
                 report=dict(protocol=PROTOCOL,task=task,episode_index=episode,realtime_valid=False,continuous_valid=False,
-                    error=f'{type(exc).__name__}: {exc}',traceback=traceback.format_exc(),events=getattr(exc,'dualrate_events',[]))
+                    error=f'{type(exc).__name__}: {exc}',traceback=traceback.format_exc(),events=failed_events,
+                    fast_graph_acceptance=graph_status)
                 raise
             finally:
                 if camera is not None:camera.close()
@@ -235,12 +241,16 @@ def main():
     parallel_queries=sum(r['fast_queries_during_slow'] for r in results)
     model_overlap_queries=sum(r['model_overlap_fast_queries'] for r in results)
     consumed_refresh=any(len(r['reference_versions_consumed'])>=2 for r in results)
+    graph_parity=bool(results) and all(r.get('fast_graph_acceptance',{}).get('enabled') and
+        r['fast_graph_acceptance'].get('passed') and r['fast_graph_acceptance'].get('sealed') and
+        r['fast_graph_acceptance'].get('shape_count')==2 for r in results)
     save(output/'deployment_acceptance.json',dict(completed=True,episodes=len(results),real_domino=True,simulation_rate=1.,
         full_model=True,strict_checkpoint_load=True,checkpoint=checkpoint_meta,gpu_count=len(uuids),
         time_contract=manifest['time_contract'],inference_device_map=placement,
         fast_queries_during_slow=parallel_queries,refreshed_reference_consumed=consumed_refresh,
         model_overlap_fast_queries=model_overlap_queries,
-        hardtime_acceptance_passed=bool(parallel_queries and model_overlap_queries and consumed_refresh),
+        fast_graph_parity_passed=graph_parity,
+        hardtime_acceptance_passed=bool(parallel_queries and model_overlap_queries and consumed_refresh and graph_parity),
         reference_versions=[r['reference_versions_consumed'] for r in results],reports=[str(output/r['task']/f"episode_{r['episode_index']:04d}/report.json") for r in results]))
     return 0
 

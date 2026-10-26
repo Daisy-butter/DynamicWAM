@@ -248,6 +248,9 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             action_start=lease.prefix.start_time),observation_time=frames[-1].exposure)
         while runtime.fast_job is not None:
             runtime.poll();time.sleep(.001)
+        graph_acceptance=runtime.fast_graph_receipt()
+        if runtime_config.fast_cuda_graph and not (graph_acceptance.get('passed') and graph_acceptance.get('sealed')):
+            raise TimingError('fast CUDA Graph must pass and seal before activation')
         bootstrap_seconds=time.perf_counter()-bootstrap_started
         wall0=time.perf_counter();bridge.activate(initial,wall0)
         emit(dict(event='activation',physics_time=initial,wall_time=wall0,bootstrap_wall_seconds=bootstrap_seconds,
@@ -363,6 +366,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             camera_warmup_captures=camera_warmup_captures,unfinished_query_deferrals=deferred,
             reference_versions_consumed=sorted(seen_references),events=events,
             executable_action_source='fast_only',on_policy_training_distribution=False,
+            fast_graph_acceptance=runtime.fast_graph_receipt(),
             **model_overlap_statistics(events))
         return report
     except BaseException as exc:

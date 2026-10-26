@@ -35,9 +35,11 @@ class RuntimeConfig:
     submit_margin: float = .01
     reference_max_age: float = 1.
     sample_steps: int = 10
+    fast_cuda_graph: bool = False
 
     def __post_init__(self):
-        if (not math.isfinite(self.action_dt) or self.action_dt <= 0 or
+        if (type(self.fast_cuda_graph) is not bool or
+                not math.isfinite(self.action_dt) or self.action_dt <= 0 or
                 min(self.fast_period_steps,self.slow_period_steps,self.protect_steps,self.sample_steps) < 1 or
                 not 0 <= self.submit_margin < self.protect_steps*self.action_dt or
                 not math.isfinite(self.reference_max_age) or self.reference_max_age <= 0):
@@ -83,6 +85,10 @@ class DualRateRuntime:
             raise ValueError('production CUDA runtime requires an explicit wall/physics bridge')
         if device.type == 'cuda' and (self.slow_device.type != 'cuda' or self.slow_device == device):
             raise ValueError('production hard-time fast and slow require distinct CUDA devices')
+        if config.fast_cuda_graph and (device.type!='cuda' or clock_bridge is None or clock_bridge.active):
+            raise ValueError('fast CUDA Graph requires CUDA and an inactive bootstrap clock')
+        self.fast_graph=system.enable_fast_graph() if config.fast_cuda_graph else None
+        self._graph_prepared=False
         self.pool = ThreadPoolExecutor(max_workers=2,thread_name_prefix="dualrate")
         self.fast_stream = torch.cuda.Stream(device=device,priority=-1) if device.type=='cuda' else None
         self.slow_stream = torch.cuda.Stream(device=self.slow_device) if self.slow_device.type=='cuda' else None
@@ -96,9 +102,41 @@ class DualRateRuntime:
         self.last_slow_source = -math.inf
         self._failure = None
         self._cancelled_queries = set()
+        self._discarded_jobs = []
         # CPU store owns defensive copies. This separate ready device payload
         # avoids owner-thread GPU copies; each fast worker clones it on its stream.
         self._published_device_world = None
+
+    def fast_graph_receipt(self):
+        if self.fast_graph is None:
+            return dict(enabled=False,passed=False,sealed=False,shape_count=0)
+        return dict(self.fast_graph.receipt(),enabled=True)
+
+    def _prepare_fast_graph(self,batch,world):
+        """Bootstrap both reference layouts without advancing the query RNG."""
+        if self.fast_graph is None or self._graph_prepared:
+            return
+        if self.clock_bridge is None or self.clock_bridge.active:
+            raise TimingError('CUDA Graph capture is forbidden after episode activation')
+        state=self.fast_rng.get_state()
+        try:
+            try:
+                self.system.sample_fast(batch,world,steps=self.config.sample_steps,generator=self.fast_rng)
+                self.system.sample_fast(batch,self.system.empty_world(batch),
+                                        steps=self.config.sample_steps,generator=self.fast_rng)
+            finally:
+                self.fast_rng.set_state(state)
+            self.fast_graph.seal(expected_shapes=2)
+            receipt=self.fast_graph_receipt()
+            if not receipt.get('passed') or not receipt.get('sealed') or receipt.get('shape_count')!=2:
+                raise TimingError('fast CUDA Graph parity/shape acceptance did not pass')
+        except BaseException as exc:
+            self.record(dict(event='fast_graph_preparation_failed',acceptance=self.fast_graph_receipt(),
+                             error=type(exc).__name__,error_message=str(exc),rng_preserved=True))
+            raise
+        self._graph_prepared=True
+        self.record(dict(event='fast_graph_prepared',acceptance=receipt,
+                         preparation_wall_time=self.wall_clock(),rng_preserved=True))
 
     def due(self, now):
         tick = math.floor((now-self.queue.origin)/self.queue.dt + 1e-9)
@@ -225,6 +263,7 @@ class DualRateRuntime:
                     world['completed_time']=reference.payload['completed_time'].to(self.device)
                 else:
                     world=self.system.empty_world(batch)
+                self._prepare_fast_graph(batch,world)
                 model_started_wall=self.wall_clock()
                 output=self.system.sample_fast(batch,world,steps=self.config.sample_steps,generator=self.fast_rng)
                 raw=output["actions"][0].float().cpu()*self.scale+self.mean
@@ -322,6 +361,8 @@ class DualRateRuntime:
                 self.fast_job=None
             except BaseException as exc:
                 self.fast_job=None
+                self._discarded_jobs.append(('fast',(job,lease),dict(
+                    reason='failed_submission',queue_updated_before_failure=submitted)))
                 if not submitted:
                     self._cancel_fast(lease)
                 self._failure=exc
@@ -337,17 +378,47 @@ class DualRateRuntime:
         return None
 
     def close(self):
+        if self.closed:
+            return
         self.closed=True
         self.pool.shutdown(wait=True,cancel_futures=False)
         errors=[]
-        for pending in (self.slow_job,self.fast_job):
+        remaining=list(self._discarded_jobs)
+        if self.slow_job is not None:
+            remaining.append(('slow',self.slow_job,dict(reason='episode_closed_before_publication')))
+        if self.fast_job is not None:
+            remaining.append(('fast',self.fast_job,dict(reason='episode_closed_before_commit')))
+        seen=set()
+        for route,pending,detail in remaining:
             if pending is not None:
+                job=pending[0]
+                if id(job) in seen:
+                    continue
+                seen.add(id(job))
+                event=dict(event='worker_finished_discarded',route=route,
+                    discarded=True,commit_performed_during_close=False,
+                    owner_observed_wall_time=self.wall_clock(),**detail)
+                if route=='fast':
+                    lease=pending[1]
+                    event.update(query_id=lease.query_id,query_time=lease.query_time,
+                                 protected_until=lease.protected_until)
+                else:
+                    event.update(source_time=pending[1],version=pending[3])
                 try:
-                    pending[0].result()
+                    result=job.result()
+                    ready_wall,metrics=result[-2:]
+                    if not isinstance(metrics,dict):
+                        metrics=dict(wall_seconds=metrics)
+                    event.update(worker_outcome='completed',ready_wall_time=ready_wall,**metrics)
                 except BaseException as exc:
+                    event.update(worker_outcome='failed',error=type(exc).__name__,error_message=str(exc))
                     errors.append(exc)
+                self.record(event)
         if self.fast_job is not None:
             self._cancel_fast(self.fast_job[1]);self.fast_job=None
         self.slow_job=None
+        self._discarded_jobs.clear()
+        if self.fast_graph is not None and getattr(self.system,'_fast_graph_sampler',None) is self.fast_graph:
+            self.system._fast_graph_sampler=None
         if errors:
             raise errors[0]
