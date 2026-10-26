@@ -42,6 +42,14 @@ class ExposureTimingTests(unittest.TestCase):
         payload=synthetic_templates(DT);payload['kind']='measured_parallel'
         with self.assertRaises(ValueError):validate_templates(payload,verify_evidence=False)
 
+    def test_missing_reference_has_real_separate_slow_anchor(self):
+        row=dict(synthetic_templates(DT)['templates'][0],reference_available=False,reference_version=-1)
+        with self.assertRaisesRegex(ValueError,'historical slow supervision'):
+            validate_template(row,DT)
+        checked=validate_template(dict(row,slow_supervision_version=3),DT)
+        self.assertFalse(checked['reference_available'])
+        self.assertEqual(checked['publish_time'],row['publish_time'])
+
     def test_deadline_and_fresh_image_are_checked(self):
         row=synthetic_templates(DT)['templates'][0]
         bad=dict(row,query_rgb_available=row['query_time']+.01)

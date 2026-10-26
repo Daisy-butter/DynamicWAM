@@ -33,6 +33,12 @@ def prefix_count(start, end, dt, *, chunk=16):
 
 
 def validate_template(row, dt):
+    reference_available=row.get('reference_available',True)
+    if not isinstance(reference_available,bool):
+        raise ValueError('reference availability must be explicit boolean runtime state')
+    if not reference_available and (row.get('reference_version')!=-1 or
+            not isinstance(row.get('slow_supervision_version'),int) or row['slow_supervision_version']<0):
+        raise ValueError('missing-reference row needs a real historical slow supervision anchor, not a valid reference')
     required = ('source_available', 'request_time', 'publish_time', 'query_time',
                 'query_rgb_time', 'query_rgb_available', 'source_prefix_end', 'fast_prefix_end')
     if any(k not in row or not math.isfinite(float(row[k])) for k in required):
@@ -56,7 +62,7 @@ def validate_template(row, dt):
         raise ValueError('fast prefix drops a still-future source commitment')
     if 'fast_submit_time' in row and row['fast_submit_time'] >= row['fast_prefix_end'] - float(row.get('submit_margin', .01)):
         raise ValueError('measured query missed its protected-prefix deadline')
-    return dict(row, source_prefix_rows=source_n, fast_prefix_rows=fast_n,
+    return dict(row, reference_available=reference_available,source_prefix_rows=source_n, fast_prefix_rows=fast_n,
                 fast_action_start=fast_start)
 
 

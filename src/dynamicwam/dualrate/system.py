@@ -127,6 +127,23 @@ class DualRateSystem(nn.Module):
             reference_actions=state.new_empty(b,0,self.fast.config.action_dim),
             reference_action_intervals=time.new_empty(b,0,2))
 
+    @staticmethod
+    def mask_reference(world,batch,available):
+        """Batched empty-world semantics without relabelling slow supervision.
+
+        Masked tokens use the same null-attention sentinel as empty_world. Its
+        query-relative clock convention must also match: age=latency=0, even
+        when the independently supervised slow source is an expired old image.
+        """
+        query=batch['query_time']
+        if available.dtype!=torch.bool or available.shape!=query.shape:
+            raise ValueError('reference_available must be boolean [B] runtime state')
+        result=dict(world)
+        result['world_valid']=world['world_valid'] & available[:,None]
+        result['source_time']=torch.where(available,world['source_time'],query)
+        result['completed_time']=torch.where(available,world['completed_time'],query)
+        return result
+
     def _action_deviation(self,batch,world):
         """Compare only executed history and current immutable prefix, not GT suffix."""
         tokens=world["world_tokens"]
@@ -144,26 +161,43 @@ class DualRateSystem(nn.Module):
         times=batch["executed_action_intervals"]
         known=batch["executed_action_valid"]
         if (times.dtype!=torch.float64 or times.shape!=(*acts.shape[:2],2) or
-                known.dtype!=torch.bool or known.shape!=acts.shape[:2] or
-                (known & (times[...,1]>batch["query_time"][:,None]+1e-8)).any()):
+                known.dtype!=torch.bool or known.shape!=acts.shape[:2]):
             raise ValueError("execution trace contains unavailable future actions")
+        unavailable=(known & (times[...,1]>batch["query_time"][:,None]+1e-8)).any()
         acts=torch.cat((acts,batch["fast_known_actions"]),dim=1)
         times=torch.cat((times,batch["action_intervals"]),dim=1)
         known=torch.cat((known,batch["fast_known_mask"]),dim=1)
+        ref=world["reference_actions"]
+        slots=world["world_types"]==2
+        layout_invalid=slots.sum(-1)!=ref.shape[1]
+        # Fixed-shape matches avoid nonzero/any/allclose host synchronizations
+        # for every reference row. First match retains executed-before-prefix
+        # precedence and the original differentiable action/reference paths.
+        match=known[:,None,:] & ((times[:,None]-world["reference_action_intervals"][:,:,None]).abs().amax(-1)<1e-7)
+        matched=match.any(-1)
+        if acts.shape[1]:
+            first=match.to(torch.long).argmax(-1)
+            values=acts.gather(1,first[...,None].expand(-1,-1,a))
+            agrees=torch.isclose(acts[:,None],values[:,:,None],atol=1e-5,rtol=0).all(-1)
+            conflict=(match & ~agrees).any(-1).any(-1)
+        else:
+            values=acts.new_zeros(b,ref.shape[1],a)
+            conflict=torch.zeros(b,dtype=torch.bool,device=acts.device)
+        # One device-to-host check, preserving validation order by batch row.
+        checks=torch.cat((unavailable.reshape(1),layout_invalid,conflict,matched.any().reshape(1))).tolist()
+        if checks[0]:
+            raise ValueError("execution trace contains unavailable future actions")
         for i in range(b):
-            slots=(world["world_types"][i]==2).nonzero().flatten()
-            ref=world["reference_actions"][i]
-            ri=world["reference_action_intervals"][i]
-            if slots.numel()!=ref.shape[0]:
+            if checks[1+i]:
                 raise ValueError("soft action tokens and reference plan differ")
-            for j,slot in enumerate(slots):
-                match=known[i] & ((times[i]-ri[j]).abs().amax(-1)<1e-7)
-                if match.any():
-                    values=acts[i,match]
-                    if not torch.allclose(values,values[:1].expand_as(values),atol=1e-5,rtol=0):
-                        raise ValueError("execution and commitment disagree at a physical interval")
-                    delta[i,slot]=values[0].to(ref.dtype)-ref[j]
-                    valid[i,slot]=True
+            if checks[1+b+i]:
+                raise ValueError("execution and commitment disagree at a physical interval")
+        if not checks[-1]:
+            return delta,valid
+        rank=(slots.long().cumsum(-1)-1).clamp_min(0)
+        per_ref=torch.where(matched[...,None],values.to(ref.dtype)-ref,0).to(tokens.dtype)
+        delta=torch.where(slots[...,None],per_ref.gather(1,rank[...,None].expand(-1,-1,a)),0)
+        valid=slots & matched.gather(1,rank)
         return delta,valid
 
     def conditions(self, batch, world):
@@ -304,8 +338,11 @@ class DualRateSystem(nn.Module):
                       "slow_action": action.new_zeros((), dtype=torch.float32)}
         # A separate source-only prediction creates reference, with gradients live.
         world = self.world_readout(self.predict_reference(batch, generator=generator))
-        keep = torch.rand((b, 1), device=device, generator=generator) >= cfg.cache_dropout
-        world["world_valid"] = world["world_valid"] & keep
+        available=batch.get('reference_available',torch.ones(b,dtype=torch.bool,device=device))
+        if available.dtype!=torch.bool or available.shape!=(b,):
+            raise ValueError('reference_available must be boolean [B] runtime state')
+        keep = (torch.rand((b,), device=device, generator=generator) >= cfg.cache_dropout) & available
+        world=self.mask_reference(world,batch,keep)
         conditions = self.conditions(batch, world)
         if action_conditioned is None:
             action_conditioned = torch.rand((b,), device=device, generator=generator) < cfg.action_conditioned_probability

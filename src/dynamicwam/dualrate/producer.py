@@ -915,7 +915,8 @@ class DominoPhysicalDataset(Dataset):
                     future_visual_actual_times=torch.tensor([t[i] if i>=0 else q for i in visual_frames],dtype=torch.float64).repeat(len(self.active_entity_roles)))
         item['executed_actions'][~item['executed_action_valid']]=0
         if event is not None:
-            item.update(source_request_time=torch.tensor(s+event['request_time'],dtype=torch.float64),
+            item.update(reference_available=torch.tensor(event['reference_available'],dtype=torch.bool),
+                source_request_time=torch.tensor(s+event['request_time'],dtype=torch.float64),
                 source_available_time=torch.tensor(s+event['source_available'],dtype=torch.float64),
                 query_available_time=torch.tensor(query_available,dtype=torch.float64),
                 source_prefix_end=torch.tensor(s+event['source_prefix_end'],dtype=torch.float64),

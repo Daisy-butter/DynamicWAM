@@ -94,5 +94,25 @@ class ExposureIndexTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'latest published'):
                 helper.measured_templates([path],DT)
 
+    def test_expired_reference_query_retained_with_separate_slow_supervision(self):
+        events=measured_trace();q=13*DT;quantum=DT/45;available=q-DT+30*quantum
+        events.extend([dict(event='capture',exposure=q-DT,available=available,
+            owner_ready_wall=100.+available-quantum,timing={'wall_timestamps':[100.+available+.001]}),
+            dict(event='fast_started',query_id=2,query_time=q,reference_version=-1,
+                observation_time=q-DT,protected_until=q+2*DT,submit_margin=.01),
+            dict(event='fast_committed',query_id=2,commit_time=q+50*quantum,
+                ready_wall_time=100.+q+49*quantum,commit_wall_time=100.+q+50*quantum+.001)])
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'events.json';path.write_text(json.dumps(events))
+            value=helper.measured_templates([path],DT)
+            self.assertEqual(value['no_reference_queries'],1)
+            row=value['templates'][-1]
+            self.assertFalse(row['reference_available'])
+            self.assertEqual(row['reference_version'],-1)
+            self.assertEqual(row['slow_supervision_version'],2)
+            self.assertAlmostEqual(row['query_time'],9*DT)
+            self.assertAlmostEqual(row['publish_time'],3*DT)
+            self.assertAlmostEqual(row['request_time'],DT)
+
 
 if __name__=='__main__':unittest.main()

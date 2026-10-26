@@ -36,6 +36,8 @@ class RuntimeConfig:
     reference_max_age: float = 1.
     sample_steps: int = 10
     fast_cuda_graph: bool = False
+    min_query_budget_seconds: float = 0.
+    max_protect_steps: int | None = None
 
     def __post_init__(self):
         if (type(self.fast_cuda_graph) is not bool or
@@ -44,6 +46,12 @@ class RuntimeConfig:
                 not 0 <= self.submit_margin < self.protect_steps*self.action_dt or
                 not math.isfinite(self.reference_max_age) or self.reference_max_age <= 0):
             raise ValueError("invalid physical runtime configuration")
+        if (not math.isfinite(self.min_query_budget_seconds) or self.min_query_budget_seconds<0 or
+                (self.max_protect_steps is not None and
+                 (type(self.max_protect_steps) is not int or self.max_protect_steps<1)) or
+                (self.min_query_budget_seconds>0 and
+                 (self.max_protect_steps is None or self.max_protect_steps<self.protect_steps))):
+            raise ValueError('bounded query budget requires a finite budget and explicit protection cap')
 
 
 def detached_batch(batch):
@@ -232,23 +240,25 @@ class DualRateRuntime:
     def start_fast(self,batch_factory,*,observation_time):
         if self.closed or self.fast_job is not None:
             raise TimingError("fast slot unavailable")
+        requested_wall=self.wall_clock()
         query=float(self.clock())
+        protection,budget=self._fast_query_protection(query,requested_wall)
         reference=self.store.snapshot(query)
         device_reference = self._published_device_world
         if reference is not None and (device_reference is None or device_reference[0] != reference.version):
             raise TimingError('published CPU/device reference version differs')
         lease=self.queue.begin_query(query_time=query,observation_time=observation_time,
-            protect_steps=self.config.protect_steps,submit_margin=self.config.submit_margin,
+            protect_steps=protection,submit_margin=self.config.submit_margin,
             reference_version=reference.version if reference else -1)
         self.last_fast_tick=math.floor((query-self.queue.origin)/self.queue.dt+1e-9)
-        requested_wall=self.wall_clock()
+        budget['effective_protect_steps']=len(lease.prefix.actions)
         self.record(dict(event='fast_started',query_id=lease.query_id,query_time=query,
             request_wall_time=requested_wall,
             observation_time=observation_time,reference_version=lease.reference_version,
             source_time=reference.source_time if reference else None,
             reference_age=query-reference.source_time if reference else None,
             protected_until=lease.protected_until,submit_margin=lease.submit_margin,prefix_hash=lease.prefix_hash,
-            remaining_prefix_budget_seconds=lease.protected_until-lease.submit_margin-query))
+            remaining_prefix_budget_seconds=lease.protected_until-lease.submit_margin-query,**budget))
         def work():
             worker_started_wall=self.wall_clock()
             with device_stream(self.device, self.fast_stream), torch.no_grad():
@@ -298,6 +308,34 @@ class DualRateRuntime:
         except BaseException:
             self.queue.cancel_query(lease)
             raise
+
+    def _fast_query_protection(self,query,requested_wall):
+        """Choose a bounded prefix once, before acquiring the immutable lease."""
+        cfg=self.config;dt=self.queue.dt
+        index=math.floor((query-self.queue.origin)/dt+1e-9)
+        phase=max(0.,query-(self.queue.origin+index*dt))
+        bridge=self.clock_bridge
+        active=bridge is not None and bridge.active
+        lag=max(0.,bridge.expected_physics(requested_wall)-query) if active else 0.
+        enabled=cfg.min_query_budget_seconds>0 and active
+        count=cfg.protect_steps
+        details=dict(requested_query_budget_seconds=cfg.min_query_budget_seconds,
+            effective_protect_steps=count,query_phase_seconds=phase,
+            wall_physics_lag_seconds=lag,budget_decision_wall_time=requested_wall,
+            bounded_query_budget_enabled=enabled,max_protect_steps=cfg.max_protect_steps)
+        if cfg.min_query_budget_seconds>0 and bridge is None:
+            raise TimingError('bounded query budget requires a wall/physics bridge')
+        if enabled:
+            count=max(count,math.ceil((phase+lag+cfg.min_query_budget_seconds+cfg.submit_margin)/dt))
+            # Existing commitments cannot be shortened to satisfy the cap.
+            existing=self.queue.snapshot_committed(query)
+            count=max(count,len(existing.actions))
+            details['effective_protect_steps']=count
+            if count>cfg.max_protect_steps:
+                self.record(dict(event='fast_budget_rejected',query_time=query,
+                    reason='required_prefix_exceeds_configured_cap',**details))
+                raise DeadlineMiss('required query budget exceeds bounded protected prefix')
+        return count,details
 
     def _cancel_fast(self, lease):
         if lease.query_id not in self._cancelled_queries:

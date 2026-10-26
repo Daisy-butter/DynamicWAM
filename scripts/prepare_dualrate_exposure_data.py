@@ -86,16 +86,24 @@ def measured_templates(paths,dt):
             if event.get('event')!='fast_started' or int(event['query_id']) not in commits:
                 continue
             version=int(event['reference_version']);q=float(event['query_time'])
-            if version not in starts or version not in completed:
-                continue
-            source=starts[version];done=completed[version]
-            e=float(source['source_time']);r=float(source['request_time']);c=float(done['published_time'])
-            if q<=e+NUMERIC_TIME_EPSILON:continue  # explicit pre-activation bootstrap
+            if event_index<=next(i for i,e in enumerate(events) if e.get('event')=='activation'):
+                continue  # bootstrap inference is explicitly outside the active clock
             # Prove latest-complete selection, not merely that one M was available.
             available=[v for v,d in completed.items() if published_order[v]<event_index and
                        float(d['published_time'])<=q+NUMERIC_TIME_EPSILON]
-            if available and version!=max(available):
+            if not available:
+                raise ValueError('active query lacks a real causal slow supervision anchor')
+            reference_available=version>=0
+            anchor=max(available)
+            if reference_available and version!=anchor:
                 raise ValueError('trace fast query did not select latest published reference')
+            if anchor not in starts:raise ValueError('historical slow request missing from trace')
+            # A missing/expired reference is NEVER marked available to the fast
+            # network. Its last actual completed source is used only to pair an
+            # independent native slow supervision example with this fast query.
+            source=starts[anchor];done=completed[anchor]
+            e=float(source['source_time']);r=float(source['request_time']);c=float(done['published_time'])
+            if q<=e+NUMERIC_TIME_EPSILON:continue
             rgb=float(event['observation_time'])
             matching=[(t,a) for t,a in captures.items() if abs(t-rgb)<=NUMERIC_TIME_EPSILON]
             if not matching:continue  # bootstrap image has no ordinary capture event
@@ -106,8 +114,10 @@ def measured_templates(paths,dt):
                 fast_prefix_end=float(event['protected_until'])-e,
                 fast_submit_time=float(commits[int(event['query_id'])]['commit_time'])-e,
                 submit_margin=float(event['submit_margin']),trace_number=trace_number,
-                reference_version=version,query_id=int(event['query_id']))
-            validate_template(row,dt);templates.append(row);all_versions.add((trace_number,version))
+                reference_version=version,reference_available=reference_available,
+                slow_supervision_version=anchor,query_id=int(event['query_id']))
+            validate_template(row,dt);templates.append(row)
+            if reference_available:all_versions.add((trace_number,version))
             for other_version,other in starts.items():
                 if other_version==version:continue
                 # Event order disambiguates equal physical ticks and includes a
@@ -119,6 +129,7 @@ def measured_templates(paths,dt):
         clock_domain='scene_step_physics_seconds',action_interval_seconds=dt,templates=templates,
         trace_evidence=evidence,fast_queries_while_slow_running=overlaps,
         consumed_reference_versions=len(all_versions),
+        no_reference_queries=sum(not t['reference_available'] for t in templates),
         provenance='coupled actual reference/camera/query/prefix events; offline expert actions are not on-policy'))
 
 
@@ -185,6 +196,12 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
         if (episode_id+1)%1000==0:
             print(json.dumps(dict(episodes=episode_id+1,rows={s:len(v) for s,v in rows.items()})),flush=True)
     if not all(rows.values()):raise ValueError('timing index must retain both original data splits')
+    missing_template_ids={i for i,t in enumerate(events['templates']) if not t.get('reference_available',True)}
+    template_counts={split:np.bincount(np.asarray(values,dtype=np.int64)[:,2],
+        minlength=len(events['templates'])).tolist() for split,values in rows.items()}
+    no_reference_rows={split:sum(row[2] in missing_template_ids for row in values) for split,values in rows.items()}
+    if missing_template_ids and not all(no_reference_rows.values()):
+        raise ValueError('index lost measured missing-reference examples from a split')
     output.mkdir(parents=True)
     event_path=output/'event_templates.json';event_path.write_text(json.dumps(events,indent=2))
     audit=dict(schema='dualrate-exposure-index-v4',time_contract=TIME_CONTRACT,episodes=len(selected),
@@ -194,6 +211,12 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
         future_rgb_error_bound_seconds=RGB_TOLERANCE,query_rgb_old_side_error_bound_seconds=CONDITION_FRAME_TOLERANCE_SECONDS,
         label_time_claim='bounded nearest RGB and bracketed geometric/action interpolation; not exact measurements',
         provenance=events['kind'],simulator_started=False)
+    audit['no_reference_rows']=no_reference_rows
+    audit['template_event_counts']=[1]*len(events['templates'])
+    audit['template_row_counts']=template_counts
+    audit['measured_no_reference_fraction']=len(missing_template_ids)/len(events['templates'])
+    audit['indexed_no_reference_fraction']={split:no_reference_rows[split]/len(values) for split,values in rows.items()}
+    audit['sampling_semantics']='uniform eligible indexed rows; event templates extended to expert trajectories; not exact measured-frequency equivalence'
     audit_path=output/'timing_audit.json';audit_path.write_text(json.dumps(audit,indent=2))
     result={}
     for split,parent in parents.items():
@@ -211,6 +234,8 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
             condition_rgb_rule='source=real_exposure; current=real_past_frame_under_replayed_camera_availability',
             parent_manifest=str(source/f'{split}.json'),parent_manifest_sha256=sha256_file(source/f'{split}.json'),
             audit_file=str(audit_path),formal_training_ready=False,
+            no_reference_rows=no_reference_rows[split],
+            reference_availability_semantics='measured runtime availability; expired source remains slow-label-only',
             timing_quality='deterministic event/queue alignment; bounded demonstration resampling error')
         path=output/f'{split}.json';path.write_text(json.dumps(new,indent=2));result[split]=str(path)
     return dict(manifests=result,audit=audit)

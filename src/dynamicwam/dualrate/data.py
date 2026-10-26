@@ -299,7 +299,7 @@ class DualRateShardDataset(Dataset):
     # dictionary wholesale as policy conditions. Explicit model adapters select keys.
     EXTRA_KEYS = {
         "source_condition_latent", "source_initial_state", "source_motion",
-        "source_motion_valid", "source_motion_acceleration_valid", "source_motion_times", "source_text",
+        "source_motion_valid", "source_motion_acceleration_valid", "source_motion_times", "source_text", "reference_available",
         "source_action", "fast_action", "source_future_latent",
         "source_future_intervals", "source_action_times", "source_known_actions",
         "source_known_mask", "fast_known_actions", "fast_known_mask", "rgb", "rgb_times",

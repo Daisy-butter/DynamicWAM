@@ -64,6 +64,42 @@ def generator(seed=17):
     return torch.Generator().manual_seed(seed)
 
 
+def test_masked_reference_matches_deployed_empty_world_without_retiming_source():
+    system,batch=make_system();system.eval()
+    original_source=batch['source_time'].clone()
+    world=system.world_readout(system.predict_reference(batch,generator=generator()))
+    dropped=system.mask_reference(world,batch,torch.tensor([False]))
+    empty=system.empty_world(batch)
+    assert torch.equal(dropped['source_time'],batch['query_time'])
+    assert torch.equal(dropped['completed_time'],batch['query_time'])
+    assert not dropped['world_valid'].any()
+    a=system.sample_fast(batch,dropped,steps=2,generator=generator())
+    b=system.sample_fast(batch,empty,steps=2,generator=generator())
+    for key in ('actions','future','contact_probability'):
+        torch.testing.assert_close(a[key],b[key],atol=2e-6,rtol=1e-6)
+    torch.testing.assert_close(batch['source_time'],original_source,atol=0,rtol=0)
+    assert not torch.equal(world['source_time'],batch['query_time'])
+
+
+@pytest.mark.parametrize('available,dropout',[(False,0.),(True,1.)])
+def test_measured_absence_and_dropout_use_same_empty_condition(available,dropout):
+    from dataclasses import replace
+    system,batch=make_system()
+    system.loss_config=replace(system.loss_config,cache_dropout=dropout)
+    batch['reference_available']=torch.tensor([available])
+    original=system.conditions;seen=[]
+    def conditions(data,world):
+        seen.append(world)
+        return original(data,world)
+    system.conditions=conditions
+    result=system.training_loss(batch,generator(),action_conditioned=torch.tensor([False]))
+    assert torch.isfinite(result['loss'])
+    assert len(seen)==1 and not seen[0]['world_valid'].any()
+    assert torch.equal(seen[0]['source_time'],batch['query_time'])
+    assert torch.equal(seen[0]['completed_time'],batch['query_time'])
+    assert float(batch['source_time'][0])==2.
+
+
 def test_sampling_keeps_unsupported_future_fields_at_fixed_noise():
     system,batch=make_system()
     system.future_field_support[:,0]=False

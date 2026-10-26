@@ -7,10 +7,11 @@ Missing captures are never fabricated.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from collections import deque
+from collections import deque, OrderedDict
 import hashlib
 import json
 import math
+import threading
 from pathlib import Path
 import numpy as np
 import torch
@@ -31,6 +32,72 @@ class OnlineFrame:
     frame_id: int
 
 
+def _immutable_array(value):
+    """A bytes-backed snapshot cannot be made writable again by a consumer."""
+    value=np.asarray(value)
+    return np.frombuffer(value.tobytes(order='C'),dtype=value.dtype).reshape(value.shape)
+
+
+def _immutable_head(frame):
+    value=frame.images[0]
+    if not isinstance(value,np.ndarray) or value.flags.writeable:
+        return False
+    while isinstance(value,np.ndarray):
+        value=value.base
+    return isinstance(value,bytes)
+
+
+def _copy_pair_value(value):
+    if isinstance(value,np.ndarray):return value.copy()
+    if isinstance(value,torch.Tensor):return value.clone()
+    if isinstance(value,tuple):return tuple(_copy_pair_value(x) for x in value)
+    return value
+
+
+class ObservationPairCache:
+    """Bounded per-episode memoization; a concurrent miss computes independently.
+
+    Keys bind the actual immutable frame objects and the complete flow contract.
+    Entries retain their frames, preventing Python id reuse. Neither Farneback
+    nor copying results runs under the metadata lock; fast never waits for a
+    slow worker's unfinished computation. Returned arrays/tensors are private.
+    """
+    def __init__(self,max_entries=32):
+        if type(max_entries) is not int or max_entries<1:
+            raise ValueError('positive bounded pair-cache capacity required')
+        self.max_entries=max_entries
+        self._entries=OrderedDict();self._lock=threading.Lock()
+
+    def compute(self,kind,a,b,contract_key,function):
+        # Public helpers/tests may supply mutable frames: compute normally;
+        # never trust frame_id alone or silently cache mutable image contents.
+        if not (_immutable_head(a) and _immutable_head(b)):
+            return function()
+        key=(kind,id(a),id(b),contract_key)
+        with self._lock:
+            entry=self._entries.get(key)
+            if entry is not None:
+                self._entries.move_to_end(key)
+        if entry is not None:
+            return _copy_pair_value(entry[2])
+        value=function()
+        saved=_copy_pair_value(value)
+        with self._lock:
+            # A racing worker may already have published the identical pair.
+            # Keep one result, without waiting for any in-flight calculation.
+            entry=self._entries.get(key)
+            if entry is None:
+                self._entries[key]=(a,b,saved)
+                while len(self._entries)>self.max_entries:
+                    self._entries.popitem(last=False)
+            else:
+                self._entries.move_to_end(key)
+        return value
+
+    def __len__(self):
+        with self._lock:return len(self._entries)
+
+
 class ObservationHistory:
     def __init__(self, max_frames=128):
         if max_frames < 61:
@@ -43,15 +110,15 @@ class ObservationHistory:
             raise TimingError('capture exposure/availability are not causal')
         if self.frames and exposure <= self.frames[-1].exposure:
             raise TimingError('duplicate/decreasing camera exposure')
-        images = tuple(np.array(observation['observation'][c]['rgb'], copy=True) for c in CAMERAS)
+        images = tuple(np.asarray(observation['observation'][c]['rgb']) for c in CAMERAS)
         for x in images:
             if x.dtype != np.uint8 or x.ndim != 3 or x.shape[-1] != 3:
                 raise ValueError('online camera must supply actual RGB uint8')
-            x.flags.writeable = False
+        images=tuple(_immutable_array(x) for x in images)
         target = np.array(observation['joint_action']['vector'], dtype=np.float32, copy=True)
         if target.shape != (14,) or not np.isfinite(target).all():
             raise ValueError('actual frozen drive-target vector required')
-        target.flags.writeable = False
+        target=_immutable_array(target)
         value = OnlineFrame(images, target, float(exposure), float(available), self.next_id)
         self.next_id += 1
         self.frames.append(value)
@@ -108,23 +175,29 @@ def history_endpoints(frames, *, strict=False, action_dt=DT):
     return tuple(selected), tuple(matched)
 
 
-def history_features(frames, contract, *, strict=False, action_dt=DT):
+def history_features(frames, contract, *, strict=False, action_dt=DT, pair_cache=None, include_spatial=True):
     """Reproduce the 0.72 s flow windows, including the preceding acceleration pair."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
     frames = tuple(frames)
     if not frames:
         raise ValueError('empty captured history')
+    # Snapshot all settings once; mutation of a caller's dict cannot give a
+    # cached value a key different from the parameters actually computed.
+    contract_key=json.dumps(contract,sort_keys=True,separators=(',',':'),allow_nan=False)
+    contract=json.loads(contract_key)
+    def pair_value(kind,a,b,function):
+        return function() if pair_cache is None else pair_cache.compute(kind,a,b,contract_key,function)
     selected, matched = history_endpoints(frames, strict=strict, action_dt=action_dt)
     selected = list(selected)
     flows, displacement, starts, ends, valid = [], [], [], [], []
     for index, (a, b) in enumerate(zip(selected, selected[1:])):
         ok = matched[index] and matched[index + 1] and a.frame_id != b.frame_id and b.exposure > a.exposure
         if ok:
-            rgb, stats, _, quality = compute_flow_observation(a.images[0],b.images[0],
+            rgb, stats, _, quality = pair_value('native',a,b,lambda a=a,b=b:compute_flow_observation(a.images[0],b.images[0],
                 compute_size=tuple(contract['compute_size']),
                 normalization_percentile=contract['normalization_percentile'],
-                farneback=contract['farneback'],quality=contract['quality'])
+                farneback=contract['farneback'],quality=contract['quality']))
         else:
             rgb=np.zeros((*contract['compute_size'],3),np.uint8)
             stats=np.zeros(4,np.float32);quality=False
@@ -136,10 +209,12 @@ def history_features(frames, contract, *, strict=False, action_dt=DT):
     intervals[~mask[1:]]=frames[-1].exposure
     spatial=torch.zeros(16,5);spatial_valid=torch.zeros(16,dtype=torch.bool)
     a,b=selected[-2:];pair=torch.tensor([a.exposure,b.exposure],dtype=torch.float64)
-    if valid[-1]:
-        forward=compute_dense_flow(a.images[0],b.images[0],compute_size=(64,64),farneback=contract['farneback'])
-        backward=compute_dense_flow(b.images[0],a.images[0],compute_size=(64,64),farneback=contract['farneback'])
-        flow,reliable,_,quality=filter_flow_by_forward_backward_consistency(forward,backward,quality=contract['quality'])
+    if include_spatial and valid[-1]:
+        def compute_spatial_pair():
+            forward=compute_dense_flow(a.images[0],b.images[0],compute_size=(64,64),farneback=contract['farneback'])
+            backward=compute_dense_flow(b.images[0],a.images[0],compute_size=(64,64),farneback=contract['farneback'])
+            return filter_flow_by_forward_backward_consistency(forward,backward,quality=contract['quality'])
+        flow,reliable,_,quality=pair_value('spatial64',a,b,compute_spatial_pair)
         if quality:
             for y in range(4):
                 for x in range(4):
@@ -157,6 +232,7 @@ def history_features(frames, contract, *, strict=False, action_dt=DT):
 class OnlineBatchBuilder:
     def __init__(self, manifest, *, action_mean, action_scale, language, device='cpu', slow_device=None):
         self.manifest=manifest;self.device=torch.device(device)
+        self.pair_cache=ObservationPairCache()
         self.slow_device=torch.device(device if slow_device is None else slow_device)
         self.action_dt=float(manifest.get('action_interval_seconds',DT))
         self.hardtime=manifest.get('time_contract')=='exposure_anchor_wall_release_v4'
@@ -189,7 +265,8 @@ class OnlineBatchBuilder:
             raise TimingError('latest camera observation is too old')
         rgb,pixels=zip(*[_letterbox(image,tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v]))
                         for v,image in enumerate(frames[-1].images)])
-        h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt);h.pop('flow_rgb')
+        h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt,
+                           pair_cache=self.pair_cache);h.pop('flow_rgb')
         starts=torch.arange(16,dtype=torch.float64)*self.action_dt+action_start
         trace=[row for row in executed if row[1]<=query_time+1e-8]
         values=dict(h,rgb=torch.stack(rgb),rgb_pixel_valid=torch.stack(pixels),
@@ -218,7 +295,8 @@ class OnlineBatchBuilder:
         # Each numeric history row and its RGB flow use the same real pair.
         # Native motion retains each pair's actual dt; nearest endpoints are
         # bounded data sampling, never relabelled as exact nominal endpoints.
-        h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt);last=frames[-1]
+        h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt,
+                           pair_cache=self.pair_cache,include_spatial=False);last=frames[-1]
         raw=np.stack([cv2.resize(x,(320,384)) for x in h['flow_rgb']]+[composite(last.images,(384,320))])
         x=torch.from_numpy(raw).permute(3,0,1,2)[None].to(self.slow_device,dtype=getattr(vae,'dtype',torch.bfloat16))/127.5-1
         with torch.no_grad():
