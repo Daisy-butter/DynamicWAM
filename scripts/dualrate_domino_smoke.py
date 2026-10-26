@@ -55,6 +55,8 @@ def main():
         source_identity,canonical_hash,file_sha256)
     output=_validate_storage(config);manifest_path=Path(config['manifest']).resolve(strict=True)
     manifest=json.loads(manifest_path.read_text());_validate_normalization(config,manifest)
+    if manifest.get('time_contract')!='exposure_anchor_wall_release_v4':
+        raise ValueError('deployment requires the measured hard-time data contract')
     verify_deployment_artifacts(config,file_sha256)
     identity=dict(source_sha256=source_identity(),config_sha256=canonical_hash(config),
         manifest_sha256=file_sha256(manifest_path),init_checkpoint_sha256=config['init_checkpoint_sha256'],
@@ -70,9 +72,12 @@ def main():
     torch.set_num_threads(1);torch.set_num_interop_threads(1)
     import cv2
     cv2.setNumThreads(1)
-    uuids=os.environ['CUDA_VISIBLE_DEVICES'].split(',');policy_index=1 if len(uuids)==2 else 0
-    stage('cuda_device_initializing',policy_index=policy_index)
-    device=torch.device('cuda',policy_index);torch.cuda.set_device(device)
+    uuids=os.environ['CUDA_VISIBLE_DEVICES'].split(',')
+    if len(uuids)!=3 or len(set(uuids))!=3:
+        raise ValueError('deployment requires three distinct GPUs: renderer0, fast1, slow2')
+    fast_device=torch.device('cuda',1);device=torch.device('cuda',2)
+    stage('cuda_device_initializing',fast_device=str(fast_device),slow_device=str(device))
+    torch.cuda.set_device(device)
     # Verify renderer selection against proc inventory; no independent telemetry.
     pci=None
     for info in Path('/proc/driver/nvidia/gpus').glob('*/information'):
@@ -84,7 +89,7 @@ def main():
     stage('sapien_binding_initializing',renderer_pci=pci)
     binding=install_gpu_binding()
     stage('sapien_binding_ready',renderer=binding)
-    from dynamicwam.dualrate.factory import build_system
+    from dynamicwam.dualrate.factory import build_system,place_inference_devices
     stage('model_initializing')
     system=build_system(config,device=device).eval().requires_grad_(False)
     stage('model_initialized')
@@ -97,14 +102,15 @@ def main():
     if contract.get('source_sha256')!=identity['source_sha256']:
         raise ValueError('deployment checkpoint was not trained by current frozen source')
     system.load_state_dict(payload['model'],strict=True)
-    stage('checkpoint_loaded')
+    placement=place_inference_devices(system,fast_device=fast_device,slow_device=device)
+    stage('checkpoint_loaded',inference_device_map=placement)
     # svulkan2 DenoiserOidn::init uses cudaGetDevice, independently of the
     # Vulkan RenderSystem device. Keep the physics/render owner on renderer0;
-    # policy parameters and both inference worker streams remain on policy1.
+    # Fast and slow inference workers explicitly bind their distinct devices.
     previous_owner_device=torch.cuda.current_device()
     torch.cuda.set_device(0)
     stage('renderer_owner_bound',previous_cuda_device=previous_owner_device,
-          renderer_cuda_device=torch.cuda.current_device(),policy_device=str(device))
+          renderer_cuda_device=torch.cuda.current_device(),inference_device_map=placement)
     checkpoint_meta={k:payload.get(k) for k in ('schema','phase','phase_step','global_step','run_kind')};del payload
     import yaml
     from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language
@@ -129,7 +135,8 @@ def main():
         raise ValueError('instruction protocol must be explicit')
     results=[]
     save(output/'deployment_identity.json',dict(identity=identity,checkpoint=checkpoint_meta,checkpoint_sha256=config['deployment_checkpoint_sha256'],
-        renderer=binding,renderer_uuid=uuids[0],policy_uuid=uuids[policy_index],gpu_count=len(uuids),protocol=PROTOCOL))
+        renderer=binding,renderer_uuid=uuids[0],fast_uuid=uuids[1],slow_uuid=uuids[2],
+        inference_device_map=placement,gpu_count=len(uuids),protocol=PROTOCOL,time_contract=manifest['time_contract']))
     for task in dep['tasks']:
         task_metrics=[]
         next_seed=int(dep['seed'])
@@ -179,7 +186,8 @@ def main():
                         tokenizer_sha256=text_identity['tokenizer_sha256']))
                 env.set_instruction(instruction=prompt)
                 builder=OnlineBatchBuilder(manifest,action_mean=manifest['action_statistics']['mean'],
-                    action_scale=manifest['action_statistics']['std'],language=language,device=device)
+                    action_scale=manifest['action_statistics']['std'],language=language,
+                    device=fast_device,slow_device=device)
                 if len(builder.entity_roles)!=system.fast.config.future_entities:
                     raise ValueError('online entity roles differ from trained fast head')
                 session=DominoLevel1Session(env,flow=None,observation_config={},
@@ -197,10 +205,11 @@ def main():
                     pickle.dump(dict(saved_motion=env._saved_dynamic_motion_info,episode_info=info),f)
                 report=run_episode(session,system,builder,camera,runtime_config,
                     action_limit=min(int(limits[task]),int(dep.get('action_limit',limits[task]))),
-                    frame_period=float(dep.get('frame_period',.06)),max_backlog=float(dep.get('max_backlog',.25)),
+                    frame_period=float(dep.get('frame_period',runtime_config.action_dt)),max_backlog=float(dep.get('max_backlog',.25)),
                     seed=int(prepared['seed']),video=video,
                     camera_warmup_captures=int(dep.get('camera_warmup_captures',3)))
-                report.update(task=task,episode_index=episode,seed=prepared['seed'],gpu_count=len(uuids),video_required=True,
+                report.update(task=task,episode_index=episode,seed=prepared['seed'],gpu_count=len(uuids),
+                              inference_device_map=placement,video_required=True,
                               instruction_mode=dep['instruction_mode'],instruction=prompt)
             except BaseException as exc:
                 report=dict(protocol=PROTOCOL,task=task,episode_index=episode,realtime_valid=False,continuous_valid=False,
@@ -223,8 +232,15 @@ def main():
             results.append(report)
             write_domino_results(native,dep['result_stamp'],dep.get('instruction_type','seen'),aggregate_native_metrics(task_metrics))
     verify_deployment_artifacts(config,file_sha256)
+    parallel_queries=sum(r['fast_queries_during_slow'] for r in results)
+    model_overlap_queries=sum(r['model_overlap_fast_queries'] for r in results)
+    consumed_refresh=any(len(r['reference_versions_consumed'])>=2 for r in results)
     save(output/'deployment_acceptance.json',dict(completed=True,episodes=len(results),real_domino=True,simulation_rate=1.,
         full_model=True,strict_checkpoint_load=True,checkpoint=checkpoint_meta,gpu_count=len(uuids),
+        time_contract=manifest['time_contract'],inference_device_map=placement,
+        fast_queries_during_slow=parallel_queries,refreshed_reference_consumed=consumed_refresh,
+        model_overlap_fast_queries=model_overlap_queries,
+        hardtime_acceptance_passed=bool(parallel_queries and model_overlap_queries and consumed_refresh),
         reference_versions=[r['reference_versions_consumed'] for r in results],reports=[str(output/r['task']/f"episode_{r['episode_index']:04d}/report.json") for r in results]))
     return 0
 

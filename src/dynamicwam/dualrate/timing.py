@@ -317,6 +317,51 @@ class ExecutionQueue:
                                self.episode_id,self.clock_id)
 
     @_serialized
+    def source_prefix_from_exposure(self, exposure: float, request_time: float, *,
+                                    horizon: int = 16, tolerance: float = 1e-7) -> CommittedPrefix:
+        """Atomically join issued history and existing commitments, without reserving.
+
+        The prediction anchor is a real exposure on the execution grid. Commands
+        since that exposure are already known at request_time, even when they
+        were not known at exposure. Never substitute a queued plan for missing
+        issued history, or promote the uncommitted suffix into a hard condition.
+        """
+        _finite(exposure, request_time, tolerance)
+        if horizon < 1 or not 0 <= tolerance < self.dt * .01:
+            raise ValueError("invalid source horizon or numerical tolerance")
+        if exposure < self.origin-tolerance or request_time < exposure-tolerance:
+            raise TimingError("source exposure/request precedes execution origin")
+        offset = (exposure-self.origin)/self.dt
+        first = round(offset)
+        if abs(exposure-(self.origin+first*self.dt)) > tolerance:
+            raise TimingError("source exposure is not on the actual action grid")
+        if request_time >= exposure+horizon*self.dt-tolerance:
+            raise StalePlan("source prefix exhausts the native future horizon")
+        self._coverage(request_time)
+        current = self._floor(request_time)
+        active = request_time > self.origin+current*self.dt+tolerance
+        last = max(first, self._committed_end, current+int(active))
+        if last-first >= horizon:
+            raise StalePlan("source prefix exhausts the native future horizon")
+        rows = []
+        for index in range(first, last):
+            started = self.origin+index*self.dt < request_time-tolerance
+            if started:
+                if index not in self._executed:
+                    raise BufferUnderrun("source prefix has missing actually issued history")
+                row = self._executed[index]
+                if index in self._rows and self._rows[index] != row:
+                    raise TimingError("issued source history differs from execution queue")
+            else:
+                if index >= self._committed_end or index not in self._rows:
+                    raise BufferUnderrun("source prefix has missing committed row")
+                row = self._rows[index]
+            rows.append(row)
+        # Keep the observed exposure value; matching tolerance is not relabeling.
+        return CommittedPrefix(exposure, exposure+len(rows)*self.dt, self.dt, tuple(rows),
+                               self._version, self.episode_id, self.clock_id)
+
+    @_serialized
     def begin_query(self, *, query_time: float, observation_time: float, protect_steps: int,
                     reference_version: int, submit_margin: float = 0.) -> QueryLease:
         if self._inflight is not None:

@@ -77,8 +77,8 @@ def selected_uuids(value, devices, mode):
         raise ValueError("distinct exact inventory GPU UUIDs required")
     if mode in TRAIN_MODES and (len(selected) != 8 or set(selected) != set(devices)):
         raise ValueError("training requires exactly all eight adapters; no single-rank substitute")
-    if mode == "domino_deployment_smoke" and len(selected) not in (1, 2):
-        raise ValueError("deployment smoke requires one or two explicitly pinned GPUs")
+    if mode == "domino_deployment_smoke" and len(selected) not in (1, 2, 3):
+        raise ValueError("deployment smoke requires one to three explicitly pinned GPUs")
     return selected
 
 
@@ -196,6 +196,11 @@ def supervise(args, repo, out):
             resume_checkpoint_sha256=base.file_sha256(resume) if resume is not None else None,
             acceptance_receipt_sha256=config.get("acceptance_receipt_sha256"),
             formal_training_ready=accepted is not None)
+        if mode == "domino_deployment_smoke" and len(selected) == 3:
+            roles = {"renderer": 0, "fast": 1, "slow": 2}
+            if config.get("deployment", {}).get("device_roles") != roles:
+                raise ValueError("three-device deployment must explicitly bind renderer0/fast1/slow2")
+            receipt["device_roles"] = roles
         authorization = out / "authorization.json"
         base.atomic(authorization, receipt)
         command = worker_command(repo, config, frozen, authorization, resume)

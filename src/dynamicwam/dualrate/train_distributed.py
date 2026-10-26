@@ -81,7 +81,11 @@ def selected_rows(dataset, query_age_seconds):
     """Select existing physical-age rows; never relabel timestamps or targets."""
     import numpy as np
     allowed = tuple(float(age) for age in query_age_seconds)
-    available = tuple(float(age) for age in dataset.manifest["query_ages_seconds"])
+    if getattr(dataset,'exposure_anchored',False):
+        # rows[:,2] is an event-template id, not an independent age id.
+        available=tuple(float(row['query_time']) for row in dataset.event_templates['templates'])
+    else:
+        available = tuple(float(age) for age in dataset.manifest["query_ages_seconds"])
     if not allowed or any(not any(abs(age-candidate) < 1e-9 for candidate in available) for age in allowed):
         raise ValueError("requested stage ages are absent from the prepared physical-grid data")
     ids = [i for i, age in enumerate(available) if any(abs(age-value) < 1e-9 for value in allowed)]
@@ -128,7 +132,7 @@ def validate_phase_config(config):
 
 
 def phase_contract(config, identity):
-    return dict(sequence_id=config["sequence_id"], world_size=int(config["world_size"]),
+    contract = dict(sequence_id=config["sequence_id"], world_size=int(config["world_size"]),
         source_sha256=identity["source_sha256"], manifest_sha256=identity["manifest_sha256"],
         init_checkpoint_sha256=config["init_checkpoint_sha256"],
         action_normalization_sha256=config["action_normalization_sha256"],
@@ -136,6 +140,12 @@ def phase_contract(config, identity):
         architecture=config["architecture"], codec_id=config["codec_id"],
         device_type=identity["device_type"], torch_version=identity["torch_version"],
         optimizer_kind=config["optimizer_kind"], gradient_accumulation_dtype="float32")
+    # Legacy checkpoints retain their exact contract. V4 must bind the clock
+    # interpretation as well as tensor architecture across all phase transitions.
+    if config.get("time_contract") is not None:
+        contract.update(time_contract=config["time_contract"],
+                        action_interval_seconds=float(config["action_interval_seconds"]))
+    return contract
 
 
 def set_phase(system, phase):
@@ -195,7 +205,8 @@ def save_checkpoint(path, system, optimizer, cursor, generator, device, config, 
             optimizer_precision=optimizer.precision_report(),
             lineage=dict(stage_init_checkpoint=config.get("stage_init_checkpoint"),
                          stage_init_checkpoint_sha256=config.get("stage_init_checkpoint_sha256")),
-            timing_distribution="offline_synthetic_expert_prefix_not_measured_on_policy"), min_free_bytes=min_free_bytes)
+            timing_distribution=config.get("data_distribution", "offline_synthetic_expert_prefix_not_measured_on_policy"),
+            action_conditioning_distribution="offline_expert_executed_and_committed_prefix_not_on_policy"), min_free_bytes=min_free_bytes)
     dist.barrier()
 
 
@@ -303,6 +314,16 @@ def run_distributed(config, *, device="cuda", resume=None, authorization=None, s
     activate_dependency_overlay(dependencies)
     manifest_path = Path(config["manifest"]).resolve(strict=True)
     manifest = json.loads(manifest_path.read_text())
+    if config.get('time_contract') is not None or manifest.get('time_contract')=='exposure_anchor_wall_release_v4':
+        from .exposure_timing import TIME_CONTRACT, load_templates
+        if config.get('time_contract')!=TIME_CONTRACT or manifest.get('time_contract')!=TIME_CONTRACT:
+            raise ValueError('training and data physical-time contracts differ')
+        events=load_templates(manifest['event_templates_file'],manifest['event_templates_file_sha256'])
+        if (config.get('action_interval_seconds')!=manifest['action_interval_seconds'] or
+                events['action_interval_seconds']!=manifest['action_interval_seconds']):
+            raise ValueError('training, data and measured event execution grids differ')
+        if config['run_kind']=='formal_distributed_training' and events['kind']!='measured_parallel':
+            raise ValueError('formal V4 training requires measured parallel event templates')
     base._validate_normalization(config, manifest)
     if base.file_sha256(config["init_checkpoint"]) != config["init_checkpoint_sha256"]:
         raise ValueError("official native initialization checksum differs")

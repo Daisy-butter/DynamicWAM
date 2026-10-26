@@ -23,6 +23,7 @@ from torch.utils.data import Dataset
 
 from .data import (EpisodeRecords, produce_future_labels, normalize_future,
                    sha256_file, _require)
+from .exposure_timing import TIME_CONTRACT, load_templates, validate_template
 
 SCHEMA = "dualrate-domino-lazy-v2"
 CODEC_ID = "wan22_first_plus_four_causal_native_v2"
@@ -335,7 +336,8 @@ def available_condition_frame(times, event_time, *, delay=CAMERA_AVAILABILITY_SE
     return found
 
 
-def flow_history_selection(times, frame, *, tolerance=FLOW_ENDPOINT_TOLERANCE_SECONDS):
+def flow_history_selection(times, frame, *, tolerance=FLOW_ENDPOINT_TOLERANCE_SECONDS,
+                           interval_seconds=12*RAW_FRAME_SECONDS):
     """Physical-time flow endpoints, with an explicit match mask.
 
     Offset 0 is the anchor frame. Every earlier offset is the raw sample nearest
@@ -351,7 +353,7 @@ def flow_history_selection(times, frame, *, tolerance=FLOW_ENDPOINT_TOLERANCE_SE
             indices.append(anchor)
             matched.append(True)
             continue
-        found = _nearest_index(values, anchor_time - offset * RAW_FRAME_SECONDS, anchor=anchor, tolerance=tolerance)
+        found = _nearest_index(values, anchor_time - (offset/12)*interval_seconds, anchor=anchor, tolerance=tolerance)
         indices.append(anchor if found is None else int(found))
         matched.append(found is not None)
     return indices, matched
@@ -658,14 +660,16 @@ def _cache_pair_matches(flow_cache, end_index, start_time, end_time):
             and abs(end - float(end_time)) <= NUMERIC_TIME_EPSILON)
 
 
-def _flow_features(handle, times, frame, flow_cache, flow_contract, *, return_flow_rgb=False):
+def _flow_features(handle, times, frame, flow_cache, flow_contract, *, return_flow_rgb=False,
+                   interval_seconds=12*RAW_FRAME_SECONDS):
     """Time-matched raw numeric history plus freshly computed spatial flow, CPU only."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
-    indices, matched = flow_history_selection(times, int(frame))
+    indices, matched = flow_history_selection(times, int(frame), interval_seconds=interval_seconds)
     values = np.asarray(times, dtype=np.float64)
     # The first pair is the predecessor used only for acceleration. The four
-    # returned intervals are the same 0.72 s windows the online path returns.
+    # returned intervals use the same nominal window as online; actual nearest
+    # endpoints and their unequal durations remain in the native motion values.
     slots = ((0, 1), (1, 2), (2, 3), (3, 4), (4, 5))
     both, agree = [], []
     for start_slot, end_slot in slots:
@@ -751,8 +755,16 @@ class DominoPhysicalDataset(Dataset):
     def __init__(self, manifest_path, *, verify_hash=True, max_cached_episodes=2, require_complete_text=True):
         self.path=Path(manifest_path).resolve();self.manifest=json.loads(self.path.read_text())
         m=self.manifest;_require(m['schema_version']==SCHEMA,"wrong DOMINO schema")
-        _require(m['action_interval_seconds']==DT and m['codec_id']==CODEC_ID,"unverified timing/codec contract")
-        self.completion_distribution=manifest_completion_distribution(m)
+        self.exposure_anchored=m.get('time_contract')==TIME_CONTRACT
+        self.dt=float(m['action_interval_seconds'])
+        _require(math.isfinite(self.dt) and self.dt>0 and m['codec_id']==CODEC_ID,"unverified timing/codec contract")
+        if self.exposure_anchored:
+            self.event_templates=load_templates(bound_metadata_path(m,self.path.parent,'event_templates_file'),
+                                                m['event_templates_file_sha256'])
+            _require(self.event_templates['action_interval_seconds']==self.dt,'event/data action grids differ')
+        else:
+            _require(self.dt==DT,'legacy physical grid differs')
+            self.completion_distribution=manifest_completion_distribution(m)
         for k in ('native_checkpoint_sha256','action_normalization_sha256','motion_normalization_sha256'):
             _require(bool(re.fullmatch('[0-9a-f]{64}',m.get(k,''))),f'missing {k}')
         _require(m['statistics']['fit_split']=='train',"statistics are not train-only")
@@ -799,19 +811,38 @@ class DominoPhysicalDataset(Dataset):
         cv2.setNumThreads(1)
         epi,grid,age_id=map(int,self.rows[index]);ep=self.episodes[epi]
         records,raw_actions,flow,visual_cache=self._episode(epi)
-        t=records.timestamps.numpy();s=ep['first_time']+grid*self.manifest['source_stride_seconds']
-        age=self.manifest['query_ages_seconds'][age_id];q=s+age
-        completed=s+completion_latency_seconds(self.completion_distribution,ep['episode_uid'],grid,age)
-        delay=float(self.manifest.get('camera_availability_seconds',CAMERA_AVAILABILITY_SECONDS))
-        source_frame=available_condition_frame(t,s,delay=delay)
-        query_frame=available_condition_frame(t,q,delay=delay)
-        starts=s+np.arange(16)*DT;fast_starts=q+np.arange(16)*DT
-        source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+DT)
-        fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+DT)
+        t=records.timestamps.numpy();dt=self.dt;event=None
+        if self.exposure_anchored:
+            # V4 rows bind a REAL source image index and a complete event template.
+            source_frame=grid;s=float(t[source_frame])
+            event=validate_template(self.event_templates['templates'][age_id],dt)
+            q=s+event['query_time'];completed=s+event['publish_time']
+            target=s+event['query_rgb_time']
+            query_frame=select_frame(t,target,past_only=True,tolerance=CONDITION_FRAME_TOLERANCE_SECONDS)
+            camera_latency=event['query_rgb_available']-event['query_rgb_time']
+            query_available=float(t[query_frame])+camera_latency
+            _require(query_available<=q+NUMERIC_TIME_EPSILON,'replayed condition was not available at query')
+            _require(q-float(t[query_frame])<=float(self.manifest.get('condition_rgb_max_age_seconds',CONDITION_RGB_MAX_AGE_SECONDS))+NUMERIC_TIME_EPSILON,
+                     'replayed condition exceeds the deployment image-age gate')
+            starts=s+np.arange(16)*dt
+            fast_starts=s+event['fast_action_start']+np.arange(16)*dt
+            source_known=torch.arange(16)<event['source_prefix_rows']
+            fast_known=torch.arange(16)<event['fast_prefix_rows']
+        else:
+            s=ep['first_time']+grid*self.manifest['source_stride_seconds']
+            age=self.manifest['query_ages_seconds'][age_id];q=s+age
+            completed=s+completion_latency_seconds(self.completion_distribution,ep['episode_uid'],grid,age)
+            delay=float(self.manifest.get('camera_availability_seconds',CAMERA_AVAILABILITY_SECONDS))
+            source_frame=available_condition_frame(t,s,delay=delay)
+            query_frame=available_condition_frame(t,q,delay=delay)
+            starts=s+np.arange(16)*dt;fast_starts=q+np.arange(16)*dt
+            source_known=torch.arange(16)<2;fast_known=torch.arange(16)<2
+        source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+dt)
+        fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
         _require(sv.all() and fv.all(),"index promised complete action support")
         source_action=(torch.from_numpy(source_action)-self.action_mean)/self.action_std
         fast_action=(torch.from_numpy(fast_action)-self.action_mean)/self.action_std
-        future_requests=s+np.arange(1,9)*2*DT
+        future_requests=s+np.arange(1,9)*2*dt
         video_frames=[select_frame(t,x,past_only=False,tolerance=RGB_TOLERANCE) for x in future_requests]
         visual_requests=q+np.array([.1,.2,.4,.8])
         visual_frames=[]
@@ -820,8 +851,8 @@ class DominoPhysicalDataset(Dataset):
             except ValueError:visual_frames.append(-1)
         with h5py.File(ep['raw_path'],'r') as h:
             sm,smv,sma,smi,_,_,_,source_flow_rgb=_flow_features(
-                h,t,source_frame,flow,self.manifest['flow_contract'],return_flow_rgb=True)
-            motion,mv,ma,mi,spatial,spatial_valid,spatial_times=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'])
+                h,t,source_frame,flow,self.manifest['flow_contract'],return_flow_rgb=True,interval_seconds=4*dt)
+            motion,mv,ma,mi,spatial,spatial_valid,spatial_times=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'],interval_seconds=4*dt)
             rgb,pixelvalid=zip(*[_letterbox(_rgb(h,query_frame,c),tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v])) for v,c in enumerate(CAMERAS)])
             condition=np.stack([cv2.resize(image,(320,384)) for image in source_flow_rgb]+[_composite(h,source_frame,(384,320))])
             future=np.stack([_composite(h,source_frame,(192,160))]+[_composite(h,i,(192,160)) for i in video_frames])
@@ -842,9 +873,8 @@ class DominoPhysicalDataset(Dataset):
         language=torch.load(p,map_location='cpu',weights_only=True)
         _require(language['context'].shape==(512,4096) and language['mask'].shape==(512,),"text cache shape mismatch")
         _require(language['mask'].dtype==torch.bool and language['mask'].any(),"invalid language mask")
-        source_known=torch.arange(16)<2;fast_known=torch.arange(16)<2
-        source_intervals=torch.from_numpy(np.stack([starts,starts+DT],-1))
-        future_intervals=torch.tensor([[s,s+4*2*DT],[s+4*2*DT,s+8*2*DT]],dtype=torch.float64)
+        source_intervals=torch.from_numpy(np.stack([starts,starts+dt],-1))
+        future_intervals=torch.tensor([[s,s+4*2*dt],[s+4*2*dt,s+8*2*dt]],dtype=torch.float64)
         # Source cache is causal: second encoded slice also depends on the first
         # flow slice through codec history. Support reflects the union, not just
         # the four newly consumed inputs. Type distinguishes flow and RGB mixes.
@@ -859,6 +889,7 @@ class DominoPhysicalDataset(Dataset):
                     source_future_frames=torch.from_numpy(future).permute(3,0,1,2).float()/127.5-1,
                     source_initial_state=(raw_actions[source_frame]-self.action_mean)/self.action_std,
                     source_motion=sm,source_motion_valid=smv,source_motion_acceleration_valid=sma,
+                    source_motion_times=smi,
                     source_text=language['context'],source_action=source_action,fast_action=fast_action,
                     source_future_intervals=future_intervals,source_action_times=torch.from_numpy(starts),
                     source_action_intervals=source_intervals,source_temporal_support=temporal,
@@ -873,7 +904,7 @@ class DominoPhysicalDataset(Dataset):
                     state=(raw_actions[query_frame]-self.action_mean)/self.action_std,state_time=torch.tensor(t[query_frame],dtype=torch.float64),
                     text=language['context'],text_valid=language['mask'],source_time=torch.tensor(s,dtype=torch.float64),
                     completed_time=torch.tensor(completed,dtype=torch.float64),query_time=torch.tensor(q,dtype=torch.float64),
-                    action_times=torch.from_numpy(fast_starts),action_intervals=torch.from_numpy(np.stack([fast_starts,fast_starts+DT],-1)),
+                    action_times=torch.from_numpy(fast_starts),action_intervals=torch.from_numpy(np.stack([fast_starts,fast_starts+dt],-1)),
                     query_entity_valid=torch.ones(len(self.active_entity_roles),dtype=torch.bool),
                     executed_actions=source_action.clone(),executed_action_intervals=source_intervals.clone(),
                     executed_action_valid=source_intervals[:,1]<=q+1e-8,
@@ -883,6 +914,14 @@ class DominoPhysicalDataset(Dataset):
                     future_visibility_known=torch.zeros(len(self.future_token_indices),dtype=torch.bool),
                     future_visual_actual_times=torch.tensor([t[i] if i>=0 else q for i in visual_frames],dtype=torch.float64).repeat(len(self.active_entity_roles)))
         item['executed_actions'][~item['executed_action_valid']]=0
+        if event is not None:
+            item.update(source_request_time=torch.tensor(s+event['request_time'],dtype=torch.float64),
+                source_available_time=torch.tensor(s+event['source_available'],dtype=torch.float64),
+                query_available_time=torch.tensor(query_available,dtype=torch.float64),
+                source_prefix_end=torch.tensor(s+event['source_prefix_end'],dtype=torch.float64),
+                fast_prefix_end=torch.tensor(s+event['fast_prefix_end'],dtype=torch.float64),
+                query_rgb_template_time=torch.tensor(s+event['query_rgb_time'],dtype=torch.float64),
+                query_rgb_sampling_error=torch.tensor(t[query_frame]-(s+event['query_rgb_time']),dtype=torch.float64))
         return item
 
 

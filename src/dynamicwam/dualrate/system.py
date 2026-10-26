@@ -213,6 +213,15 @@ class DualRateSystem(nn.Module):
                 any(x.dtype != torch.float64 or not torch.isfinite(x).all() for x in (source,complete,query)) or
                 (source > complete).any() or (complete > query).any()):
             raise ValueError("expected finite float64 [B] source <= completed <= query clocks")
+        if 'source_request_time' in batch:
+            request,available=batch['source_request_time'],batch['source_available_time']
+            for value in (request,available):
+                if value.shape!=source.shape or value.dtype!=torch.float64 or not torch.isfinite(value).all():
+                    raise ValueError('exposure/request/availability require finite FP64 clocks')
+            if ((available<source-1e-6).any() or (request<available-1e-6).any() or (request>complete+1e-6).any()):
+                raise ValueError('expected source exposure <= availability <= request <= publication')
+            if 'query_available_time' in batch and (batch['query_available_time']>query+1e-6).any():
+                raise ValueError('query condition is not yet available')
 
     @staticmethod
     def _validate_prefix_pair(batch):

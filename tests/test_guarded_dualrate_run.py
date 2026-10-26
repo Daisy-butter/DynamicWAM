@@ -23,6 +23,9 @@ def test_requires_eight_exact_distinct_training_devices():
         with pytest.raises(ValueError):
             runner.selected_uuids(",".join(bad), inventory, "distributed_training_smoke")
     assert runner.selected_uuids(",".join(ids[:2]), inventory, "domino_deployment_smoke") == ids[:2]
+    assert runner.selected_uuids(",".join(ids[:3]), inventory, "domino_deployment_smoke") == ids[:3]
+    with pytest.raises(ValueError):
+        runner.selected_uuids(",".join(ids[:4]), inventory, "domino_deployment_smoke")
 
 
 def test_only_fixed_workers_and_explicit_resume(tmp_path):

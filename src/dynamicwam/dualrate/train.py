@@ -389,11 +389,13 @@ def _gpu_authorization(path: Path, identity: Mapping, output: Path, *,
     visibility = os.environ.get("CUDA_VISIBLE_DEVICES", "")
     if expected_mode == "domino_deployment_smoke":
         uuids = receipt.get("gpu_uuids", [])
-        if (not 1 <= len(uuids) <= 2 or len(set(uuids)) != len(uuids)
+        if (not 1 <= len(uuids) <= 3 or len(set(uuids)) != len(uuids)
                 or any(not value.startswith("GPU-") for value in uuids)
                 or visibility != ",".join(uuids) or visibility != receipt.get("cuda_visible_devices")
                 or receipt.get("world_size") != 1):
-            raise ValueError("deployment requires one or two explicit UUIDs with one policy worker")
+            raise ValueError("deployment requires one to three explicit UUIDs with one policy worker")
+        if len(uuids)==3 and receipt.get('device_roles')!={'renderer':0,'fast':1,'slow':2}:
+            raise ValueError('three-device deployment requires explicit renderer/fast/slow roles')
     elif rank is None:
         if visibility != receipt.get("cuda_visible_devices") or not visibility.startswith("GPU-") or "," in visibility:
             raise ValueError("single UUID-pinned compute GPU required")

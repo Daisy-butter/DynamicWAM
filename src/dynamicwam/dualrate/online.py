@@ -72,7 +72,7 @@ def composite(images, shape):
     return cv2.resize(np.concatenate((head,bottom),axis=0),(shape[1],shape[0]))
 
 
-def history_endpoints(frames):
+def history_endpoints(frames, *, strict=False, action_dt=DT):
     """Match raw-frame offsets to captures already available at the anchor.
 
     Offset 0 is the anchor itself and is always matched. Every earlier offset
@@ -90,14 +90,15 @@ def history_endpoints(frames):
             selected.append(anchor)
             matched.append(True)
             continue
-        target = anchor.exposure - offset * RAW_FRAME_SECONDS
+        target = anchor.exposure - (offset / 12) * 4 * float(action_dt)
         chosen = None
         best_error = None
         for frame in frames:
             if frame.exposure > anchor.exposure + NUMERIC_TIME_EPSILON:
                 break
             error = abs(float(frame.exposure) - target)
-            if error > FLOW_ENDPOINT_TOLERANCE_SECONDS + NUMERIC_TIME_EPSILON:
+            tolerance = NUMERIC_TIME_EPSILON if strict else FLOW_ENDPOINT_TOLERANCE_SECONDS + NUMERIC_TIME_EPSILON
+            if error > tolerance:
                 continue
             if chosen is None or error < best_error - NUMERIC_TIME_EPSILON or (
                     abs(error - best_error) <= NUMERIC_TIME_EPSILON and frame.exposure >= chosen.exposure):
@@ -107,14 +108,14 @@ def history_endpoints(frames):
     return tuple(selected), tuple(matched)
 
 
-def history_features(frames, contract):
+def history_features(frames, contract, *, strict=False, action_dt=DT):
     """Reproduce the 0.72 s flow windows, including the preceding acceleration pair."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
     frames = tuple(frames)
     if not frames:
         raise ValueError('empty captured history')
-    selected, matched = history_endpoints(frames)
+    selected, matched = history_endpoints(frames, strict=strict, action_dt=action_dt)
     selected = list(selected)
     flows, displacement, starts, ends, valid = [], [], [], [], []
     for index, (a, b) in enumerate(zip(selected, selected[1:])):
@@ -154,8 +155,13 @@ def history_features(frames, contract):
 
 
 class OnlineBatchBuilder:
-    def __init__(self, manifest, *, action_mean, action_scale, language, device='cpu'):
+    def __init__(self, manifest, *, action_mean, action_scale, language, device='cpu', slow_device=None):
         self.manifest=manifest;self.device=torch.device(device)
+        self.slow_device=torch.device(device if slow_device is None else slow_device)
+        self.action_dt=float(manifest.get('action_interval_seconds',DT))
+        self.hardtime=manifest.get('time_contract')=='exposure_anchor_wall_release_v4'
+        if not math.isfinite(self.action_dt) or self.action_dt<=0:
+            raise ValueError('finite positive physical action interval required')
         self.mean=torch.as_tensor(action_mean,dtype=torch.float32)
         self.scale=torch.as_tensor(action_scale,dtype=torch.float32)
         if self.mean.shape!=(14,) or self.scale.shape!=(14,) or (self.scale<=0).any():
@@ -173,8 +179,8 @@ class OnlineBatchBuilder:
         if not self.entity_roles or len(set(self.entity_roles))!=len(self.entity_roles):
             raise ValueError('distinct ordered entity roles required')
 
-    def _batch(self, values):
-        return {k:v.unsqueeze(0).to(self.device) for k,v in values.items()}
+    def _batch(self, values, *, device=None):
+        return {k:v.unsqueeze(0).to(self.device if device is None else device) for k,v in values.items()}
 
     def current(self, frames, *, query_time, action_start, executed=()):
         if not frames or frames[-1].available>query_time+1e-9:
@@ -183,8 +189,8 @@ class OnlineBatchBuilder:
             raise TimingError('latest camera observation is too old')
         rgb,pixels=zip(*[_letterbox(image,tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v]))
                         for v,image in enumerate(frames[-1].images)])
-        h=history_features(frames,self.manifest['flow_contract']);h.pop('flow_rgb')
-        starts=torch.arange(16,dtype=torch.float64)*DT+action_start
+        h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt);h.pop('flow_rgb')
+        starts=torch.arange(16,dtype=torch.float64)*self.action_dt+action_start
         trace=[row for row in executed if row[1]<=query_time+1e-8]
         values=dict(h,rgb=torch.stack(rgb),rgb_pixel_valid=torch.stack(pixels),
             rgb_times=torch.full((3,),frames[-1].exposure,dtype=torch.float64),
@@ -192,7 +198,7 @@ class OnlineBatchBuilder:
             state_time=torch.tensor(frames[-1].exposure,dtype=torch.float64),
             text=self.language['context'],text_valid=self.language['mask'],
             query_time=torch.tensor(query_time,dtype=torch.float64),
-            action_times=starts,action_intervals=torch.stack((starts,starts+DT),-1),
+            action_times=starts,action_intervals=torch.stack((starts,starts+self.action_dt),-1),
             future_times=torch.tensor([query_time+x for x in (.1,.2,.4,.8)]*len(self.entity_roles),dtype=torch.float64),
             query_entity_valid=torch.ones(len(self.entity_roles),dtype=torch.bool),
             executed_actions=(torch.tensor([x[2] for x in trace],dtype=torch.float32).reshape(-1,14)-self.mean)/self.scale,
@@ -200,34 +206,44 @@ class OnlineBatchBuilder:
             executed_action_valid=torch.ones(len(trace),dtype=torch.bool))
         return self._batch(values)
 
-    def source(self, frames, *, source_time, action_start, vae):
+    def source(self, frames, *, source_time, action_start, vae, request_time=None):
         import cv2
-        if frames[-1].available>source_time+1e-9:
+        request_time=float(source_time if request_time is None else request_time)
+        if not frames or frames[-1].available>request_time+1e-9:
             raise TimingError('unavailable source observation')
-        if not 0<=source_time-frames[-1].exposure<=self.max_observation_age+1e-8:
+        if not 0<=request_time-frames[-1].exposure<=self.max_observation_age+1e-8:
             raise TimingError('latest source camera observation is too old')
-        h=history_features(frames,self.manifest['flow_contract']);last=frames[-1]
+        if self.hardtime and (abs(source_time-frames[-1].exposure)>1e-9 or abs(action_start-source_time)>1e-9):
+            raise TimingError('slow prediction must start at the actual grid-aligned exposure')
+        # Each numeric history row and its RGB flow use the same real pair.
+        # Native motion retains each pair's actual dt; nearest endpoints are
+        # bounded data sampling, never relabelled as exact nominal endpoints.
+        h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt);last=frames[-1]
         raw=np.stack([cv2.resize(x,(320,384)) for x in h['flow_rgb']]+[composite(last.images,(384,320))])
-        x=torch.from_numpy(raw).permute(3,0,1,2)[None].to(self.device,dtype=getattr(vae,'dtype',torch.bfloat16))/127.5-1
+        x=torch.from_numpy(raw).permute(3,0,1,2)[None].to(self.slow_device,dtype=getattr(vae,'dtype',torch.bfloat16))/127.5-1
         with torch.no_grad():
             latent=vae.encode(x)
         if latent.shape[1:]!=(48,2,24,20):
             raise ValueError('native online source codec shape differs from training')
-        s=source_time;starts=torch.arange(16,dtype=torch.float64)*DT+action_start
+        s=source_time;starts=torch.arange(16,dtype=torch.float64)*self.action_dt+action_start
         hist_start=float(h['motion_times'][h['motion_valid'],0].min()) if h['motion_valid'].any() else last.exposure
         values=dict(source_initial_state=(torch.from_numpy(last.drive_target.copy())-self.mean)/self.scale,
             source_motion=h['motion'],source_motion_valid=h['motion_valid'],
+            source_motion_times=h['motion_times'],
             source_motion_acceleration_valid=h['motion_acceleration_valid'],source_text=self.language['context'],
-            source_action_times=starts,source_action_intervals=torch.stack((starts,starts+DT),-1),
-            source_future_intervals=torch.tensor([[s,s+8*DT],[s+8*DT,s+16*DT]],dtype=torch.float64),
+            source_action_times=starts,source_action_intervals=torch.stack((starts,starts+self.action_dt),-1),
+            source_future_intervals=torch.tensor([[s,s+8*self.action_dt],[s+8*self.action_dt,s+16*self.action_dt]],dtype=torch.float64),
             source_temporal_support=torch.tensor([h['motion_times'][0].tolist(),[hist_start,last.exposure]],dtype=torch.float64),
             source_view_overlap=torch.cat((view_overlap(12,10,flow_weight=1.),view_overlap(12,10,flow_weight=.75))),
             source_token_valid=torch.cat((torch.full((120,),bool(h['motion_valid'][0])),torch.ones(120,dtype=torch.bool))),
             source_input_type=torch.tensor([1,2]),future_view_overlap=view_overlap(6,5).repeat(2,1),
             future_token_valid=torch.ones(60,dtype=torch.bool),future_input_type=torch.zeros(2,dtype=torch.long),
-            source_time=torch.tensor(s,dtype=torch.float64),completed_time=torch.tensor(s,dtype=torch.float64),
-            query_time=torch.tensor(s,dtype=torch.float64))
-        result=self._batch(values);result['source_condition_latent']=latent
+            source_time=torch.tensor(s,dtype=torch.float64),completed_time=torch.tensor(request_time,dtype=torch.float64),
+            query_time=torch.tensor(request_time,dtype=torch.float64),
+            source_request_time=torch.tensor(request_time,dtype=torch.float64),
+            source_rgb_actual_times=torch.tensor(last.exposure,dtype=torch.float64),
+            source_available_time=torch.tensor(last.available,dtype=torch.float64))
+        result=self._batch(values,device=self.slow_device);result['source_condition_latent']=latent
         return result
 
 

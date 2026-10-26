@@ -299,7 +299,7 @@ class DualRateShardDataset(Dataset):
     # dictionary wholesale as policy conditions. Explicit model adapters select keys.
     EXTRA_KEYS = {
         "source_condition_latent", "source_initial_state", "source_motion",
-        "source_motion_valid", "source_motion_acceleration_valid", "source_text",
+        "source_motion_valid", "source_motion_acceleration_valid", "source_motion_times", "source_text",
         "source_action", "fast_action", "source_future_latent",
         "source_future_intervals", "source_action_times", "source_known_actions",
         "source_known_mask", "fast_known_actions", "fast_known_mask", "rgb", "rgb_times",
@@ -314,6 +314,8 @@ class DualRateShardDataset(Dataset):
         "future_visibility_known", "future_visual_actual_times",
         "source_cache_id",
         "action_intervals",
+        "source_request_time", "source_available_time", "query_available_time",
+        "source_prefix_end", "fast_prefix_end", "query_rgb_template_time", "query_rgb_sampling_error",
     }
 
     def __init__(self, manifest_path: str | Path, *, verify_hash: bool = True):

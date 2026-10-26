@@ -86,3 +86,41 @@ def build_system(config, device="cpu"):
     model = model.to(device)
     model.initialization_identity = {"native_checkpoint_sha256": actual, **identities}
     return model
+
+
+def place_inference_devices(system, *, fast_device, slow_device):
+    """Place an already strictly loaded eval model; training construction is unchanged.
+
+    Slow source encoding, native prediction and readout stay on the slow device.
+    The current observation encoder, A/Z sampler and its system-level constants
+    stay on the fast device. Runtime owns completed-reference transfer/publication.
+    """
+    fast_device,slow_device=torch.device(fast_device),torch.device(slow_device)
+    if system.training or any(p.requires_grad for p in system.parameters()):
+        raise ValueError('inference placement requires an eval, frozen model')
+    if fast_device.type=='cuda' and fast_device==slow_device:
+        raise ValueError('hard-time deployment requires distinct fast and slow GPUs')
+    system.slow.to(slow_device)
+    system.world_readout.to(slow_device)
+    system.observation.to(fast_device)
+    system.fast.to(fast_device)
+    for name,value in list(system.named_buffers(recurse=False)):
+        setattr(system,name,value.to(fast_device))
+    vae=system.slow.native.compact_wan.video_model.vae
+    if isinstance(vae,torch.nn.Module):
+        vae.to(slow_device)
+    model=getattr(vae,'model',None)
+    if isinstance(model,torch.nn.Module):
+        model.to(slow_device)
+    if hasattr(vae,'device'):
+        vae.device=slow_device
+    if hasattr(vae,'scale'):
+        vae.scale=[x.to(slow_device) if isinstance(x,torch.Tensor) else x for x in vae.scale]
+    for name,expected in (('slow',slow_device),('world_readout',slow_device),
+                          ('observation',fast_device),('fast',fast_device)):
+        module=getattr(system,name)
+        if any(value.device!=expected for value in (*module.parameters(),*module.buffers())):
+            raise RuntimeError(f'{name} contains tensors on the wrong inference device')
+    system.inference_device_map=dict(fast=str(fast_device),slow=str(slow_device),
+                                     readout=str(slow_device),vae=str(slow_device))
+    return system.inference_device_map
