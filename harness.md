@@ -313,3 +313,7 @@ or continuous patrol. Bounded initial acceptance checks at least300 seconds,
 8 live workers and first8 valid reports/videos, then exits; the necessary
 evaluation supervisor and final cleanup remain. Never modify .50 training
 source or .92 Route2. Store all artifacts under the verified SSD user tree.
+
+
+## 2026-10-26 native evaluation authorization
+Latest user authorizes isolated .50 final causal-spatial checkpoint evaluation under original non-continuous DOMINO, retaining H2/R2 RTC prefix conditioning. See docs/causal_native_eval_20261026.md for exact protocol, clock limitations, guards and acceptance. Preserve completed training checkout, .92 and .100. This explicit task scope supersedes older no-.50-write entries for this isolated evaluation only.

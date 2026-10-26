@@ -1,0 +1,13 @@
+# Final causal-spatial V4: native DOMINO diagnostic
+
+Explicit authorization 2026-10-26: evaluate the completed .50 checkpoint in original DOMINO without continuous simulation; retain RTC conditioning from training. This task permits an isolated .50 evaluation checkout. Do not change .92 training, .100, the completed .50 training checkout, weights or shared DOMINO source.
+
+Checkpoint: `outputs/training/causal_spatial_v4_joint_20261021/exports/causal_spatial_step_20000.pt`, SHA256 `d0b5cf4c0d94e3a02c2d604f53b7c25c097f001dc4e47d35704db2dc2c8080ec`. This is final joint20k after interface2k and pretrain30k, not the older MotionKV20k/40k.
+
+Reuse strict full checkpoint loading, native motion, M/b/Z architecture, FP32 normalization, K10 joint sampler and CUDA Graph. Keep H2 committed commands, replan every R2 executed actions, horizon16, soft previous-plan overlap only rows2:4. Bootstrap holds two current drive targets. Each original DOMINO eval callback executes exactly one original take_action; success/contact/boundary checks, native TOPP, action-count-driven Level1 motion, budgets and metrics remain original. No continuous session, wall-clock catch-up, deadline extension or simulation-rate scaling.
+
+Time compatibility is explicit: measured native scene time drives flow/spatial history and memory age. Prediction offsets remain the trained .16-second grid, but original TOPP has variable physical durations. Queue overlap is consequently aligned by executed action index. This is not identical to the trained continuous physical endpoint distribution. Inference pauses the world, and a stale M may synchronously refresh from the current observation rather than violate the4.96s age limit. Report such waits and never claim native scores or wall latencies prove1x continuous performance. Expert-prefix versus policy-prefix shift remains.
+
+Eight full-model workers,35tasks x20 episodes, native expert feasibility seed filtering starting100000. Separate smoke8tasks x2 episodes starts1610026; no task exclusions or retry. Native eval_result hierarchy, all four native report types and episodeN.mp4 retained on SSD. Incremental receipts mirror the original collector without altering scoring. Full MP4 decode/hash and independently parsed SR/MS required before completed status.
+
+Acceptance: CPU queue/clock/adapter regressions, actual final-weight full/fast strict reload and Graph/background gate,8GPU complete16episode smoke with clean worker/guard/kernel exit, then formal700. All8temporary device descriptors precede telemetry. Initial formal observation ends after300seconds plus8valid reports/MP4s and8liveworkers, or bounded2h timeout. Required suite/exit supervision remains. No driver reset, PCI operation, automatic retry or recurring watcher.
