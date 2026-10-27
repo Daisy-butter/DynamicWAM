@@ -34,6 +34,8 @@ class CapturedObservation:
     finished_wall_perf_s: float
     camera_names: tuple[str, ...]
     camera_readback_seconds: dict[str, float]
+    render_update_wall_seconds: float = 0.
+    camera_submit_seconds: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,8 @@ class PendingCapture:
     camera_names: tuple[str, ...]
     _metadata: dict[str, Any] = field(repr=False)
     _future: Future = field(repr=False)
+    render_update_wall_seconds: float = 0.
+    camera_submit_seconds: dict[str, float] = field(default_factory=dict)
 
     @property
     def done(self) -> bool:
@@ -212,11 +216,15 @@ class AsyncCameraCapture:
         cameras = self._camera_handles(env)
         captured_wall = self._clock()
         env._update_render()
+        render_update_wall = self._clock() - captured_wall
         # update_picture calls Camera.take_picture, whose SAPIEN binding holds
         # the GIL for the whole render wait. Inference workers are Python threads.
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
-        for _, camera in cameras:
+        camera_submit_seconds = {}
+        for name, camera in cameras:
+            before = self._clock()
             _sapien_color_reader.take_picture(camera)
+            camera_submit_seconds[name] = self._clock() - before
         render_submitted_wall = self._clock()
         observation = {
             "observation": deepcopy(env.cameras.get_config()),
@@ -242,7 +250,7 @@ class AsyncCameraCapture:
         }
         future = self._submit_readback(cameras)
         pending = PendingCapture(self._next_id, timestamp, captured_wall, render_submitted_wall,
-                                 names, observation, future)
+                                 names, observation, future, render_update_wall, camera_submit_seconds)
         self._next_id += 1
         self._pending = pending
         return pending
@@ -282,7 +290,8 @@ class AsyncCameraCapture:
         self._pending = None
         return CapturedObservation(observation, selected.physics_time_s,
                                    selected.capture_wall_perf_s, selected.render_submitted_wall_perf_s,
-                                   started, ended, self._clock(), selected.camera_names, durations)
+                                   started, ended, self._clock(), selected.camera_names, durations,
+                                   selected.render_update_wall_seconds, dict(selected.camera_submit_seconds))
 
     def drain(self, *, timeout: float | None = None) -> CapturedObservation | None:
         """Wait/consume before terminal teardown; never submits another render."""

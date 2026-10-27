@@ -23,7 +23,7 @@ INITIAL_SECONDS = 300.
 LIVENESS_CONTRACT = 'full_sync16_fresh_dispatch_within_3rows_v1'
 DIFFERING_FIELDS = {'stage', 'tasks', 'episodes', 'output', 'result_stamp',
     'acceptance_receipt', 'acceptance_receipt_sha256', 'sequence_id',
-    'task_timeout_seconds', 'cohort_timeout_seconds'}
+    'task_timeout_seconds', 'cohort_timeout_seconds', 'aggregate_output', 'aggregate_result_stamp'}
 
 
 def validate_pair(smoke, formal):
@@ -31,9 +31,9 @@ def validate_pair(smoke, formal):
     if (smoke.get('run_kind') != 'full_baseline_suite' or formal.get('run_kind') != 'full_baseline_suite'
             or smoke.get('stage') != 'smoke' or formal.get('stage') != 'formal'
             or len(smoke.get('tasks', [])) != 8 or smoke.get('episodes') != 2
-            or len(formal.get('tasks', [])) != 35 or formal.get('episodes') != 20
+            or formal.get('episodes') != 20
             or smoke['tasks'] != formal['tasks'][:8]):
-        raise ValueError('sequence requires first-eight-task 8x2 smoke then 35x20 formal')
+        raise ValueError('sequence requires first-eight-task 8x2 smoke then complete formal tasks')
     if smoke.get('action_limit') is not None or formal.get('action_limit') is not None:
         raise ValueError('both phases require complete native episode budgets')
     for key in set(smoke) | set(formal):
@@ -43,6 +43,8 @@ def validate_pair(smoke, formal):
         raise ValueError('explicit shared benchmark contract and eight UUIDs required')
     if Path(smoke['output']).resolve() == Path(formal['output']).resolve():
         raise ValueError('smoke and formal outputs must be distinct')
+    guard.validate_full_baseline_scope(smoke)
+    guard.validate_full_baseline_scope(formal)
 
 
 def guard_command(config_path, run_dir, config, max_runtime, *, detach=False):
@@ -154,21 +156,24 @@ def audit_full_liveness(report, config):
     return dict(contract=LIVENESS_CONTRACT, passed=True, nonbootstrap_queries=queries,
         nonbootstrap_installs=installs, bootstrap_end_time=bootstrap_end, terminal_time=terminal,
         fresh_opportunities=fresh_opportunities, max_fresh_dispatch_wait_seconds=max_wait,
-        dispatch_bound_seconds=bound, short_episode=terminal <= bootstrap_end+tolerance)
+        dispatch_bound_seconds=bound, short_episode=terminal <= bootstrap_end+bound+tolerance)
 
 
 def audit_task_liveness(reports, config):
     audits = [audit_full_liveness(report, config) for report in reports]
     if (any(not row['short_episode'] for row in audits)
             and not any(row['nonbootstrap_queries'] for row in audits)):
-        raise ValueError('smoke task exceeded initial held2+A16 but never issued a subsequent query')
+        raise ValueError('smoke task exceeded initial held2+A16 plus dispatch allowance but never issued a subsequent query')
     return audits
 
 
 def make_acceptance(smoke, smoke_guard, source, destination):
     from full_baseline_suite import audit_task
     from video_artifacts import probe_head_video
+    resumption = guard.validate_full_baseline_scope(smoke)
     evidence = require_clean_guard(smoke_guard, smoke, source)
+    if resumption is not None:
+        evidence.append(Path(smoke['resumption_receipt']))
     completed_path = Path(smoke['output'])/'suite_completed.json'
     completed = read(completed_path)
     if (completed.get('complete') is not True or completed.get('valid_completed') != 16
@@ -204,6 +209,9 @@ def make_acceptance(smoke, smoke_guard, source, destination):
         full_query_liveness_passed=True, liveness_contract=LIVENESS_CONTRACT,
         clean_worker_exit=True, guard_closed=True, kernel_unchanged=True,
         evidence=[dict(path=str(p.resolve()), sha256=sha(p)) for p in evidence])
+    if resumption is not None:
+        receipt.update(resumption_receipt_sha256=smoke['resumption_receipt_sha256'],
+                       smoke_tasks=list(smoke['tasks']))
     save(destination, receipt)
     return receipt
 

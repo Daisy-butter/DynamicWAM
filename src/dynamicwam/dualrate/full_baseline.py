@@ -18,6 +18,34 @@ import numpy as np
 PROTOCOL = 'continuous_full_sync16_v4_grid180_linear_bootstrap_v2'
 
 
+def camera_submission_timing(captured):
+    """Owner-side render partition; timestamps and image contents stay intact."""
+    return dict(update_render_wall_seconds=float(getattr(captured, 'render_update_wall_seconds', 0.)),
+                camera_take_picture_wall_seconds=dict(getattr(captured, 'camera_submit_seconds', {})))
+
+
+def warm_full_camera(camera, session, *, count, emit, event='camera_warmup',
+                     last_two_limit=None):
+    """Finite inactive renders, never published to model history or video."""
+    from .deployment import capture_timing
+    from .timing import TimingError
+    if type(count) is not int or count < 1 or (last_two_limit is not None and count < 2):
+        raise ValueError('positive fixed warmup count (at least two for stability) required')
+    source = float(session.physics_time()); durations = []; captured = None
+    for index in range(count):
+        camera.begin(session.env, source)
+        captured = camera.finish()
+        if float(session.physics_time()) != source or captured.physics_time_s != source:
+            raise TimingError('camera warmup advanced the inactive episode clock')
+        timing = capture_timing(captured, owner_processed_wall=time.perf_counter())
+        durations.append(timing['total_wall_seconds'])
+        emit(dict(event=event, index=index, count=count, exposure=source,
+                  timing=timing, submission_timing=camera_submission_timing(captured)))
+    if last_two_limit is not None and any(x > last_two_limit for x in durations[-2:]):
+        raise TimingError('post-barrier camera warmup failed last-two latency bound')
+    return captured
+
+
 def query_observation_timing(bridge, *, physical_now, request_wall, exposure,
                              max_observation_age):
     """Check source freshness in both clocks without relabelling either one."""
@@ -127,10 +155,11 @@ def build_native_packet(frames, policy, *, action_dt, pair_cache):
 def run_episode(session, policy, camera, *, action_dt, action_limit, frame_period=None,
                 max_backlog=.25, max_observation_age=.24, seed=0, video=None, record=None,
                 camera_warmup_captures=3, bootstrap_hold_steps=2,
-                model_query_timeout_s=30., on_ready=None, on_failure=None):
+                model_query_timeout_s=30., on_ready=None, on_armed=None, on_failure=None):
     """Run one bounded episode; a single inference worker never owns the scene.
 
-    ``on_ready`` is a pre-activation cohort barrier. The caller owns model/camera
+    ``on_ready`` precedes three frozen-state camera rewarm captures; ``on_armed``
+    then waits for every peer to finish rewarming before activation. The caller owns model/camera
     lifetime and video finalization. Both success and exceptions drain this
     episode's worker and camera before returning. Exceptions carry
     ``dualrate_events`` and ``dualrate_report`` for durable failure evidence.
@@ -139,7 +168,7 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
     """
     import torch
     from .actuators import ActuatorProjection
-    from .deployment import (exact_grid_index, next_grid_capture_tick, warm_camera,
+    from .deployment import (exact_grid_index, next_grid_capture_tick,
                              capture_timing, bind_gil_releasing_physx_step)
     from .online import ObservationHistory, ObservationPairCache
     from .physical_clock import WallPhysicsBridge
@@ -180,8 +209,12 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
         if record:
             record(event)
     def checked_now():
+        nonlocal max_lag
         now = clock()
-        return now, bridge.check_backlog(now, max_backlog)
+        wall = bridge.wall_now()
+        if bridge.active:
+            max_lag = max(max_lag, bridge.expected_physics(wall)-now)
+        return now, bridge.check_backlog(now, max_backlog, wall_time=wall)
 
     projection = ActuatorProjection.from_robot(session.env.robot)
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='official-full-inference')
@@ -278,6 +311,8 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             execution_inference_overlap=False, sampler_prefix_conditioning=False,
             controller='endpoint_linear_arm_native_gripper', captures=accepted_captures,
             skipped_capture_requests=skip_captures, camera_warmup_captures=camera_warmup_captures,
+            post_barrier_camera_warmup_captures=3,
+            post_barrier_warmup_last_two_limit_s=max_observation_age,
             history_frame_period_s=frame_period, max_observation_age_s=max_observation_age,
             inference_metrics=inference_metrics, events=events,
             owner_stage_timing=dict(totals=owner_stage_totals, recent_rows=list(owner_stage_recent),
@@ -287,7 +322,7 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             model_forecast_time_not_relabelled=True)
 
     try:
-        captured = warm_camera(camera, session, count=camera_warmup_captures, emit=emit)
+        captured = warm_full_camera(camera, session, count=camera_warmup_captures, emit=emit)
         history.append(captured.observation, exposure=captured.physics_time_s, available=initial)
         accepted_captures = 1
         if video:
@@ -305,10 +340,20 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
         contact_cache = StepContactCache(session.env.scene, clock).install()
         if on_ready:
             on_ready()
+        # Cohort setup can leave a ready renderer idle for tens of seconds.
+        # Rewarm only at the unchanged inactive scene; preserve the original
+        # bootstrap observation, sampled A16, history, video, and sample seeds.
+        rewarmed = warm_full_camera(camera, session, count=3, emit=emit,
+                                    event='camera_post_barrier_warmup', last_two_limit=max_observation_age)
+        if on_armed:
+            on_armed()
+        if clock() != initial:
+            raise TimingError('pre-activation barriers advanced the inactive episode clock')
         bootstrap_seconds = time.perf_counter()-bootstrap_started
         wall0 = time.perf_counter(); bridge.activate(initial, wall0)
         emit(dict(event='activation', physical_time=initial, wall_time=wall0,
                   bootstrap_wall_seconds=bootstrap_seconds, bootstrap_policy='full_plan_before_activation',
+                  rewarm_to_activation_wall_seconds=wall0-rewarmed.finished_wall_perf_s,
                   held_prefix_seconds=bootstrap_hold_steps*action_dt, action_ticks=action_ticks,
                   physics_step_seconds=physics_dt))
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
@@ -334,7 +379,8 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                                  physics_time_s=c.physics_time_s, capture_wall_perf_s=c.capture_wall_perf_s)
                 emit(dict(event='capture', exposure=c.physics_time_s, available=now,
                           availability_lower_bound=bridge.availability_time(c.finished_wall_perf_s),
-                          timing=capture_timing(c, owner_processed_wall=time.perf_counter())))
+                          timing=capture_timing(c, owner_processed_wall=time.perf_counter()),
+                          submission_timing=camera_submission_timing(c)))
             now, lag = checked_now(); max_lag = max(max_lag, lag)
             tick = exact_grid_index(now, initial, physics_dt, tolerance=1e-8)
             # Full has no RTC protected-prefix deadline. Once its complete
@@ -370,11 +416,14 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                     if pending is None and completed_capture is None:
                         pending = camera.begin(session.env, now)
                         render_wall = time.perf_counter()-pending.capture_wall_perf_s
+                        # Persist the expensive call before enforcing backlog,
+                        # so a breach retains its exposure and render partition.
+                        emit(dict(event='capture_submitted', capture_id=pending.capture_id,
+                                  exposure=now, exposure_tick=tick, owner_submit_wall_seconds=render_wall,
+                                  submission_timing=camera_submission_timing(pending)))
                         after, lag = checked_now(); max_lag = max(max_lag, lag)
                         if after != now or pending.physics_time_s != now:
                             raise TimingError('capture advanced scene time or relabelled exposure')
-                        emit(dict(event='capture_submitted', capture_id=pending.capture_id,
-                                  exposure=now, exposure_tick=tick, owner_submit_wall_seconds=render_wall))
                         next_capture_tick = next_grid_capture_tick(tick, capture_ticks, physics_dt, render_wall)
                     else:
                         skip_captures += 1; next_capture_tick = tick+capture_ticks

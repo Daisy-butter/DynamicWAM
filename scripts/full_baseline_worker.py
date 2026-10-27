@@ -70,8 +70,13 @@ def validate_config(config):
         raise ValueError('eight distinct UUID-pinned workers required')
     if type(config['episodes']) is not int or not 1 <= config['episodes'] <= 20:
         raise ValueError('episode count must be 1..20')
-    if config['stage'] == 'formal' and (len(tasks) != 35 or config['episodes'] != 20 or config.get('action_limit') is not None):
-        raise ValueError('formal evaluation requires 35 x 20 complete native episodes')
+    if config.get('resumption_receipt') is not None:
+        from full_baseline_resume import validate_resumption
+        validate_resumption(config, verify_evidence=False)
+    elif config.get('resumption_receipt_sha256') is not None:
+        raise ValueError('continuation hash has no receipt')
+    elif config['stage'] == 'formal' and (len(tasks) != 35 or config['episodes'] != 20 or config.get('action_limit') is not None):
+        raise ValueError('formal evaluation requires 35 x 20 or an audited whole-task continuation')
     if config.get('instruction_mode', 'episode_complete_template') != 'episode_complete_template':
         raise ValueError('paired evaluation uses the common complete episode template')
     for key in ('action_dt', 'frame_period', 'max_backlog', 'max_observation_age'):
@@ -188,7 +193,7 @@ class EpisodeCohort:
             pass
 
     def wait(self, episode, phase):
-        if phase not in ('ready', 'finished', 'finalized') or not 0 <= episode < self.manifest['episodes']:
+        if phase not in ('ready', 'armed', 'finished', 'finalized') or not 0 <= episode < self.manifest['episodes']:
             raise ValueError('invalid inactive episode barrier')
         directory = self.directory / f'episode_{episode:04d}' / phase
         save(directory / f'{self.task}.json', dict(task=self.task, episode=episode, phase=phase, pid=os.getpid()))
@@ -378,6 +383,7 @@ def main():
                 bootstrap_hold_steps=int(config.get('bootstrap_hold_steps', 2)),
                 model_query_timeout_s=float(config.get('model_query_timeout_s', 30.)),
                 on_ready=lambda: cohort.wait(episode, 'ready'),
+                on_armed=lambda: cohort.wait(episode, 'armed'),
                 on_failure=lambda exc: publish_runtime_failure(output, cohort, args.task, episode, exc))
             report.update(task=args.task, episode_index=episode, seed=descriptor['seed'],
                 requested_seed=descriptor['requested_seed'], checkpoint_sha256=config['checkpoint_sha256'],

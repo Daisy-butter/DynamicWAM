@@ -45,8 +45,36 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def validate_full_baseline_scope(config):
+    """A reduced formal set is legal only with an immutable completed-task audit."""
+    stage = config.get('stage')
+    if stage not in ('smoke', 'formal') or config.get('action_limit') is not None:
+        raise ValueError('Full baseline requires smoke/formal and complete native episode budgets')
+    if config.get('resumption_receipt') or config.get('resumption_receipt_sha256'):
+        from full_baseline_resume import validate_resumption
+        receipt = validate_resumption(config)
+        if stage == 'formal':
+            # Validate the CPU-only final destination before acquiring any GPU.
+            destination = Path(config['aggregate_output']).resolve()
+            storage = Path(config['storage_root']).resolve(strict=True)
+            stamp = config['aggregate_result_stamp']
+            if (destination.exists() or not destination.is_relative_to(storage)
+                    or destination == storage or not stamp or stamp in ('.', '..')
+                    or '/' in stamp or '\\' in stamp):
+                raise ValueError('resumption requires a fresh artifact-disk aggregate output and safe stamp')
+        return receipt
+    tasks = config.get('tasks', [])
+    if (len(tasks) != (8 if stage == 'smoke' else 35) or len(set(tasks)) != len(tasks)
+            or config.get('episodes') != (2 if stage == 'smoke' else 20)):
+        raise ValueError('Full baseline requires 8x2 smoke / 35x20 formal, or an audited resumption')
+    if 'aggregate_output' in config or 'aggregate_result_stamp' in config:
+        raise ValueError('aggregate output is reserved for audited resumption')
+    return None
+
+
 def validate_acceptance(config, source):
     if config['run_kind']=='full_baseline_suite':
+        resumption = validate_full_baseline_scope(config)
         if config.get('stage')=='smoke':
             return None
         if config.get('stage')!='formal':
@@ -60,8 +88,15 @@ def validate_acceptance(config, source):
                 or receipt.get('checkpoint_sha256')!=config['init_checkpoint_sha256']
                 or receipt.get('full_query_liveness_passed') is not True
                 or receipt.get('liveness_contract')!='full_sync16_fresh_dispatch_within_3rows_v1'
-                or receipt.get('world_size')!=8 or receipt.get('complete_smoke_episodes',0)<16):
+                or receipt.get('native_mp4_full_decode') is not True
+                or receipt.get('clean_worker_exit') is not True
+                or receipt.get('guard_closed') is not True or receipt.get('kernel_unchanged') is not True
+                or receipt.get('world_size')!=8 or receipt.get('complete_smoke_episodes')!=16):
             raise ValueError('formal Full baseline requires same-source eight-GPU full-episode acceptance')
+        if receipt.get('resumption_receipt_sha256') != config.get('resumption_receipt_sha256'):
+            raise ValueError('smoke acceptance belongs to another resumption')
+        if resumption is not None and receipt.get('smoke_tasks') != resumption['required_smoke_tasks']:
+            raise ValueError('resumption requires smoke of the exact failed cohort')
         for row in receipt.get('evidence',[]):
             if base.file_sha256(Path(row['path']).resolve(strict=True))!=row['sha256']:
                 raise ValueError('baseline acceptance evidence changed')
@@ -90,6 +125,32 @@ def validate_acceptance(config, source):
     if not receipt.get("evidence") or receipt.get("world_size") != 8:
         raise ValueError("formal acceptance lacks actual eight-rank evidence")
     return receipt
+
+
+def finalize_completed_resumption(config, out):
+    """CPU-only aggregation runs after the ordinary guard has closed completely.
+
+    Its status is separate from GPU cleanup: a failure never reruns evaluation or
+    rewrites a successful owned-exit/kernel receipt.
+    """
+    if (not config or config.get('run_kind') != 'full_baseline_suite'
+            or config.get('stage') != 'formal' or not config.get('resumption_receipt')):
+        return True
+    out = Path(out)
+    try:
+        from full_baseline_resume import finalize
+        result = finalize(out/'config.frozen.json', out,
+                          config['aggregate_output'], config['aggregate_result_stamp'])
+        if result.get('complete') is not True or result.get('valid_completed') != 700:
+            raise ValueError('aggregate did not certify all 700 episodes')
+        completed = Path(config['aggregate_output'])/'suite_completed.json'
+        base.atomic(out/'aggregation.json', dict(state='completed', valid_completed=700,
+            receipt=str(completed), sha256=base.file_sha256(completed), no_retry=True))
+        return True
+    except BaseException as exc:
+        base.atomic(out/'aggregation.json', dict(state='failed', error=repr(exc), no_retry=True,
+            gpu_evaluation_completed=True, gpu_cleanup_unchanged=True))
+        return False
 
 
 def selected_uuids(value, devices, mode):
@@ -315,6 +376,8 @@ def supervise(args, repo, out):
         if errors or not closed:
             outcome = "failed"
         status(outcome, identity=identity)
+    if outcome == "completed" and not finalize_completed_resumption(config, out):
+        return 1
     return 0 if outcome == "completed" else 1
 
 

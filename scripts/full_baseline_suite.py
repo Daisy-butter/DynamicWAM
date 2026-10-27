@@ -93,6 +93,10 @@ def main():
     config = read(config_path)
     output = validate_config(config)
     receipt = validate_authorization(config, authorization)
+    resumption = None
+    if config.get('resumption_receipt') is not None:
+        from full_baseline_resume import validate_resumption
+        resumption = validate_resumption(config, verify_evidence=True)
     verify_artifacts(config)
     # Verify every selected task's entire 20-scene chain before any GPU worker
     # starts, including smoke runs that execute only the first two episodes.
@@ -111,6 +115,7 @@ def main():
         tasks=config['tasks'], episodes_per_task=config['episodes'], seed=config['seed'],
         config_sha256=canonical_hash(config), source=receipt['source'], checkpoint_sha256=config['checkpoint_sha256'],
         prepared_sha256=config['prepared_sha256'], gpu_uuids=config['gpu_uuids'],
+        resumption_receipt=config.get('resumption_receipt'), resumption_receipt_sha256=config.get('resumption_receipt_sha256'),
         resources=dict(parallel_environments=8, gpu_per_environment=1, placement='renderer_and_full_policy_on_same_gpu'),
         started_unix=started_unix, no_retry=True))
     active, finished, all_reports, all_metrics = [], [], [], []
@@ -180,6 +185,8 @@ def main():
             native_metrics=summary, every_video_fully_decoded=True, all_workers_exit_zero=True,
             source=receipt['source'], checkpoint_sha256=config['checkpoint_sha256'], prepared_sha256=config['prepared_sha256'],
             config_sha256=canonical_hash(config), elapsed_seconds=time.monotonic()-began, no_retry=True,
+            resumption_receipt=config.get('resumption_receipt'), resumption_receipt_sha256=config.get('resumption_receipt_sha256'),
+            retained_episodes=resumption['retained_episodes'] if resumption else 0,
             reports=[dict(path=str(output/r['task']/f"episode_{r['episode_index']:04d}/report.json"),
                 sha256=sha(output/r['task']/f"episode_{r['episode_index']:04d}/report.json")) for r in all_reports])
         save(output / 'suite_completed.json', completed)

@@ -79,6 +79,7 @@ class FullBaselineSuiteTest(unittest.TestCase):
         worker.save(self.root/'manifest.json', dict(tasks=['task_a'], episodes=2, timeout_seconds=.01))
         cohort = worker.EpisodeCohort(self.root, 'task_a')
         cohort.wait(0, 'ready')
+        cohort.wait(0, 'armed')
         cohort.wait(0, 'finished')
         cohort.wait(0, 'finalized')
         with self.assertRaises(ValueError):

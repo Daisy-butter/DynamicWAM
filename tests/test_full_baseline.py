@@ -296,3 +296,109 @@ def test_native_runtime_still_rejects_unknown_fields_before_loading(monkeypatch,
     monkeypatch.setattr(loader,'_build_model',forbidden)
     with pytest.raises(ValueError,match='unknown_metadata'):
         loader.build_runtime_from_config(config)
+
+
+def test_rewarm_after_ready_preserves_frozen_scene_and_precedes_armed_activation(monkeypatch):
+    mod,session,policy,camera,pools,calls,metrics,h=_owner_fixture(monkeypatch)
+    phases=[];events=[]
+    def ready():
+        assert camera.counter==3 and calls==[0] and session.physics_time()==0.
+        assert not any(e['event']=='activation' for e in events)
+        phases.append('ready');mod.time.sleep(37.)
+    def armed():
+        assert camera.counter==6 and calls==[0] and session.physics_time()==0.
+        assert not any(e['event']=='activation' for e in events)
+        phases.append('armed');mod.time.sleep(.03)
+    report=mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=18,
+                          on_ready=ready,on_armed=armed,record=events.append)
+    assert phases==['ready','armed'] and report['realtime_valid']
+    initial=[e for e in events if e['event']=='camera_warmup']
+    rewarm=[e for e in events if e['event']=='camera_post_barrier_warmup']
+    assert len(initial)==len(rewarm)==3 and all(e['exposure']==0. for e in initial+rewarm)
+    activation=next(e for e in events if e['event']=='activation')
+    assert activation['rewarm_to_activation_wall_seconds']==pytest.approx(.03)
+    assert report['bootstrap_wall_seconds']>37. and report['physical_duration']==pytest.approx(18*45*h)
+    assert report['inference_calls']==1 and report['generated_targets_completed']==16
+    # Extra inactive renders are neither history captures nor extra video frames.
+    assert report['captures']==1+sum(e['event']=='capture' for e in events)
+    assert report['hold_rows_started']==2 and pools[0].closed and camera.pending is None
+
+
+@pytest.mark.parametrize('delays,passed', [([.419,.02,.02],True),([.02,.241,.02],False)])
+def test_post_barrier_rewarm_stability_fails_before_activation(monkeypatch,delays,passed):
+    mod,session,policy,camera,pools,calls,metrics,h=_owner_fixture(monkeypatch,camera_seconds=0.)
+    begin=camera.begin;events=[];armed=[]
+    def delayed(env,now):
+        result=begin(env,now)
+        if 4<=camera.counter<=6:
+            mod.time.sleep(delays[camera.counter-4])
+            result.render_submitted_wall_perf_s=mod.time.perf_counter()
+            result.readback_started_wall_perf_s=result.readback_finished_wall_perf_s=mod.time.perf_counter()
+            result.finished_wall_perf_s=mod.time.perf_counter()
+        return result
+    camera.begin=delayed
+    run=lambda:mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=1,
+                              on_armed=lambda:armed.append(True),record=events.append)
+    if passed:
+        assert run()['realtime_valid'] and armed==[True]
+    else:
+        with pytest.raises(Exception,match='post-barrier camera warmup') as caught:run()
+        assert not armed and not any(e['event']=='activation' for e in events)
+        assert caught.value.dualrate_report['physical_duration']==0.
+    assert pools[0].closed and camera.pending is None
+
+
+def test_capture_breach_keeps_submission_partition_and_measured_backlog(monkeypatch):
+    mod,session,policy,camera,pools,calls,metrics,h=_owner_fixture(monkeypatch)
+    begin=camera.begin
+    def stalled(env,now):
+        result=begin(env,now)
+        if now>0:
+            mod.time.sleep(.4)
+            result.render_update_wall_seconds=.002
+            result.camera_submit_seconds={'left_camera':.41}
+        return result
+    camera.begin=stalled
+    with pytest.raises(Exception,match='wall/physics backlog') as caught:
+        mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=2)
+    report=caught.value.dualrate_report
+    submitted=[e for e in report['events'] if e['event']=='capture_submitted']
+    assert len(submitted)==1 and submitted[0]['exposure']==pytest.approx(45*h)
+    assert submitted[0]['submission_timing']['update_render_wall_seconds']==.002
+    assert submitted[0]['submission_timing']['camera_take_picture_wall_seconds']=={'left_camera':.41}
+    assert report['max_backlog_s']>.4 and not report['realtime_valid']
+    assert report['physics_steps']==45 and pools[0].closed and camera.pending is None
+
+
+def test_barriers_cannot_advance_inactive_physics(monkeypatch):
+    mod,session,policy,camera,pools,calls,metrics,h=_owner_fixture(monkeypatch)
+    with pytest.raises(Exception,match='barriers advanced') as caught:
+        mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=2,
+                        on_armed=session.env.scene.step)
+    assert not any(e['event']=='activation' for e in caught.value.dualrate_events)
+    assert pools[0].closed and camera.pending is None
+
+
+def test_camera_submission_diagnostics_cover_original_four_native_calls(monkeypatch):
+    from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture
+    from dynamicwam.runtime import domino_rt
+    wall=[1.];names=('left_camera','right_camera','head_camera','front_camera')
+    cameras=tuple((name,index) for index,name in enumerate(names));calls=[]
+    def update():wall[0]+=.01
+    def take(index):calls.append(index);wall[0]+=(index+1)*.02
+    native=ModuleType('dynamicwam.runtime.domino_rt._sapien_color_reader');native.take_picture=take
+    monkeypatch.setitem(sys.modules,'dynamicwam.runtime.domino_rt._sapien_color_reader',native)
+    monkeypatch.setattr(domino_rt,'_sapien_color_reader',native,raising=False)
+    robot=SimpleNamespace(get_left_arm_jointState=lambda:[0.]*7,get_right_arm_jointState=lambda:[0.]*7)
+    env=SimpleNamespace(_update_render=update,data_type={},robot=robot,
+                        cameras=SimpleNamespace(get_config=lambda:{name:{} for name in names}))
+    with AsyncCameraCapture(reader=lambda camera:np.zeros((2,3,4),np.float32),clock=lambda:wall[0]) as capture:
+        monkeypatch.setattr(capture,'_camera_handles',lambda env:cameras)
+        pending=capture.begin(env,0.)
+        assert pending.render_update_wall_seconds==pytest.approx(.01)
+        assert pending.camera_submit_seconds==pytest.approx(dict(zip(names,(.02,.04,.06,.08))))
+        assert pending.render_submitted_wall_perf_s-pending.capture_wall_perf_s==pytest.approx(.21)
+        result=capture.finish(pending)
+        assert result.physics_time_s==0. and calls==[0,1,2,3]
+        assert result.camera_submit_seconds==pending.camera_submit_seconds
+        assert result.camera_submit_seconds is not pending.camera_submit_seconds
