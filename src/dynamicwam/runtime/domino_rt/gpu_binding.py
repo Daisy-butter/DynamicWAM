@@ -13,8 +13,45 @@ import importlib
 import os
 import re
 import sys
+import threading
 
 _BINDING=None
+_SCENE_CREATION_LOCK=threading.RLock()
+_PHYSX_SCENE_FIELDS=('gravity', 'bounce_threshold', 'enable_pcm', 'enable_tgs',
+                     'enable_ccd', 'enable_enhanced_determinism', 'enable_friction_every_iteration')
+
+
+def validate_physx_cpu_workers(value):
+    if type(value) is not int or not 0 <= value <= 4:
+        raise ValueError('physx_cpu_workers must be an integer in 0..4')
+    return value
+
+
+def physx_scene_fields(config):
+    """All seven native SAPIEN 3.0.0b1 solver/scene settings, without defaults."""
+    fields={name:getattr(config,name) for name in _PHYSX_SCENE_FIELDS}
+    fields['gravity']=[float(v) for v in fields['gravity']]
+    fields['bounce_threshold']=float(fields['bounce_threshold'])
+    return fields
+
+
+def configure_physx_scene(physx, config, cpu_workers):
+    """Apply native fields first, then only change dispatcher concurrency.
+
+    The installed SceneConfig Python object has no cpu_workers property. Its
+    keyword setter does; copying every native field avoids silently restoring
+    defaults when requesting workers. Zero retains the original object setter.
+    The caller must create PhysxCpuSystem before another scene configuration.
+    """
+    workers=validate_physx_cpu_workers(cpu_workers)
+    expected=physx_scene_fields(config)
+    physx.set_scene_config(config)
+    if workers:
+        physx.set_scene_config(**expected,cpu_workers=workers)
+    if physx_scene_fields(physx.get_scene_config())!=expected:
+        raise RuntimeError('PhysX CPU worker setting changed native scene fields')
+    return dict(cpu_workers=workers,native_scene_fields=expected,
+                native_scene_fields_verified=True,mechanism='native_scene_config_cpu_dispatcher')
 
 
 def normalize_pci(value):
@@ -33,18 +70,21 @@ def _device_identity(device, expected):
                 can_render=bool(device.can_render),selector='cuda:0')
 
 
-def install_gpu_binding(*, environment=None, sapien_module=None):
+def install_gpu_binding(*, environment=None, sapien_module=None, physx_cpu_workers=0):
     global _BINDING
+    physx_cpu_workers=validate_physx_cpu_workers(physx_cpu_workers)
     environment=os.environ if environment is None else environment
     expected_value=environment.get('DYNAMICWAM_GPU_PCI')
     if not expected_value:
         if _BINDING is not None:
             raise RuntimeError('cannot remove a GPU binding inside a resident process')
+        if physx_cpu_workers:
+            raise ValueError('explicit PhysX workers require a pinned process GPU binding')
         return None
     expected=normalize_pci(expected_value)
     if _BINDING is not None:
-        if _BINDING['pci']!=expected:
-            raise RuntimeError('cannot change GPU binding inside a resident process')
+        if _BINDING['pci']!=expected or _BINDING['physx_cpu_workers']!=physx_cpu_workers:
+            raise RuntimeError('cannot change GPU/PhysX binding inside a resident process')
         return dict(_BINDING)
     sapien=importlib.import_module('sapien') if sapien_module is None else sapien_module
     core=importlib.import_module('sapien.core') if sapien_module is None else sapien.core
@@ -72,11 +112,17 @@ def install_gpu_binding(*, environment=None, sapien_module=None):
 
     class BoundEngine(original_engine):
         def create_scene(self,config=defaults[0]):
-            sapien.physx.set_scene_config(config)
-            with SapienInitLock(device_context=True):
-                render_system=sapien.render.RenderSystem(device)
-            _device_identity(render_system.device,expected)
-            return scene_type([sapien.physx.PhysxCpuSystem(),render_system])
+            with _SCENE_CREATION_LOCK:
+                physics_binding=configure_physx_scene(sapien.physx,config,physx_cpu_workers)
+                with SapienInitLock(device_context=True):
+                    render_system=sapien.render.RenderSystem(device)
+                _device_identity(render_system.device,expected)
+                physics=sapien.physx.PhysxCpuSystem()
+                if physx_scene_fields(physics.get_config())!=physics_binding['native_scene_fields']:
+                    raise RuntimeError('created PhysX system differs from native scene settings')
+            scene=scene_type([physics,render_system])
+            scene._dynamicwam_physx_binding=physics_binding
+            return scene
 
     BoundEngine.__name__='PinnedGpuEngine';BoundRenderer.__name__='PinnedGpuSapienRenderer'
     for module in (core,sapien,sys.modules.get(original_engine.__module__),
@@ -84,5 +130,6 @@ def install_gpu_binding(*, environment=None, sapien_module=None):
         if module is None:continue
         if getattr(module,'Engine',None) is original_engine:module.Engine=BoundEngine
         if getattr(module,'SapienRenderer',None) is original_renderer:module.SapienRenderer=BoundRenderer
-    _BINDING=dict(identity,enabled=True,mechanism='process_local_explicit_renderer_and_render_system')
+    _BINDING=dict(identity,enabled=True,mechanism='process_local_explicit_renderer_and_render_system',
+                  physx_cpu_workers=physx_cpu_workers)
     return dict(_BINDING)

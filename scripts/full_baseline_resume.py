@@ -14,13 +14,122 @@ import os
 from pathlib import Path
 import sys
 
-from full_baseline_worker import canonical_hash, load_frozen_task, read, save, sha
+from full_baseline_worker import ROOT, canonical_hash, load_frozen_task, read, save, sha, source_hash
 
 SCHEMA = 'full_baseline_completed_task_resume_v1'
 COMPARISON_FIELDS = ('protocol', 'checkpoint_sha256', 'init_checkpoint_sha256', 'profile_sha256',
     'prepared_sha256', 'task_config', 'instruction_mode', 'instruction_type', 'seed',
     'action_dt', 'frame_period', 'max_backlog', 'max_observation_age', 'bootstrap_hold_steps',
     'model_query_timeout_s', 'benchmark_contract', 'gpu_uuids')
+
+
+def acceptance_smoke_count(config):
+    """Legacy receipts retain 8x2; an explicit expanded gate is at least 8x8."""
+    if 'acceptance_smoke_episodes_per_task' not in config:
+        if config.get('required_acceptance_cases'):
+            raise ValueError('required cases need an explicit expanded smoke count')
+        return 2
+    count = config['acceptance_smoke_episodes_per_task']
+    if type(count) is not int or not 8 <= count <= 20:
+        raise ValueError('expanded smoke episodes per task must be an integer in 8..20')
+    return count
+
+
+def expanded_acceptance_contract(config):
+    """Bind the complete ordered 8xN frozen episode matrix and required failure."""
+    count = acceptance_smoke_count(config)
+    if count == 2:
+        return None
+    tasks = config['tasks'][:8]
+    if len(tasks) != 8 or len(set(tasks)) != 8:
+        raise ValueError('expanded smoke requires eight distinct ordered tasks')
+    required = config.get('required_acceptance_cases')
+    fields = {'task', 'episode_index', 'seed', 'manifest_sha256', 'motion_sha256'}
+    if (not isinstance(required, list) or not required
+            or any(not isinstance(case, dict) or set(case) != fields for case in required)
+            or not any(case['episode_index'] == 7 and case['seed'] == 100007 for case in required)):
+        raise ValueError('expanded smoke requires the exact failed episode 7 / seed 100007 identity')
+    root = Path(config['prepared'])
+    if sha(root/'frozen_manifest.json') != config['prepared_sha256']:
+        raise ValueError('expanded smoke frozen manifest hash changed')
+    frozen = read(root/'frozen_manifest.json')
+    if frozen.get('complete') is not True:
+        raise ValueError('expanded smoke frozen scenes are incomplete')
+    index = {}
+    for row in frozen['episodes']:
+        key = (row['task'], row['episode_index'])
+        if key in index:
+            raise ValueError('duplicate frozen episode identity')
+        index[key] = row
+    matrix = []
+    for task in tasks:
+        for episode in range(count):
+            entry = index.get((task, episode))
+            if entry is None:
+                raise ValueError('expanded smoke episode absent from frozen scenes')
+            directory = root/task/f'episode_{episode:04d}'
+            if sha(directory/'manifest.json') != entry['manifest_sha256'] or sha(directory/'expert_motion.pkl') != entry['motion_sha256']:
+                raise ValueError('expanded smoke scene/motion bytes changed')
+            descriptor = read(directory/'manifest.json')
+            if (descriptor.get('task') != task or descriptor.get('episode_index') != episode
+                    or descriptor.get('seed') != entry['seed']):
+                raise ValueError('expanded smoke descriptor identity differs')
+            matrix.append({key: entry[key] for key in sorted(fields)})
+    required_keys = [canonical_hash(case) for case in required]
+    if len(set(required_keys)) != len(required_keys) or not set(required_keys) <= {canonical_hash(row) for row in matrix}:
+        raise ValueError('required failed case is not covered by the exact expanded smoke matrix')
+    return dict(schema='full_baseline_expanded_acceptance_v1', smoke_tasks=tasks,
+                smoke_episodes_per_task=count, complete_smoke_episodes=8*count,
+                required_acceptance_cases=required, episode_identities=matrix,
+                episode_identity_sha256=canonical_hash(matrix))
+
+
+def validate_expanded_acceptance(config, receipt):
+    expected = expanded_acceptance_contract(config)
+    if expected is None:
+        return None
+    actual = receipt.get('expanded_acceptance')
+    if actual != expected or receipt.get('smoke_episodes_per_task') != expected['smoke_episodes_per_task']:
+        raise ValueError('expanded smoke acceptance identity/coverage differs')
+    return expected
+
+
+def validate_physics_replay(config, source=None):
+    """CPU scheduling changes need paired recorded-control parity, never replace smoke."""
+    workers = config.get('physx_cpu_workers', 0)
+    if type(workers) is not int or not 0 <= workers <= 4:
+        raise ValueError('PhysX CPU worker count must be an integer in 0..4')
+    if workers == 0:
+        return None
+    expanded = expanded_acceptance_contract(config)
+    if expanded is None:
+        raise ValueError('nonzero PhysX CPU workers require expanded real-policy acceptance')
+    path = Path(config['physics_replay_receipt']).resolve(strict=True)
+    if sha(path) != config['physics_replay_receipt_sha256']:
+        raise ValueError('physics replay comparison receipt changed')
+    receipt = read(path)
+    if (receipt.get('schema') != 'full_physics_replay_comparison_v1'
+            or any(receipt.get(key) is not True for key in ('passed', 'state_parity_passed', 'selected_candidate_passed'))
+            or receipt.get('selected_physx_cpu_workers') != workers
+            or type(receipt.get('parity_atol')) not in (int, float)
+            or not 0 < receipt['parity_atol'] <= 1e-6):
+        raise ValueError('selected PhysX candidate lacks bounded recorded-state parity')
+    expected_source = source or dict(source_sha256=source_hash(ROOT/'src/dynamicwam'), scripts_sha256=source_hash(ROOT/'scripts'))
+    if any(receipt.get(key) != expected_source[key] for key in ('source_sha256', 'scripts_sha256')):
+        raise ValueError('physics replay ran a different frozen source')
+    fields = ('task', 'episode_index', 'seed', 'manifest_sha256', 'motion_sha256')
+    case = {key: receipt.get(key) for key in fields}
+    if (case not in expanded['required_acceptance_cases']
+            or receipt.get('frozen_manifest_sha256') != config['prepared_sha256']):
+        raise ValueError('physics replay is not the required failed frozen scene')
+    evidence = receipt.get('evidence', [])
+    if not evidence or not receipt.get('source_report_sha256') or not any(
+            row.get('sha256') == receipt['source_report_sha256'] for row in evidence):
+        raise ValueError('physics replay lacks its original failed trace evidence')
+    for row in evidence:
+        if sha(row['path']) != row['sha256']:
+            raise ValueError('physics replay evidence changed: ' + row['path'])
+    return receipt
 
 
 def task_partition(full_tasks, retained):
@@ -168,11 +277,12 @@ def validate_resumption(config, *, verify_evidence=True):
     if config.get('stage') == 'formal':
         wanted, episodes = remaining, 20
     elif config.get('stage') == 'smoke':
-        wanted, episodes = remaining[:8], 2
+        wanted, episodes = remaining[:8], acceptance_smoke_count(config)
     else:
         raise ValueError('continuation must retain ordinary smoke/formal gating')
     if config.get('tasks') != wanted or config.get('episodes') != episodes:
         raise ValueError('continuation task order/count differs from audited partition')
+    expanded_acceptance_contract(config)
     if Path(config['output']).resolve() == Path(read(old['path'])['output']).resolve():
         raise ValueError('continuation cannot overwrite the failed source output')
     if not receipt.get('evidence'):
@@ -246,6 +356,11 @@ def finalize(config_path, guard_dir, destination, stamp):
         resumption_receipt=str(Path(config['resumption_receipt']).resolve()), resumption_receipt_sha256=config['resumption_receipt_sha256'],
         old_source=receipt['old_source'], new_source=source, checkpoint_sha256=config['checkpoint_sha256'],
         prepared_sha256=config['prepared_sha256'], benchmark_contract=config['benchmark_contract'],
+        physical_cpu_workers_old=int(old_config.get('physx_cpu_workers', 0)),
+        physical_cpu_workers_new=int(config.get('physx_cpu_workers', 0)),
+        simulator_cpu_workers_change=config.get('simulator_cpu_workers_change'),
+        physics_replay_receipt=config.get('physics_replay_receipt'),
+        physics_replay_receipt_sha256=config.get('physics_replay_receipt_sha256'),
         video_storage='symlink references to hash-bound originals; merger never writes original bytes', origins=origins)
     save(destination/'suite_completed.json', result)
     return result

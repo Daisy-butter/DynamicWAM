@@ -19,7 +19,7 @@ import time
 import guarded_dualrate_smoke as base
 
 TRAIN_MODES = {"distributed_training_smoke", "formal_distributed_training"}
-MODES = TRAIN_MODES | {"domino_deployment_smoke", "full_baseline_suite"}
+MODES = TRAIN_MODES | {"domino_deployment_smoke", "full_baseline_suite", "full_physics_replay"}
 OPERATIONAL_FIELDS = {"run_kind", "output", "steps", "sequence_id", "acceptance_receipt",
     "acceptance_receipt_sha256", "stage_init_checkpoint", "stage_init_checkpoint_sha256", "resume"}
 
@@ -48,6 +48,9 @@ def read_json(path):
 def validate_full_baseline_scope(config):
     """A reduced formal set is legal only with an immutable completed-task audit."""
     stage = config.get('stage')
+    from full_baseline_resume import acceptance_smoke_count, expanded_acceptance_contract, validate_physics_replay
+    smoke_count = acceptance_smoke_count(config)
+    validate_physics_replay(config)
     if stage not in ('smoke', 'formal') or config.get('action_limit') is not None:
         raise ValueError('Full baseline requires smoke/formal and complete native episode budgets')
     if config.get('resumption_receipt') or config.get('resumption_receipt_sha256'):
@@ -65,8 +68,9 @@ def validate_full_baseline_scope(config):
         return receipt
     tasks = config.get('tasks', [])
     if (len(tasks) != (8 if stage == 'smoke' else 35) or len(set(tasks)) != len(tasks)
-            or config.get('episodes') != (2 if stage == 'smoke' else 20)):
-        raise ValueError('Full baseline requires 8x2 smoke / 35x20 formal, or an audited resumption')
+            or config.get('episodes') != (smoke_count if stage == 'smoke' else 20)):
+        raise ValueError('Full baseline requires bounded 8xN smoke / 35x20 formal, or an audited resumption')
+    expanded_acceptance_contract(config)
     if 'aggregate_output' in config or 'aggregate_result_stamp' in config:
         raise ValueError('aggregate output is reserved for audited resumption')
     return None
@@ -74,6 +78,8 @@ def validate_full_baseline_scope(config):
 
 def validate_acceptance(config, source):
     if config['run_kind']=='full_baseline_suite':
+        from full_baseline_resume import acceptance_smoke_count, validate_expanded_acceptance
+        smoke_count = acceptance_smoke_count(config)
         resumption = validate_full_baseline_scope(config)
         if config.get('stage')=='smoke':
             return None
@@ -91,12 +97,17 @@ def validate_acceptance(config, source):
                 or receipt.get('native_mp4_full_decode') is not True
                 or receipt.get('clean_worker_exit') is not True
                 or receipt.get('guard_closed') is not True or receipt.get('kernel_unchanged') is not True
-                or receipt.get('world_size')!=8 or receipt.get('complete_smoke_episodes')!=16):
+                or receipt.get('world_size')!=8 or receipt.get('complete_smoke_episodes')!=8*smoke_count):
             raise ValueError('formal Full baseline requires same-source eight-GPU full-episode acceptance')
         if receipt.get('resumption_receipt_sha256') != config.get('resumption_receipt_sha256'):
             raise ValueError('smoke acceptance belongs to another resumption')
         if resumption is not None and receipt.get('smoke_tasks') != resumption['required_smoke_tasks']:
             raise ValueError('resumption requires smoke of the exact failed cohort')
+        validate_expanded_acceptance(config, receipt)
+        if config.get('physx_cpu_workers', 0) and (
+                receipt.get('physx_cpu_workers') != config['physx_cpu_workers']
+                or receipt.get('physics_replay_receipt_sha256') != config['physics_replay_receipt_sha256']):
+            raise ValueError('policy smoke used another PhysX candidate or replay proof')
         for row in receipt.get('evidence',[]):
             if base.file_sha256(Path(row['path']).resolve(strict=True))!=row['sha256']:
                 raise ValueError('baseline acceptance evidence changed')
@@ -162,6 +173,8 @@ def selected_uuids(value, devices, mode):
         raise ValueError("training requires exactly all eight adapters; no single-rank substitute")
     if mode == "domino_deployment_smoke" and len(selected) not in (1, 2, 3):
         raise ValueError("deployment smoke requires one to three explicitly pinned GPUs")
+    if mode == 'full_physics_replay' and len(selected) != 1:
+        raise ValueError('physics replay requires one explicitly pinned diagnostic GPU')
     return selected
 
 
@@ -171,6 +184,11 @@ def worker_command(repo, config, frozen, authorization, resume=None):
     if mode=='full_baseline_suite':
         return [sys.executable,str(repo/'scripts/full_baseline_suite.py'),
                 '--config',str(frozen),'--authorization',str(authorization)]
+    if mode == 'full_physics_replay':
+        if resume is not None:
+            raise ValueError('physics replay cannot resume a training or policy run')
+        return [sys.executable, str(repo/'scripts/full_physics_replay.py'),
+                '--config', str(frozen), '--authorization', str(authorization)]
     if mode in TRAIN_MODES:
         if config.get("world_size") != 8:
             raise ValueError("configuration must explicitly require world_size=8")
@@ -257,7 +275,7 @@ def supervise(args, repo, out):
         if base.kernel_evidence() != before:
             raise RuntimeError("new driver evidence during initial telemetry")
         env = base.worker_environment(repo, out, ",".join(selected), binding, config=config)
-        if mode in {'domino_deployment_smoke','full_baseline_suite'}:
+        if mode in {'domino_deployment_smoke','full_baseline_suite','full_physics_replay'}:
             render_config=dict(config,run_kind='domino_deployment_smoke')
             env.update(base.renderer_helpers().renderer_environment(render_config,env))
             base.atomic(out / "renderer_runtime_before.json", config["renderer_runtime"])
@@ -366,7 +384,7 @@ def supervise(args, repo, out):
                     base.atomic(out / "dependencies_after.json", final)
                     if final != binding:
                         errors.append("dependency overlay changed during job")
-                if config is not None and config.get("run_kind") in {'domino_deployment_smoke','full_baseline_suite'}:
+                if config is not None and config.get("run_kind") in {'domino_deployment_smoke','full_baseline_suite','full_physics_replay'}:
                     renderer = base.renderer_helpers().validate_renderer_runtime(config)
                     base.atomic(out / "renderer_runtime_after.json", renderer)
             except BaseException as exc:

@@ -70,6 +70,13 @@ def validate_config(config):
         raise ValueError('eight distinct UUID-pinned workers required')
     if type(config['episodes']) is not int or not 1 <= config['episodes'] <= 20:
         raise ValueError('episode count must be 1..20')
+    from dynamicwam.runtime.domino_rt.gpu_binding import validate_physx_cpu_workers
+    validate_physx_cpu_workers(config.get('physx_cpu_workers',0))
+    from full_baseline_resume import acceptance_smoke_count
+    smoke_episodes=acceptance_smoke_count(config)
+    if config['stage']=='smoke' and (len(tasks)!=8 or config['episodes']!=smoke_episodes
+                                    or config.get('action_limit') is not None):
+        raise ValueError('smoke requires eight tasks and the configured complete episode count')
     if config.get('resumption_receipt') is not None:
         from full_baseline_resume import validate_resumption
         validate_resumption(config, verify_evidence=False)
@@ -255,6 +262,13 @@ def checked_episode(config, task, episode):
                           ('prepared_sha256', config['prepared_sha256']), ('config_sha256', canonical_hash(config))):
         if report.get(key) != expected:
             raise ValueError('episode identity mismatch: ' + key)
+    if 'physx_cpu_workers' in config:
+        physics_binding=report.get('physx_binding',{})
+        if (physics_binding.get('cpu_workers')!=config['physx_cpu_workers']
+                or physics_binding.get('native_scene_fields_verified') is not True
+                or report.get('renderer',{}).get('physx_cpu_workers')!=config['physx_cpu_workers']
+                or physics_binding!=descriptor.get('physx_binding')):
+            raise ValueError('episode PhysX dispatcher configuration differs')
     if report['seed'] != descriptor['seed'] or metric['seed'] != descriptor['seed']:
         raise ValueError('episode/metric/scene seed mismatch')
     if bool(metric['success']) != bool(report['success']):
@@ -302,7 +316,7 @@ def main():
     os.environ['DYNAMICWAM_GPU_PCI'] = pci
     torch.cuda.set_device(0)
     from dynamicwam.runtime.domino_rt.gpu_binding import install_gpu_binding
-    renderer = install_gpu_binding()
+    renderer = install_gpu_binding(physx_cpu_workers=config.get('physx_cpu_workers',0))
     from dynamicwam.inference.model_loader import load_deploy_config
     profile = load_deploy_config(config['profile'])
     if Path(profile['checkpoint_path']).resolve() != Path(config['checkpoint']).resolve():
@@ -336,6 +350,7 @@ def main():
     metrics = []
     for episode, (descriptor, motion, motion_bytes) in enumerate(references):
         env = camera = session = None
+        physics_binding = None
         video, report = BufferedHeadVideo(), None
         directory = output / args.task / f'episode_{episode:04d}'
         directory.mkdir(parents=True, exist_ok=False)
@@ -345,6 +360,9 @@ def main():
                     start_seed=descriptor['seed'], instruction_type=config.get('instruction_type', 'seen'),
                     replay=dict(seed=descriptor['seed'], instruction=descriptor['instruction'], saved_motion=motion['saved_motion']))
             env._rt_episode_info = motion['episode_info']
+            physics_binding = dict(env.scene._dynamicwam_physx_binding)
+            if physics_binding['cpu_workers'] != config.get('physx_cpu_workers',0):
+                raise ValueError('scene PhysX dispatcher differs from immutable worker config')
             if descriptor['arm_tag']:
                 from envs.utils.action import ArmTag
                 env.arm_tag = ArmTag(descriptor['arm_tag'])
@@ -369,11 +387,12 @@ def main():
             session = DominoLevel1Session(env, flow=None, observation_config={}, stop_on_contact=prepared['stop_on_contact'],
                 check_z_threshold=prepared['check_z_threshold'], lift_actor=prepared['lift_actor'], start_z=prepared['start_z'],
                 instruction=prompt, control_interval_s=config['action_dt'])
+            session.physx_binding = physics_binding
             session.metrics_tracker = EvalMetricsTracker(env, {'use_dynamic': True})
             session.metrics_tracker.on_episode_start()
             camera = AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
             save(directory / 'manifest.json', dict(descriptor, evaluation_instruction=prompt, prompt_source=prompt_source,
-                action_dt=config['action_dt'], prepared_sha256=config['prepared_sha256']))
+                action_dt=config['action_dt'], prepared_sha256=config['prepared_sha256'],physx_binding=physics_binding))
             (directory / 'expert_motion.pkl').write_bytes(motion_bytes)
             report = run_episode(session, policy, camera, action_dt=float(config['action_dt']),
                 action_limit=min(int(limits[args.task]), int(config.get('action_limit') or limits[args.task])),
@@ -390,7 +409,7 @@ def main():
                 prepared_sha256=config['prepared_sha256'], config_sha256=canonical_hash(config),
                 source_sha256=receipt['identity']['source_sha256'], video_required=True,
                 instruction_mode='episode_complete_template', instruction=prompt,
-                gpu_count=1, gpu_uuid=uuid, renderer=renderer, complete=False)
+                gpu_count=1, gpu_uuid=uuid, renderer=renderer,physx_binding=physics_binding,complete=False)
             if not report.get('realtime_valid') or not report.get('continuous_valid'):
                 raise RuntimeError('runtime rejected clock/continuous simulation contract')
             cohort.wait(episode, 'finished')
@@ -412,7 +431,8 @@ def main():
             cohort.abort(exc)
             failure = dict(getattr(exc, 'dualrate_report', {}) or report or {})
             failure.update(complete=False, task=args.task, episode_index=episode, error=f'{type(exc).__name__}: {exc}',
-                           traceback=traceback.format_exc(), events=getattr(exc, 'dualrate_events', failure.get('events', [])))
+                           traceback=traceback.format_exc(),physx_binding=physics_binding,renderer=renderer,
+                           events=getattr(exc, 'dualrate_events', failure.get('events', [])))
             save(directory / 'report.json', failure)
             if session is not None and video.frames and not getattr(video, '_finalized', False):
                 try:

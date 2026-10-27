@@ -28,12 +28,14 @@ DIFFERING_FIELDS = {'stage', 'tasks', 'episodes', 'output', 'result_stamp',
 
 def validate_pair(smoke, formal):
     """Only cohort size/output and administrative deadlines may differ."""
+    from full_baseline_resume import acceptance_smoke_count
+    smoke_count = acceptance_smoke_count(smoke)
     if (smoke.get('run_kind') != 'full_baseline_suite' or formal.get('run_kind') != 'full_baseline_suite'
             or smoke.get('stage') != 'smoke' or formal.get('stage') != 'formal'
-            or len(smoke.get('tasks', [])) != 8 or smoke.get('episodes') != 2
+            or len(smoke.get('tasks', [])) != 8 or smoke.get('episodes') != smoke_count
             or formal.get('episodes') != 20
             or smoke['tasks'] != formal['tasks'][:8]):
-        raise ValueError('sequence requires first-eight-task 8x2 smoke then complete formal tasks')
+        raise ValueError('sequence requires first-eight-task bounded 8xN smoke then complete formal tasks')
     if smoke.get('action_limit') is not None or formal.get('action_limit') is not None:
         raise ValueError('both phases require complete native episode budgets')
     for key in set(smoke) | set(formal):
@@ -170,24 +172,40 @@ def audit_task_liveness(reports, config):
 def make_acceptance(smoke, smoke_guard, source, destination):
     from full_baseline_suite import audit_task
     from video_artifacts import probe_head_video
+    from full_baseline_resume import acceptance_smoke_count, expanded_acceptance_contract, validate_physics_replay
+    smoke_count = acceptance_smoke_count(smoke)
+    expanded = expanded_acceptance_contract(smoke)
+    replay = validate_physics_replay(smoke, source)
+    expected_count = 8*smoke_count
+    identities = {(r['task'], r['episode_index']): r for r in expanded['episode_identities']} if expanded else {}
     resumption = guard.validate_full_baseline_scope(smoke)
     evidence = require_clean_guard(smoke_guard, smoke, source)
     if resumption is not None:
         evidence.append(Path(smoke['resumption_receipt']))
     completed_path = Path(smoke['output'])/'suite_completed.json'
     completed = read(completed_path)
-    if (completed.get('complete') is not True or completed.get('valid_completed') != 16
+    if (completed.get('complete') is not True or completed.get('valid_completed') != expected_count
             or completed.get('every_video_fully_decoded') is not True
             or completed.get('all_workers_exit_zero') is not True
             or completed.get('config_sha256') != canonical_hash(smoke)
             or completed.get('source') != source):
-        raise ValueError('actual eight-GPU sixteen-episode smoke is incomplete')
+        raise ValueError('actual eight-GPU expanded episode smoke is incomplete')
     evidence.append(completed_path)
     decoded = []; liveness = {}
     for task in smoke['tasks']:
         reports, _ = audit_task(smoke, task)
         liveness[task] = audit_task_liveness(reports, smoke)
         for report in reports:
+            if expanded:
+                row = identities.get((task, report['episode_index']))
+                if row is None or report.get('seed') != row['seed']:
+                    raise ValueError('smoke report does not match expected episode/seed coverage')
+                episode_dir = Path(smoke['output'])/task/f"episode_{report['episode_index']:04d}"
+                original = read(Path(smoke['prepared'])/task/f"episode_{report['episode_index']:04d}/manifest.json")
+                current = read(episode_dir/'manifest.json')
+                if (any(current.get(k) != v for k, v in original.items())
+                        or sha(episode_dir/'expert_motion.pkl') != row['motion_sha256']):
+                    raise ValueError('smoke report scene/motion differs from frozen identity')
             # Re-decode outside all active episodes; retain the independent receipt.
             probe = probe_head_video(Path(report['video']))
             if probe != report['video_probe']:
@@ -195,20 +213,27 @@ def make_acceptance(smoke, smoke_guard, source, destination):
             path = Path(smoke['output'])/task/f"episode_{report['episode_index']:04d}/report.json"
             evidence.extend((path, Path(report['video']), Path(report['video_timestamps'])))
             decoded.append(dict(report=str(path), video=report['video'], probe=probe))
-    if len(decoded) != 16:
-        raise ValueError('exactly sixteen full episodes required')
+    if len(decoded) != expected_count:
+        raise ValueError('exact expanded count of complete episodes required')
     decode_path = Path(destination).with_name('smoke_video_decode.json')
-    save(decode_path, dict(passed=True, count=16, decoded=decoded))
+    save(decode_path, dict(passed=True, count=expected_count, decoded=decoded))
     evidence.append(decode_path)
     liveness_path = Path(destination).with_name('smoke_liveness.json')
     save(liveness_path, dict(passed=True, contract=LIVENESS_CONTRACT, tasks=liveness))
     evidence.append(liveness_path)
     receipt = dict(passed=True, source_contract=guard.source_contract(source),
         benchmark_contract=smoke['benchmark_contract'], checkpoint_sha256=smoke['checkpoint_sha256'],
-        world_size=8, complete_smoke_episodes=16, native_mp4_full_decode=True,
+        world_size=8, complete_smoke_episodes=expected_count, native_mp4_full_decode=True,
         full_query_liveness_passed=True, liveness_contract=LIVENESS_CONTRACT,
         clean_worker_exit=True, guard_closed=True, kernel_unchanged=True,
         evidence=[dict(path=str(p.resolve()), sha256=sha(p)) for p in evidence])
+    if expanded:
+        receipt.update(smoke_episodes_per_task=smoke_count, expanded_acceptance=expanded)
+    if replay is not None:
+        receipt.update(physx_cpu_workers=smoke['physx_cpu_workers'],
+                       physics_replay_receipt_sha256=smoke['physics_replay_receipt_sha256'])
+        receipt['evidence'].append(dict(path=str(Path(smoke['physics_replay_receipt']).resolve()),
+                                        sha256=smoke['physics_replay_receipt_sha256']))
     if resumption is not None:
         receipt.update(resumption_receipt_sha256=smoke['resumption_receipt_sha256'],
                        smoke_tasks=list(smoke['tasks']))
