@@ -10,6 +10,7 @@ from .online import ObservationHistory
 from .actuators import ActuatorProjection
 from .physical_clock import WallPhysicsBridge
 from .contact_cache import StepContactCache
+from .producer import NUMERIC_TIME_EPSILON
 
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
@@ -132,7 +133,7 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
     if not (fast_due or slow_due):return
     snapshot=history.snapshot(now)
     age=now-snapshot[-1].exposure
-    fresh=0<=age<=builder.max_observation_age+1e-8
+    fresh=0<=age<=builder.max_observation_age+NUMERIC_TIME_EPSILON
     for route,due in (('fast',fast_due),('slow',slow_due)):
         if not due:continue
         if not fresh:

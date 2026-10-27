@@ -261,7 +261,7 @@ class OnlineBatchBuilder:
     def current(self, frames, *, query_time, action_start, executed=()):
         if not frames or frames[-1].available>query_time+1e-9:
             raise TimingError('unavailable frame in fast condition')
-        if not 0<=query_time-frames[-1].exposure<=self.max_observation_age+1e-8:
+        if not 0<=query_time-frames[-1].exposure<=self.max_observation_age+NUMERIC_TIME_EPSILON:
             raise TimingError('latest camera observation is too old')
         rgb,pixels=zip(*[_letterbox(image,tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v]))
                         for v,image in enumerate(frames[-1].images)])
@@ -288,7 +288,7 @@ class OnlineBatchBuilder:
         request_time=float(source_time if request_time is None else request_time)
         if not frames or frames[-1].available>request_time+1e-9:
             raise TimingError('unavailable source observation')
-        if not 0<=request_time-frames[-1].exposure<=self.max_observation_age+1e-8:
+        if not 0<=request_time-frames[-1].exposure<=self.max_observation_age+NUMERIC_TIME_EPSILON:
             raise TimingError('latest source camera observation is too old')
         if self.hardtime and (abs(source_time-frames[-1].exposure)>1e-9 or abs(action_start-source_time)>1e-9):
             raise TimingError('slow prediction must start at the actual grid-aligned exposure')
@@ -298,7 +298,10 @@ class OnlineBatchBuilder:
         h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt,
                            pair_cache=self.pair_cache,include_spatial=False);last=frames[-1]
         raw=np.stack([cv2.resize(x,(320,384)) for x in h['flow_rgb']]+[composite(last.images,(384,320))])
-        x=torch.from_numpy(raw).permute(3,0,1,2)[None].to(self.slow_device,dtype=getattr(vae,'dtype',torch.bfloat16))/127.5-1
+        # Match producer FP32 pixel normalization before the native VAE cast;
+        # BF16 division/subtraction first introduces a different rounding path.
+        x=(torch.from_numpy(raw).permute(3,0,1,2)[None].float()/127.5-1).to(
+            self.slow_device,dtype=getattr(vae,'dtype',torch.bfloat16))
         with torch.no_grad():
             latent=vae.encode(x)
         if latent.shape[1:]!=(48,2,24,20):

@@ -78,11 +78,23 @@ def validate_source_compatibility(config, checkpoint_contract=None):
     files = receipt.get('same_model_files_sha256', {})
     if receipt.get('evaluation_source_sha256') != current or not files:
         raise ValueError('compatibility receipt is not bound to this evaluation source')
+    inference = receipt.get('inference_only_files_sha256')
+    if not isinstance(inference, dict) or set(inference) != {'dualrate/online.py'}:
+        raise ValueError('exact online inference-only compatibility binding required')
+    online = inference['dualrate/online.py']
+    if (not isinstance(online, dict) or set(online) != {'training_sha256', 'evaluation_sha256', 'change'}
+            or online.get('change') != 'fp32_image_normalization_and_camera_numeric_tolerance'
+            or any(not isinstance(online.get(k), str) or re.fullmatch(r'[0-9a-f]{64}', online[k]) is None
+                   for k in ('training_sha256', 'evaluation_sha256'))
+            or online['training_sha256'] == online['evaluation_sha256']):
+        raise ValueError('online inference-only change identity differs')
+    if sha(ROOT/'src/dynamicwam/dualrate/online.py') != online['evaluation_sha256']:
+        raise ValueError('online inference-only evaluation hash differs')
     protected = {p.relative_to(ROOT/'src/dynamicwam').as_posix(): p
                  for p in (ROOT/'src/dynamicwam').rglob('*.py')
                  if p.relative_to(ROOT/'src/dynamicwam').as_posix() not in
                  {'dualrate/deployment.py', 'runtime/domino_rt/domino_session.py',
-                  'dualrate/contact_cache.py'}}
+                  'dualrate/contact_cache.py', 'dualrate/online.py'}}
     if set(files) != set(protected):
         raise ValueError('compatibility receipt must cover every non-executor Python source')
     for name, digest in files.items():

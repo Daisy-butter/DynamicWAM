@@ -32,6 +32,23 @@ def test_actual_physics_grid_never_relabels_off_grid_exposure():
     assert next_grid_capture_tick(45,45,H,.20)==135
 
 
+@pytest.mark.parametrize('ticks,accepted',[(59,True),(60,True),(61,False)])
+def test_dispatch_camera_age_uses_training_numeric_epsilon(ticks,accepted):
+    # Nominal 240ms is sixty real float32 physics ticks, not exactly .24.
+    now=ticks*H
+    history=ObservationHistory();history.append(observation(),exposure=0.,available=.12)
+    calls=[];deferred={}
+    runtime=SimpleNamespace(due=lambda now:(True,False),store=SimpleNamespace(snapshot=lambda now:None),
+        start_fast=lambda factory,**kwargs:calls.append(kwargs))
+    builder=SimpleNamespace(max_observation_age=.24)
+    queue=SimpleNamespace(completed_execution_trace=lambda since,until:())
+    dispatch_due_queries(runtime,builder,history,queue,now=now,initial=0.,vae=None,
+        emit=lambda event:None,deferred=deferred,seen_references=set())
+    assert bool(calls) is accepted
+    assert ('fast' in deferred) is not accepted
+    if accepted:assert calls[0]['observation_time']==0.
+
+
 def test_slow_dispatch_keeps_exposure_and_request_separate():
     e=2*DT;r=e+.12
     queue=ExecutionQueue(TimedPlan(0.,DT,tuple((float(i),) for i in range(16)),0,0.))

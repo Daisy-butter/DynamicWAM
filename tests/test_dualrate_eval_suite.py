@@ -225,9 +225,13 @@ class DualRateEvalSuiteTest(unittest.TestCase):
         (src/'dualrate').mkdir(parents=True)
         (src/'dualrate/model.py').write_text('weight = 1\n')
         (src/'dualrate/deployment.py').write_text('callback = None\n')
+        (src/'dualrate/online.py').write_text('normalization_precision = "float32"\n')
         receipt_path = self.root/'compatibility.json'
         receipt = dict(training_source_sha256='training', evaluation_source_sha256=worker.source_hash(src),
-                       same_model_files_sha256={'dualrate/model.py': worker.sha(src/'dualrate/model.py')})
+                       same_model_files_sha256={'dualrate/model.py': worker.sha(src/'dualrate/model.py')},
+                       inference_only_files_sha256={'dualrate/online.py': dict(training_sha256='1'*64,
+                           evaluation_sha256=worker.sha(src/'dualrate/online.py'),
+                           change='fp32_image_normalization_and_camera_numeric_tolerance')})
         worker.save(receipt_path, receipt)
         config = dict(source_compatibility_receipt=str(receipt_path), source_compatibility_sha256=worker.sha(receipt_path))
         with patch.object(worker, 'ROOT', self.root):
@@ -240,6 +244,31 @@ class DualRateEvalSuiteTest(unittest.TestCase):
             config['source_compatibility_sha256'] = worker.sha(receipt_path)
             with self.assertRaisesRegex(ValueError, 'every non-executor'):
                 worker.validate_source_compatibility(config)
+
+    def test_inference_only_compatibility_rejects_missing_extra_and_wrong_hash(self):
+        src = self.root/'src/dynamicwam'
+        (src/'dualrate').mkdir(parents=True)
+        (src/'dualrate/model.py').write_text('weight = 1\n')
+        (src/'dualrate/online.py').write_text('normalization_precision = "float32"\n')
+        entry = dict(training_sha256='1'*64, evaluation_sha256=worker.sha(src/'dualrate/online.py'),
+                     change='fp32_image_normalization_and_camera_numeric_tolerance')
+        receipt_path = self.root/'compatibility.json'
+        receipt = dict(training_source_sha256='training', evaluation_source_sha256=worker.source_hash(src),
+            same_model_files_sha256={'dualrate/model.py': worker.sha(src/'dualrate/model.py')},
+            inference_only_files_sha256={'dualrate/online.py': entry})
+        variants = [None, {}, {'dualrate/online.py': entry, 'dualrate/model.py': entry},
+                    {'dualrate/online.py': dict(entry, evaluation_sha256='2'*64)},
+                    {'dualrate/online.py': dict(entry, training_sha256='not-a-hash')},
+                    {'dualrate/online.py': dict(entry, change='arbitrary_model_change')},
+                    {'dualrate/online.py': dict(entry, extra='unreviewed')}]
+        with patch.object(worker, 'ROOT', self.root):
+            for value in variants:
+                with self.subTest(binding=value):
+                    broken = dict(receipt, inference_only_files_sha256=value)
+                    worker.save(receipt_path, broken)
+                    config = dict(source_compatibility_receipt=str(receipt_path), source_compatibility_sha256=worker.sha(receipt_path))
+                    with self.assertRaisesRegex(ValueError, 'inference-only'):
+                        worker.validate_source_compatibility(config)
 
 
 if __name__ == '__main__':
