@@ -61,6 +61,68 @@ class TraceTests(unittest.TestCase):
         self.assertAlmostEqual(result['final_projected_backlog_s'],0.)
 
 
+class CostDiagnosisTests(unittest.TestCase):
+    def fixture(self,root):
+        storage=root/'wuruihan';storage.mkdir()
+        trace=failure_trace()
+        trace.update(task='place_empty_cup',episode_index=12,passive_force_dedup=True,
+                     physx_binding={'cpu_workers':0})
+        path=storage/'failed'/'report.json'
+        replay.save(path,trace)
+        manifest=path.with_name('manifest.json')
+        replay.save(manifest,dict(task='place_empty_cup',episode_index=12,seed=100012,requested_seed=100012))
+        return dict(run_kind=replay.MODE,diagnosis_mode=replay.DIAGNOSIS_MODE,cpu_workers=[0],
+            task='place_empty_cup',episode_index=12,expected_episode_seed=100012,
+            seed=100000,episodes=20,timeout_seconds=100,tail_hold_rows=10,passive_force_dedup=True,
+            gpu_uuids=['GPU-fixture'],storage_root=str(storage),output=str(storage/'diagnosis'),
+            trace_report=str(path),trace_report_sha256=replay.sha(path),
+            trace_manifest_sha256=replay.sha(manifest),action_dt=trace['action_interval_s'])
+
+    def test_explicit_cup_diagnosis_needs_no_old_state_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=self.fixture(Path(temp))
+            _,trace=replay.validate_config(config)
+            extension=replay.extended_trace(trace,config)
+            self.assertEqual(trace['steps'],96)
+            self.assertEqual(extension['steps'],546)
+            self.assertEqual(extension['recorded_steps'],96)
+            self.assertEqual(extension['targets'][:3],trace['targets'])
+            self.assertTrue(all(t==trace['targets'][-1] for t in extension['targets'][3:]))
+
+    def test_old_stand_extension_keeps_original_row_completion_semantics(self):
+        trace=replay.validate_trace(failure_trace(),task='place_object_stand',episode_index=7)
+        extension=replay.extended_trace(trace,dict(tail_hold_rows=10))
+        self.assertEqual(extension['steps'],585)
+        self.assertEqual(replay.extended_trace(trace,dict(tail_hold_rows=0)),trace)
+
+    def test_diagnosis_cannot_be_implicit_or_change_source_seed_controller(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=self.fixture(Path(temp))
+            for change in ({'diagnosis_mode':None},{'diagnosis_mode':'other'},
+                    {'task':'place_object_stand'},{'episode_index':7},{'expected_episode_seed':100013},
+                    {'cpu_workers':[0,2,4]},{'tail_hold_rows':11},{'tail_hold_rows':True},
+                    {'passive_force_dedup':False},{'reference_state_trace':'not-used'}):
+                with self.subTest(change=change):
+                    with self.assertRaises(ValueError): replay.validate_config(dict(config,**change))
+
+    def test_manifest_is_independently_hash_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=self.fixture(Path(temp))
+            path=Path(config['trace_report']).with_name('manifest.json')
+            manifest=replay.read(path);manifest['seed']=100013;replay.save(path,manifest)
+            with self.assertRaisesRegex(ValueError,'manifest hash'):
+                replay.validate_config(config)
+            config['trace_manifest_sha256']=replay.sha(path)
+            with self.assertRaisesRegex(ValueError,'seed mismatch'):
+                replay.validate_config(config)
+
+    def test_zero_tail_is_exactly_the_recorded_failure_tick(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=self.fixture(Path(temp));config['tail_hold_rows']=0
+            _,trace=replay.validate_config(config)
+            self.assertEqual(replay.extended_trace(trace,config)['steps'],96)
+
+
 @unittest.skipUnless(HAS_NUMPY,'numpy unavailable on local control host')
 class NumericalTests(unittest.TestCase):
     def test_executor_matches_rows_and_preserves_partial_last_tick(self):
@@ -97,6 +159,25 @@ class NumericalTests(unittest.TestCase):
         self.assertEqual(values[names.index('left_qpos[0]')],1.)
         self.assertEqual(values[names.index('displaystand_linear_velocity[1]')],.2)
         self.assertTrue(all('target' not in n for n in names))
+
+    def test_cup_state_tracks_both_known_dynamic_actors_and_real_articulations(self):
+        import numpy as np
+        class Body:
+            linear_velocity=np.array([.1,.2,.3]);angular_velocity=np.array([.4,.5,.6])
+        entity=SimpleNamespace(get_qpos=lambda:np.array([1.,2.]),get_qvel=lambda:np.array([3.,4.]))
+        def actor(position):
+            return SimpleNamespace(actor=SimpleNamespace(get_pose=lambda:SimpleNamespace(p=position,q=[1.,0.,0.,0.]),
+                                   get_components=lambda:[Body()]))
+        env=SimpleNamespace(robot=SimpleNamespace(left_entity=entity,right_entity=entity),
+                            cup=actor([5.,6.,7.]),coaster=actor([8.,9.,10.]))
+        names,values=replay.snapshot_state(env,Body,actor_names=('cup','coaster'))
+        self.assertEqual(values[names.index('cup_position[0]')],5.)
+        self.assertEqual(values[names.index('coaster_position[2]')],10.)
+        self.assertEqual(values[names.index('right_qvel[1]')],4.)
+        self.assertFalse(any('displaystand' in name for name in names))
+        env.coaster.actor.get_components=lambda:[]
+        with self.assertRaisesRegex(ValueError,'coaster'):
+            replay.snapshot_state(env,Body,actor_names=('cup','coaster'))
 
     def test_parity_checks_every_tick_not_only_final_or_rows(self):
         import numpy as np

@@ -25,6 +25,15 @@ from full_baseline_worker import (canonical_hash, load_frozen_task, proc_identit
 
 MODE = 'full_physics_replay'
 SCHEMA = 'full_physics_replay_comparison_v1'
+DIAGNOSIS_MODE = 'failed_trace_cost_v1'
+DIAGNOSIS_SCHEMA = 'full_failed_trace_cost_diagnosis_v1'
+
+
+def is_cost_diagnosis(config):
+    mode=config.get('diagnosis_mode')
+    if mode not in (None,DIAGNOSIS_MODE):
+        raise ValueError('unknown explicitly selected replay diagnosis mode')
+    return mode==DIAGNOSIS_MODE
 
 
 def validate_trace(report, *, task, episode_index):
@@ -60,10 +69,19 @@ def validate_trace(report, *, task, episode_index):
 
 
 def validate_config(config):
+    diagnosis=is_cost_diagnosis(config)
     tail = config.get('tail_hold_rows', 0)
     if type(tail) is not int or not 0 <= tail <= 10 or type(config.get('passive_force_dedup', False)) is not bool:
         raise ValueError('tail hold rows must be 0..10 and passive force setting must be boolean')
-    if (config.get('run_kind') != MODE or config.get('cpu_workers') != ([0] if tail else [0, 2, 4])
+    if diagnosis:
+        if (config.get('run_kind')!=MODE or config.get('cpu_workers')!=[0]
+                or config.get('task')!='place_empty_cup' or config.get('episode_index')!=12
+                or config.get('expected_episode_seed')!=100012
+                or config.get('seed')!=100000 or config.get('episodes')!=20):
+            raise ValueError('cost diagnosis requires exact frozen cup12 seed100012 and workers0')
+        if any(k.startswith('reference_') for k in config):
+            raise ValueError('cost diagnosis cannot consume or certify old state-parity references')
+    elif (config.get('run_kind') != MODE or config.get('cpu_workers') != ([0] if tail else [0, 2, 4])
             or config.get('task') != 'place_object_stand' or config.get('episode_index') != 7
             or config.get('seed') != 100000 or config.get('episodes') != 20):
         raise ValueError('explicit failed stand episode7, frozen20 and workers[0,2,4] required')
@@ -79,21 +97,44 @@ def validate_config(config):
         raise ValueError('diagnostic output must be on the verified wuruihan artifact disk')
     if sha(config['trace_report']) != config['trace_report_sha256']:
         raise ValueError('failed trace changed')
-    if tail:
+    if tail and not diagnosis:
         if sha(config['reference_state_trace']) != config['reference_state_trace_sha256']:
             raise ValueError('original workers0 state reference changed')
         if config.get('reference_extension_trace') is not None:
             if sha(config['reference_extension_trace']) != config['reference_extension_trace_sha256']:
                 raise ValueError('extended baseline state reference changed')
-    if config.get('passive_force_dedup', False):
+    if config.get('passive_force_dedup', False) and not diagnosis:
         if not tail or not config.get('reference_extension_trace'):
             raise ValueError('dedup candidate requires the baseline extended state reference')
         if sha(config['reference_extension_timings']) != config['reference_extension_timings_sha256']:
             raise ValueError('extended baseline timing reference changed')
-    trace = validate_trace(read(config['trace_report']), task=config['task'], episode_index=config['episode_index'])
+    recorded=read(config['trace_report'])
+    if diagnosis:
+        manifest=Path(config['trace_report']).with_name('manifest.json')
+        if sha(manifest)!=config['trace_manifest_sha256']:
+            raise ValueError('failed cup manifest hash changed')
+        bound=read(manifest)
+        if (bound.get('task')!=config['task'] or bound.get('episode_index')!=12
+                or bound.get('seed')!=config['expected_episode_seed']
+                or bound.get('requested_seed')!=config['expected_episode_seed']):
+            raise ValueError('failed cup manifest task/episode/seed mismatch')
+        if recorded.get('passive_force_dedup',False) is not config.get('passive_force_dedup',False):
+            raise ValueError('cost diagnosis must retain the failed controller setting')
+        if recorded.get('physx_binding',{}).get('cpu_workers')!=0:
+            raise ValueError('cost diagnosis requires the failed native workers0 setting')
+    trace = validate_trace(recorded, task=config['task'], episode_index=config['episode_index'])
     if abs(float(config['action_dt'])-trace['action_dt']) > 1e-10:
         raise ValueError('configuration action grid differs from trace')
     return output, trace
+
+
+def extended_trace(trace, config):
+    """Old comparison semantics stay fixed; new diagnosis adds at most N*45 ticks."""
+    tail=config.get('tail_hold_rows',0)
+    if not tail: return trace
+    steps=trace['steps']+tail*45 if is_cost_diagnosis(config) else len(trace['targets'])*45+tail*45
+    return dict(trace,recorded_steps=trace['steps'],steps=steps,
+                targets=trace['targets']+[trace['targets'][-1]]*tail)
 
 
 def validate_authorization(config, authorization, *, child=False):
@@ -137,7 +178,7 @@ def validate_authorization(config, authorization, *, child=False):
     return receipt, claim_path
 
 
-def snapshot_state(env, dynamic_type):
+def snapshot_state(env, dynamic_type, *, actor_names=('object','displaystand')):
     """Actual articulation state and both task actors; never drive targets."""
     import numpy as np
     fields = {}
@@ -145,7 +186,7 @@ def snapshot_state(env, dynamic_type):
         entity = getattr(env.robot, side+'_entity')
         fields[side+'_qpos'] = entity.get_qpos()
         fields[side+'_qvel'] = entity.get_qvel()
-    for name in ('object', 'displaystand'):
+    for name in actor_names:
         actor = getattr(env, name).actor; pose = actor.get_pose()
         components = [c for c in actor.get_components() if isinstance(c, dynamic_type)]
         if len(components) != 1:
@@ -291,16 +332,16 @@ def camera_free_backlog_projection(recorded_report, step_costs, dt):
 
 def run_worker(config, authorization, workers):
     output, trace = validate_config(config); receipt, _ = validate_authorization(config, authorization, child=True)
+    diagnosis=is_cost_diagnosis(config)
     recorded_steps = trace['steps']; tail = config.get('tail_hold_rows', 0)
-    if tail:
-        trace = dict(trace, recorded_steps=recorded_steps,steps=len(trace['targets'])*45+tail*45,
-                     targets=trace['targets']+[trace['targets'][-1]]*tail)
+    trace=extended_trace(trace,config)
     if workers not in config['cpu_workers']:
         raise ValueError('unrequested PhysX worker count')
     case = output/f'workers_{workers}'; case.mkdir(parents=True, exist_ok=False)
     descriptor, motion, _ = load_frozen_task(config, config['task'])[config['episode_index']]
     recorded = read(Path(config['trace_report']).parent/'manifest.json')
-    if descriptor['seed'] != 100007 or any(recorded.get(k) != v for k,v in descriptor.items()):
+    expected_seed=config['expected_episode_seed'] if diagnosis else 100007
+    if descriptor['seed'] != expected_seed or any(recorded.get(k) != v for k,v in descriptor.items()):
         raise ValueError('trace manifest differs from frozen accepted scene')
     verify_artifacts(config)
     from dynamicwam.dualrate.renderer_runtime import verify_renderer_environment
@@ -370,8 +411,9 @@ def run_worker(config, authorization, workers):
         cache = StepContactCache(env.scene, session.physics_time).install()
         bind_gil_releasing_physx_step(env, _sapien_color_reader.step_cpu_physx)
         step_costs = []
+        actor_names=('cup','coaster') if diagnosis else ('object','displaystand')
         names, states, times, rows = replay_controls(session, trace,
-            lambda:snapshot_state(env, sapien.physx.PhysxRigidDynamicComponent), deadline=deadline,
+            lambda:snapshot_state(env, sapien.physx.PhysxRigidDynamicComponent,actor_names=actor_names), deadline=deadline,
             step_costs=step_costs,passive_force_dedup=config.get('passive_force_dedup',False))
         if cache.error is not None: raise cache.error
         thread_counts['after_replay'] = process_thread_count()
@@ -389,6 +431,11 @@ def run_worker(config, authorization, workers):
             native_control_semantics='recorded_endpoint_linear_arm_native_gripper',
             cameras_submitted=0, model_calls=0, no_wall_pacing=True,
             timing_scope='native_scene_step_wall_owner_thread_and_process_CPU; control_excludes_state_snapshot')
+        if diagnosis:
+            report.update(schema=DIAGNOSIS_SCHEMA,diagnosis_mode=DIAGNOSIS_MODE,
+                state_snapshot_scope='actual_robot_articulations_and_task_cup_coaster',
+                recorded_state_parity_tested=False,tail_extension_steps=trace['steps']-recorded_steps,
+                no_score=True)
     except BaseException as exc:
         save(case/'failure.json',dict(complete=False,error=repr(exc),traceback=traceback.format_exc()))
         raise
@@ -411,18 +458,23 @@ def main(config, authorization):
         import json
         json.dump(dict(**proc_identity(os.getpid()),receipt_sha256=sha(authorization),started_unix=time.time()),handle)
     deadline = time.monotonic()+float(config['timeout_seconds']); comparisons = []; candidates = []
-    frozen_episode = Path(config['prepared'])/config['task']/'episode_0007'
+    diagnosis=is_cost_diagnosis(config)
+    frozen_episode = Path(config['prepared'])/config['task']/f"episode_{config['episode_index']:04d}"
     evidence = [dict(path=str(Path(p).resolve()),sha256=sha(p)) for p in
                 (config['trace_report'],Path(config['prepared'])/'frozen_manifest.json',
                  frozen_episode/'manifest.json',frozen_episode/'expert_motion.pkl')]
     common = dict(schema=SCHEMA, diagnostic_only=True, benchmark_acceptance=False, realtime_valid=False,
-        task=config['task'],episode_index=config['episode_index'],seed=100007,
+        task=config['task'],episode_index=config['episode_index'],seed=config['expected_episode_seed'] if diagnosis else 100007,
         source_report_sha256=config['trace_report_sha256'],frozen_manifest_sha256=config['prepared_sha256'],
-        manifest_sha256=sha(Path(config['prepared'])/config['task']/'episode_0007/manifest.json'),
-        motion_sha256=sha(Path(config['prepared'])/config['task']/'episode_0007/expert_motion.pkl'),
+        manifest_sha256=sha(frozen_episode/'manifest.json'),motion_sha256=sha(frozen_episode/'expert_motion.pkl'),
         source_sha256=receipt['identity']['source_sha256'], scripts_sha256=receipt['source']['scripts_sha256'],
         config_sha256=canonical_hash(config),gpu_uuids=config['gpu_uuids'],physics_steps=trace['steps'])
     common['parity_atol'] = float(config.get('parity_atol',1e-6))
+    if diagnosis:
+        common.update(schema=DIAGNOSIS_SCHEMA,diagnosis_mode=DIAGNOSIS_MODE,no_score=True,
+                      recorded_state_parity_tested=False)
+        manifest=Path(config['trace_report']).with_name('manifest.json')
+        evidence.append(dict(path=str(manifest),sha256=sha(manifest)))
     try:
         for workers in config['cpu_workers']:
             save(output/'status.json',dict(state='running',cpu_workers=workers,diagnostic_only=True))
@@ -446,6 +498,22 @@ def main(config, authorization):
                                    all_full_rows_within_action_dt=worst<=trace['action_dt']))
             for name in ('state_trace.npz','row_timings.json','step_timings.json','worker_report.json'):
                 evidence.append(dict(path=str(case/name),sha256=sha(case/name)))
+            if diagnosis:
+                projection=camera_free_backlog_projection(read(config['trace_report']),
+                    read(case/'step_timings.json'),trace['dt'])
+                save(output/'backlog_projection.json',projection)
+                evidence.append(dict(path=str(output/'backlog_projection.json'),sha256=sha(output/'backlog_projection.json')))
+                result=dict(common,complete=True,physics_steps=report['physics_steps'],
+                    recorded_physics_steps=trace['steps'],tail_hold_rows=config.get('tail_hold_rows',0),
+                    tail_extension_steps=report['physics_steps']-trace['steps'],
+                    state_count=report['physics_steps']+1,physx_cpu_workers=0,
+                    passive_force_dedup=config.get('passive_force_dedup',False),
+                    state_snapshot_scope=report['state_snapshot_scope'],environment_closed=True,
+                    camera_free_backlog_projection=projection,timing_summary=candidates[0],evidence=evidence,
+                    limitation='Unscored fixed-control cost diagnosis; no recorded-state parity or closed-loop acceptance claim.')
+                save(output/'diagnosis.json',result)
+                save(output/'status.json',dict(state='completed',diagnostic_only=True,no_score=True))
+                return 0
             if config.get('tail_hold_rows',0):
                 prefix = compare_state_files(config['reference_state_trace'],case/'state_trace.npz',
                     atol=0.,prefix_ticks=trace['steps']+1)
@@ -501,6 +569,11 @@ def main(config, authorization):
         save(output/'status.json',dict(state='completed',diagnostic_only=True))
         return 0
     except BaseException as exc:
+        if diagnosis:
+            save(output/'diagnosis.json',dict(common,complete=False,evidence=evidence,
+                error=repr(exc),traceback=traceback.format_exc()))
+            save(output/'status.json',dict(state='failed',diagnostic_only=True,no_score=True,error=repr(exc)))
+            raise
         save(output/'comparison.json',dict(common,passed=False,state_parity_passed=False,
             selected_candidate_passed=False,selected_physx_cpu_workers=None,comparisons=comparisons,
             candidates=candidates,evidence=evidence,error=repr(exc),traceback=traceback.format_exc()))
