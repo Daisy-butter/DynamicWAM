@@ -308,6 +308,7 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             max_physics_step_wall_gap_s=max_gap, no_skipped_physics_steps=valid,
             wall_release_gating=True, source_exposures_on_action_grid=True,
             query_requires_physics_caught_up=False,
+            camera_async_submit=bool(getattr(camera, 'async_submit', False)),
             query_freshness_time_basis='max_actual_physics_and_wall_equivalent',
             action_limit=action_limit, started_targets=last_row+1, completed_targets=completed_rows,
             generated_targets_started=generated_rows, generated_targets_completed=generated_completed,
@@ -375,6 +376,13 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             poll_result(now, tick)
             if pending is not None and camera.ready(pending):
                 completed_capture = camera.finish(pending); pending = None
+                if getattr(camera, 'async_submit', False):
+                    exposure_tick = exact_grid_index(completed_capture.physics_time_s, initial, physics_dt,
+                                                     tolerance=1e-8)
+                    render_wall = (completed_capture.render_submitted_wall_perf_s
+                                   - completed_capture.capture_wall_perf_s)
+                    next_capture_tick = max(next_capture_tick,
+                        next_grid_capture_tick(exposure_tick, capture_ticks, physics_dt, render_wall))
                 now, lag = checked_now(); max_lag = max(max_lag, lag)
             if completed_capture is not None and bridge.ready(completed_capture.finished_wall_perf_s, now):
                 c = completed_capture; completed_capture = None
@@ -425,13 +433,15 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                         render_wall = time.perf_counter()-pending.capture_wall_perf_s
                         # Persist the expensive call before enforcing backlog,
                         # so a breach retains its exposure and render partition.
-                        emit(dict(event='capture_submitted', capture_id=pending.capture_id,
+                        emit(dict(event=('capture_enqueued' if getattr(camera, 'async_submit', False)
+                                         else 'capture_submitted'), capture_id=pending.capture_id,
                                   exposure=now, exposure_tick=tick, owner_submit_wall_seconds=render_wall,
                                   submission_timing=camera_submission_timing(pending)))
                         after, lag = checked_now(); max_lag = max(max_lag, lag)
                         if after != now or pending.physics_time_s != now:
                             raise TimingError('capture advanced scene time or relabelled exposure')
-                        next_capture_tick = next_grid_capture_tick(tick, capture_ticks, physics_dt, render_wall)
+                        next_capture_tick = (tick+capture_ticks if getattr(camera, 'async_submit', False)
+                            else next_grid_capture_tick(tick, capture_ticks, physics_dt, render_wall))
                     else:
                         skip_captures += 1; next_capture_tick = tick+capture_ticks
             now, lag = checked_now(); max_lag = max(max_lag, lag)

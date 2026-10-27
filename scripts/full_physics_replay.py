@@ -76,9 +76,9 @@ def validate_config(config):
     if diagnosis:
         if (config.get('run_kind')!=MODE or config.get('cpu_workers')!=[0]
                 or config.get('task')!='place_empty_cup' or config.get('episode_index')!=12
-                or config.get('expected_episode_seed')!=100012
+                or config.get('expected_episode_seed')!=100014
                 or config.get('seed')!=100000 or config.get('episodes')!=20):
-            raise ValueError('cost diagnosis requires exact frozen cup12 seed100012 and workers0')
+            raise ValueError('cost diagnosis requires exact frozen cup12 seed100014 and workers0')
         if any(k.startswith('reference_') for k in config):
             raise ValueError('cost diagnosis cannot consume or certify old state-parity references')
     elif (config.get('run_kind') != MODE or config.get('cpu_workers') != ([0] if tail else [0, 2, 4])

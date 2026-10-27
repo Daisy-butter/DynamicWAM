@@ -66,7 +66,7 @@ def test_wait_holds_keep_final_command_without_fabricating_a_second_plan():
 
 
 def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4,
-                   camera_seconds=.012, step_seconds=0.):
+                   camera_seconds=.012, step_seconds=0., async_camera=False):
     import torch
     from dynamicwam.dualrate import full_baseline as mod
     from dynamicwam.dualrate import deployment, actuators
@@ -105,20 +105,26 @@ def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4,
         metrics_tracker=SimpleNamespace(on_step=lambda:metric_steps.append(scene.ticks)))
     class Camera:
         pending=None;counter=0
+        async_submit=async_camera
         def begin(self,env,now):
-            before=wall.t;wall.t+=camera_seconds
+            before=wall.t
+            if not async_camera:wall.t+=camera_seconds
+            done=before+camera_seconds
             self.counter+=1
             obs=dict(observation={x:dict(rgb=np.zeros((2,3,3),np.uint8)) for x in
                                   ('head_camera','left_camera','right_camera')},
                      joint_action=dict(vector=np.zeros(14,np.float32)))
             self.pending=SimpleNamespace(physics_time_s=now,capture_id=self.counter,
-                capture_wall_perf_s=before,render_submitted_wall_perf_s=wall.t,
-                readback_started_wall_perf_s=wall.t,readback_finished_wall_perf_s=wall.t,
-                finished_wall_perf_s=wall.t,camera_readback_seconds={},observation=obs)
+                capture_wall_perf_s=before,render_submitted_wall_perf_s=None if async_camera else done,
+                readback_started_wall_perf_s=done,readback_finished_wall_perf_s=done,
+                finished_wall_perf_s=done,camera_readback_seconds={},observation=obs)
             return self.pending
-        def ready(self,p):return True
+        def ready(self,p):return wall.t>=p.readback_finished_wall_perf_s
         def finish(self,p=None):
-            result=self.pending;self.pending=None;return result
+            result=self.pending;self.pending=None
+            wall.t=max(wall.t,result.readback_finished_wall_perf_s)
+            result.render_submitted_wall_perf_s=result.readback_finished_wall_perf_s
+            return result
     calls=[]
     class Policy:
         runtime=SimpleNamespace(device='cpu',num_inference_steps=10,video_refresh_steps=(0,1),chunk_size=16)
@@ -173,6 +179,21 @@ def test_actual_owner_loop_counts_waits_budget_and_never_queries_early(monkeypat
     assert not hasattr(session.env.scene, '_full_step_contact_cache')
     assert all(x['calls']==40*45 for x in report['owner_stage_timing']['totals'].values())
     assert len(report['owner_stage_timing']['recent_rows'])==4
+
+
+def test_async_capture_cadence_uses_completed_render_time_and_real_availability(monkeypatch):
+    mod,session,policy,camera,pools,calls,metrics,h=_owner_fixture(
+        monkeypatch,async_camera=True,camera_seconds=.23)
+    report=mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=40)
+    assert report['realtime_valid'] and report['camera_async_submit'] and pools[0].closed
+    enqueued=[e for e in report['events'] if e['event']=='capture_enqueued']
+    assert len(enqueued)>5
+    ticks=[e['exposure_tick'] for e in enqueued]
+    assert all(b-a==90 for a,b in zip(ticks,ticks[1:]))
+    captures=[e for e in report['events'] if e['event']=='capture']
+    assert captures and all(e['available']>=e['availability_lower_bound']-1e-7 for e in captures)
+    assert all(e['available']-e['exposure']>=.23-1e-7 for e in captures)
+    assert report['max_backlog_s']<.01 and len(calls)>1
 
 
 def test_model_error_drains_owned_worker_and_attaches_failure_evidence(monkeypatch):

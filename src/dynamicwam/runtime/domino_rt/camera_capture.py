@@ -1,6 +1,6 @@
-"""Submit the original four RGB cameras on the physics owner, read asynchronously.
+"""Freeze original camera state on the physics owner, then read asynchronously.
 
-Only already-submitted Color buffers are touched by the worker. Camera poses,
+By default, the worker only touches already-submitted Color buffers. Camera poses,
 robot state, metadata, and the simulator timestamp are frozen by ``begin`` on
 the owner thread. The caller updates ``env.now_obs`` and its flow history on
 that same owner thread, using ``CapturedObservation.physics_time_s``.
@@ -9,6 +9,11 @@ Production uses one native batch call that releases the GIL across all Color
 downloads and exact float32-to-uint8 conversion. It returns owning RGB arrays.
 The explicit float32 single-camera reader remains a reference/testing API; no
 fallback from a missing or failing native batch reader is allowed.
+
+Opt-in ``async_submit`` also runs the four sequential native take-picture calls
+on that single worker. ``_update_render`` and all metadata reads stay on owner:
+SAPIEN copies entity poses to its renderer there, before physics can resume.
+No render-state update or scene lifecycle change may overlap the worker.
 """
 from __future__ import annotations
 
@@ -36,6 +41,7 @@ class CapturedObservation:
     camera_readback_seconds: dict[str, float]
     render_update_wall_seconds: float = 0.
     camera_submit_seconds: dict[str, float] = field(default_factory=dict)
+    async_submit: bool = False
 
 
 @dataclass(frozen=True)
@@ -43,12 +49,14 @@ class PendingCapture:
     capture_id: int
     physics_time_s: float
     capture_wall_perf_s: float
-    render_submitted_wall_perf_s: float
+    # None in async mode: submission has not necessarily completed at begin().
+    render_submitted_wall_perf_s: float | None
     camera_names: tuple[str, ...]
     _metadata: dict[str, Any] = field(repr=False)
     _future: Future = field(repr=False)
     render_update_wall_seconds: float = 0.
     camera_submit_seconds: dict[str, float] = field(default_factory=dict)
+    async_submit: bool = False
 
     @property
     def done(self) -> bool:
@@ -84,7 +92,7 @@ def _read_submitted_colors(cameras: tuple[tuple[str, Any], ...],
 
 
 def _read_submitted_rgb_batch(cameras, batch_reader, clock):
-    """One native call; camera mutation and lifecycle remain on the owner."""
+    """One native call; scene lifecycle and render-state updates stay on owner."""
     started = clock()
     images, elapsed = batch_reader(tuple(camera for _, camera in cameras))
     if len(images) != len(cameras) or len(elapsed) != len(cameras):
@@ -101,6 +109,21 @@ def _read_submitted_rgb_batch(cameras, batch_reader, clock):
         rgb[name] = {"rgb": image}
         durations[name] = duration
     return rgb, started, clock(), durations
+
+
+def _submit_pictures(cameras, take_picture, clock):
+    durations = {}
+    for name, camera in cameras:
+        before = clock()
+        take_picture(camera)
+        durations[name] = clock() - before
+    return clock(), durations
+
+
+def _submit_and_read(cameras, take_picture, read_worker, reader, clock):
+    """Exclusive renderer worker; only frozen render handles, never ECS/env."""
+    submitted, submit_durations = _submit_pictures(cameras, take_picture, clock)
+    return (*read_worker(cameras, reader, clock), submitted, submit_durations)
 
 
 def validate_native_rgb_conversion(native):
@@ -138,18 +161,26 @@ class AsyncCameraCapture:
     """At most one snapshot; one reader thread; all lifecycle calls on owner.
 
     During a pending snapshot the caller may advance physics but must not call
-    ``_update_render``, ``update_picture``, or destroy the scene. ``close``
-    waits for the native reader, including after terminal events/errors.
+    ``_update_render``, ``update_picture``, change renderer parameters/entities,
+    or destroy the scene. ``close`` joins rendering and reading, including
+    after terminal events/errors. A supplied worker initializer can establish
+    the guarded renderer's thread-local CUDA device before any native call.
     """
 
     def __init__(self, *, reader: Callable[[Any], np.ndarray] | None = None,
                  batch_reader: Callable | None = None,
                  expected_camera_count: int = 4,
-                 clock: Callable[[], float] = time.perf_counter):
+                 clock: Callable[[], float] = time.perf_counter,
+                 async_submit: bool = False,
+                 worker_initializer: Callable[[], None] | None = None):
         if expected_camera_count < 1:
             raise ValueError("expected camera count must be positive")
         if reader is not None and batch_reader is not None:
             raise ValueError("choose either explicit reference reader or native batch reader")
+        if type(async_submit) is not bool:
+            raise TypeError("async_submit must be a bool")
+        if worker_initializer is not None and not callable(worker_initializer):
+            raise TypeError("worker_initializer must be callable")
         if reader is None and batch_reader is None:
             from _sapien_color_reader import read_rgb_batch
             batch_reader = read_rgb_batch
@@ -159,7 +190,9 @@ class AsyncCameraCapture:
         self._clock = clock
         self._expected_camera_count = expected_camera_count
         self._owner_thread = threading.get_ident()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="domino-color-readback")
+        self._async_submit = async_submit
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="domino-color-readback",
+                                            initializer=worker_initializer)
         self._pending: PendingCapture | None = None
         self._next_id = 0
         self._closed = False
@@ -174,6 +207,10 @@ class AsyncCameraCapture:
     @property
     def busy(self) -> bool:
         return self._pending is not None
+
+    @property
+    def async_submit(self) -> bool:
+        return self._async_submit
 
     @property
     def pending(self) -> PendingCapture | None:
@@ -204,7 +241,7 @@ class AsyncCameraCapture:
         return tuple(cameras)
 
     def begin(self, env: Any, physics_time_s: float) -> PendingCapture:
-        """Submit render and freeze its complete metadata before physics resumes."""
+        """Freeze renderer and metadata before dispatching any background work."""
         self._owner()
         if self._closed:
             raise RuntimeError("camera capture is closed")
@@ -221,11 +258,10 @@ class AsyncCameraCapture:
         # the GIL for the whole render wait. Inference workers are Python threads.
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
         camera_submit_seconds = {}
-        for name, camera in cameras:
-            before = self._clock()
-            _sapien_color_reader.take_picture(camera)
-            camera_submit_seconds[name] = self._clock() - before
-        render_submitted_wall = self._clock()
+        render_submitted_wall = None
+        if not self._async_submit:
+            render_submitted_wall, camera_submit_seconds = _submit_pictures(
+                cameras, _sapien_color_reader.take_picture, self._clock)
         observation = {
             "observation": deepcopy(env.cameras.get_config()),
             "pointcloud": [], "joint_action": {}, "endpose": {},
@@ -248,9 +284,14 @@ class AsyncCameraCapture:
             "right_arm": right[:-1], "right_gripper": right[-1],
             "vector": np.array(list(left) + list(right)),
         }
-        future = self._submit_readback(cameras)
+        if self._async_submit:
+            future = self._executor.submit(_submit_and_read, cameras,
+                _sapien_color_reader.take_picture, self._read_worker, self._reader, self._clock)
+        else:
+            future = self._submit_readback(cameras)
         pending = PendingCapture(self._next_id, timestamp, captured_wall, render_submitted_wall,
-                                 names, observation, future, render_update_wall, camera_submit_seconds)
+                                 names, observation, future, render_update_wall, camera_submit_seconds,
+                                 self._async_submit)
         self._next_id += 1
         self._pending = pending
         return pending
@@ -277,7 +318,13 @@ class AsyncCameraCapture:
         """Consume ready output on owner; timeout retains a still-running future."""
         selected = self._require(pending)
         try:
-            rgb, started, ended, durations = selected._future.result(timeout=timeout)
+            output = selected._future.result(timeout=timeout)
+            if selected.async_submit:
+                rgb, started, ended, durations, submitted, submit_durations = output
+            else:
+                rgb, started, ended, durations = output
+                submitted = selected.render_submitted_wall_perf_s
+                submit_durations = selected.camera_submit_seconds
         except BaseException:
             # A timeout must not allow another rendering submission while
             # the reader still owns the previous submitted frame.
@@ -289,9 +336,10 @@ class AsyncCameraCapture:
             observation["observation"][name].update(rgb[name])
         self._pending = None
         return CapturedObservation(observation, selected.physics_time_s,
-                                   selected.capture_wall_perf_s, selected.render_submitted_wall_perf_s,
+                                   selected.capture_wall_perf_s, submitted,
                                    started, ended, self._clock(), selected.camera_names, durations,
-                                   selected.render_update_wall_seconds, dict(selected.camera_submit_seconds))
+                                   selected.render_update_wall_seconds, dict(submit_durations),
+                                   selected.async_submit)
 
     def drain(self, *, timeout: float | None = None) -> CapturedObservation | None:
         """Wait/consume before terminal teardown; never submits another render."""
@@ -299,7 +347,7 @@ class AsyncCameraCapture:
         return None if self._pending is None else self.finish(timeout=timeout)
 
     def close(self) -> None:
-        """Always join outstanding native reads before scene/environment release."""
+        """Join native submission/reads before scene/environment release."""
         self._owner()
         if self._closed:
             return

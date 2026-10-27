@@ -70,9 +70,9 @@ class CostDiagnosisTests(unittest.TestCase):
         path=storage/'failed'/'report.json'
         replay.save(path,trace)
         manifest=path.with_name('manifest.json')
-        replay.save(manifest,dict(task='place_empty_cup',episode_index=12,seed=100012,requested_seed=100012))
+        replay.save(manifest,dict(task='place_empty_cup',episode_index=12,seed=100014,requested_seed=100014))
         return dict(run_kind=replay.MODE,diagnosis_mode=replay.DIAGNOSIS_MODE,cpu_workers=[0],
-            task='place_empty_cup',episode_index=12,expected_episode_seed=100012,
+            task='place_empty_cup',episode_index=12,expected_episode_seed=100014,
             seed=100000,episodes=20,timeout_seconds=100,tail_hold_rows=10,passive_force_dedup=True,
             gpu_uuids=['GPU-fixture'],storage_root=str(storage),output=str(storage/'diagnosis'),
             trace_report=str(path),trace_report_sha256=replay.sha(path),
