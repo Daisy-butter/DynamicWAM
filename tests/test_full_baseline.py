@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import pytest
 
-from dynamicwam.dualrate.full_baseline import FullChunkSchedule
+from dynamicwam.dualrate.full_baseline import FullChunkSchedule, query_observation_timing
 
 
 def plan(offset=0.):
@@ -65,7 +65,8 @@ def test_wait_holds_keep_final_command_without_fabricating_a_second_plan():
         np.testing.assert_array_equal(action,plan()[-1])
 
 
-def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4):
+def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4,
+                   camera_seconds=.012, step_seconds=0.):
     import torch
     from dynamicwam.dualrate import full_baseline as mod
     from dynamicwam.dualrate import deployment, actuators
@@ -93,7 +94,7 @@ def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4):
         def set_gripper(self,*args):pass
     class Scene:
         ticks=0
-        def step(self):self.ticks+=1
+        def step(self):self.ticks+=1;wall.t+=step_seconds
     scene=Scene()
     env=SimpleNamespace(robot=Robot(),scene=scene,take_action_cnt=0,
                         _update_kinematic_tasks=lambda:None,_update_transient_checks=lambda:None)
@@ -104,7 +105,7 @@ def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4):
     class Camera:
         pending=None;counter=0
         def begin(self,env,now):
-            before=wall.t;wall.t+=.012
+            before=wall.t;wall.t+=camera_seconds
             self.counter+=1
             obs=dict(observation={x:dict(rgb=np.zeros((2,3,3),np.uint8)) for x in
                                   ('head_camera','left_camera','right_camera')},
@@ -178,6 +179,46 @@ def test_model_error_drains_owned_worker_and_attaches_failure_evidence(monkeypat
     assert not caught.value.dualrate_report['realtime_valid']
     assert caught.value.dualrate_report['stop_reason']=='infrastructure_error'
     assert any(e['event']=='full_query_started' for e in caught.value.dualrate_events)
+
+
+@pytest.mark.parametrize('physical,wall_age,fresh', [(.12,.18,True),(.12,.244,False)])
+def test_full_query_uses_wall_age_even_when_physical_clock_is_behind(physical, wall_age, fresh):
+    from dynamicwam.dualrate.physical_clock import WallPhysicsBridge
+    bridge=WallPhysicsBridge(float(np.float32(.004)),wall_clock=lambda:100.+wall_age)
+    bridge.activate(0.,100.)
+    assert not bridge.caught_up(physical)
+    accepted,timing=query_observation_timing(bridge,physical_now=physical,
+        request_wall=100.+wall_age,exposure=0.,max_observation_age=.24)
+    assert accepted is fresh
+    assert timing['query_time']==physical and timing['request_wall_time']==100.+wall_age
+    assert timing['observation_physical_age']==physical
+    assert timing['observation_wall_age']==pytest.approx(wall_age)
+    assert timing['observation_time']==0.
+
+
+def test_full_query_accepts_nominal_60_actual_ticks_but_not_61():
+    from dynamicwam.dualrate.physical_clock import WallPhysicsBridge
+    h=float(np.float32(.004));bridge=WallPhysicsBridge(h)
+    bridge.activate(0.,100.)
+    for ticks,expected in [(60,True),(61,False)]:
+        accepted,_=query_observation_timing(bridge,physical_now=ticks*h,
+            request_wall=100.+ticks*h,exposure=0.,max_observation_age=.24)
+        assert accepted is expected
+
+
+def test_owner_dispatches_full_after_complete_chunk_while_physics_catches_up(monkeypatch):
+    mod,session,policy,camera,pools,calls,metrics,h=_owner_fixture(
+        monkeypatch,camera_seconds=.1,step_seconds=.002)
+    report=mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=40)
+    queries=[e for e in report['events'] if e['event']=='full_query_started']
+    assert queries and all(e['observation_age']<=.2400001 for e in queries)
+    assert any(e['query_wall_equivalent_time']-e['query_time']>h+1e-7 for e in queries)
+    assert calls[1]>=18*45  # Two startup holds followed by all 16 model rows.
+    installed=[e for e in report['events'] if e['event']=='full_plan_installed']
+    assert installed and all(e['publication_time']>=e['wall_release_lower_bound']-1e-7 for e in installed)
+    assert all(e['installation_time']>=e['publication_time']-1e-7 for e in installed)
+    assert report['query_requires_physics_caught_up'] is False
+    assert pools[0].closed and camera.pending is None
 
 
 @pytest.mark.parametrize('timeout', [False, True])

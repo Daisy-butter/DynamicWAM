@@ -7,6 +7,7 @@ all device handles and descendant cleanup throughout both jobs.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import signal
@@ -19,6 +20,7 @@ import guarded_dualrate_run as guard
 from full_baseline_worker import ROOT, canonical_hash, proc_identity, read, save, sha
 
 INITIAL_SECONDS = 300.
+LIVENESS_CONTRACT = 'full_sync16_fresh_dispatch_within_3rows_v1'
 DIFFERING_FIELDS = {'stage', 'tasks', 'episodes', 'output', 'result_stamp',
     'acceptance_receipt', 'acceptance_receipt_sha256', 'sequence_id',
     'task_timeout_seconds', 'cohort_timeout_seconds'}
@@ -78,6 +80,91 @@ def require_clean_guard(directory, config, source):
         'kernel_after.json', 'source.json', 'config.frozen.json', 'authorization.json', 'guard_events.json')]
 
 
+def audit_full_liveness(report, config):
+    """A usable published observation must cause dispatch, not endless wait holds.
+
+    This is an acceptance bound, not a relaxed runtime deadline: three action
+    rows allow more than the .25s maximum physical backlog. Normal Full model
+    inference is excluded; only idle time after the previous A16 ends is tested.
+    Both physical and wall-equivalent observation ages must be valid.
+    """
+    dt = float(config['action_dt']); tolerance = 1e-7
+    bound = 3*dt; max_age = float(config['max_observation_age'])
+    query_timeout = float(config.get('model_query_timeout_s', 30.))
+    events = report.get('events', [])
+    activation = [e for e in events if e.get('event') == 'activation']
+    bootstrap = [e for e in events if e.get('event') == 'full_bootstrap_plan']
+    if len(activation) != 1 or len(bootstrap) != 1 or bootstrap[0].get('rows') != 16:
+        raise ValueError('liveness requires one activation and complete bootstrap A16')
+    origin = float(activation[0]['physical_time'])
+    terminal = origin+float(report['physical_duration'])
+    bootstrap_end = origin+(int(bootstrap[0]['install_row'])+16)*dt
+    block_end = bootstrap_end
+    latest = None; pending = None; fresh_since = None
+    queries = installs = 0; max_wait = 0.; fresh_opportunities = 0
+    last_time = origin
+    for event in events:
+        if event.get('post_terminal'):
+            continue
+        kind = event.get('event')
+        clock = event.get('clock_pair')
+        if not clock or not clock.get('active'):
+            continue
+        now = float(clock['physical_time']); wall_now = float(clock['expected_physical_time'])
+        if not all(math.isfinite(v) for v in (now, wall_now)) or now < last_time-tolerance:
+            raise ValueError('liveness event clocks are invalid or reordered')
+        last_time = now
+        if fresh_since is not None:
+            max_wait = max(max_wait, now-fresh_since)
+            if now-fresh_since > bound+tolerance:
+                raise ValueError('Full query starvation: fresh observation available for more than three rows')
+        if kind == 'capture':
+            latest = (float(event['exposure']), float(event['available']))
+        elif kind == 'full_query_started':
+            if pending is not None or now < block_end-tolerance:
+                raise ValueError('Full query is overlapping or precedes complete A16 execution')
+            if any(not -tolerance <= float(event[key]) <= max_age+tolerance
+                   for key in ('observation_physical_age', 'observation_wall_age')):
+                raise ValueError('Full query used an observation stale in physical or wall time')
+            pending = (event['query_id'], now)
+            queries += 1; fresh_since = None
+        elif kind == 'full_plan_installed':
+            if pending is None or event['query_id'] != pending[0] or event.get('rows') != 16:
+                raise ValueError('Full installation has no matching A16 query')
+            installs += 1; pending = None; fresh_since = None
+            block_end = float(event['execution_end_time'])
+            if block_end <= now:
+                raise ValueError('Full installed plan has no future execution support')
+        if pending is None and now >= block_end-tolerance and latest is not None:
+            exposure, available = latest
+            physical_age, wall_age = now-exposure, wall_now-exposure
+            if (available <= now+tolerance and -tolerance <= physical_age <= max_age+tolerance
+                    and -tolerance <= wall_age <= max_age+tolerance and fresh_since is None):
+                fresh_since = now; fresh_opportunities += 1
+    if fresh_since is not None:
+        max_wait = max(max_wait, terminal-fresh_since)
+        if terminal-fresh_since > bound+tolerance:
+            raise ValueError('Full query starvation continued to episode termination')
+    if pending is not None and terminal-pending[1] > query_timeout+tolerance:
+        raise ValueError('Full query failed to install within its bounded model timeout')
+    if terminal > bootstrap_end+query_timeout+bound and installs == 0:
+        raise ValueError('long Full episode never installed a nonbootstrap plan')
+    if report.get('inference_calls') != queries+1:
+        raise ValueError('Full inference call count differs from recorded query events')
+    return dict(contract=LIVENESS_CONTRACT, passed=True, nonbootstrap_queries=queries,
+        nonbootstrap_installs=installs, bootstrap_end_time=bootstrap_end, terminal_time=terminal,
+        fresh_opportunities=fresh_opportunities, max_fresh_dispatch_wait_seconds=max_wait,
+        dispatch_bound_seconds=bound, short_episode=terminal <= bootstrap_end+tolerance)
+
+
+def audit_task_liveness(reports, config):
+    audits = [audit_full_liveness(report, config) for report in reports]
+    if (any(not row['short_episode'] for row in audits)
+            and not any(row['nonbootstrap_queries'] for row in audits)):
+        raise ValueError('smoke task exceeded initial held2+A16 but never issued a subsequent query')
+    return audits
+
+
 def make_acceptance(smoke, smoke_guard, source, destination):
     from full_baseline_suite import audit_task
     from video_artifacts import probe_head_video
@@ -91,9 +178,10 @@ def make_acceptance(smoke, smoke_guard, source, destination):
             or completed.get('source') != source):
         raise ValueError('actual eight-GPU sixteen-episode smoke is incomplete')
     evidence.append(completed_path)
-    decoded = []
+    decoded = []; liveness = {}
     for task in smoke['tasks']:
         reports, _ = audit_task(smoke, task)
+        liveness[task] = audit_task_liveness(reports, smoke)
         for report in reports:
             # Re-decode outside all active episodes; retain the independent receipt.
             probe = probe_head_video(Path(report['video']))
@@ -107,9 +195,13 @@ def make_acceptance(smoke, smoke_guard, source, destination):
     decode_path = Path(destination).with_name('smoke_video_decode.json')
     save(decode_path, dict(passed=True, count=16, decoded=decoded))
     evidence.append(decode_path)
+    liveness_path = Path(destination).with_name('smoke_liveness.json')
+    save(liveness_path, dict(passed=True, contract=LIVENESS_CONTRACT, tasks=liveness))
+    evidence.append(liveness_path)
     receipt = dict(passed=True, source_contract=guard.source_contract(source),
         benchmark_contract=smoke['benchmark_contract'], checkpoint_sha256=smoke['checkpoint_sha256'],
         world_size=8, complete_smoke_episodes=16, native_mp4_full_decode=True,
+        full_query_liveness_passed=True, liveness_contract=LIVENESS_CONTRACT,
         clean_worker_exit=True, guard_closed=True, kernel_unchanged=True,
         evidence=[dict(path=str(p.resolve()), sha256=sha(p)) for p in evidence])
     save(destination, receipt)
@@ -181,6 +273,8 @@ def observe_initial(config, directory, destination, timeout):
             snapshot = initial_snapshot(config, directory)
             if snapshot is not None:
                 reports = [checked_episode(config, task, 0)[0] for task in config['tasks'][:8]]
+                liveness = {task: audit_task_liveness([report], config)
+                    for task, report in zip(config['tasks'][:8], reports)}
                 before = read(Path(directory)/'kernel_before.json')
                 if (guard.base.kernel_evidence() != before['lines'] or
                         Path('/proc/sys/kernel/random/boot_id').read_text().strip() != before['boot_id']):
@@ -195,6 +289,7 @@ def observe_initial(config, directory, destination, timeout):
                 receipt = dict(snapshot, passed=True, initial_only=True, no_retry=True,
                     observer_exits_now=True, formal_complete=False, kernel_unchanged=True,
                     validated_first_episodes=len(reports), source_contract=guard.source_contract(source),
+                    full_query_liveness_passed=True, liveness=liveness,
                     first_report_hashes=[dict(path=p, sha256=sha(p)) for p in snapshot['first_reports']])
                 save(destination, receipt)
                 return receipt

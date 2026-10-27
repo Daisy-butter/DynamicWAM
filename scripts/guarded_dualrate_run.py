@@ -58,6 +58,8 @@ def validate_acceptance(config, source):
         if (receipt.get('passed') is not True or receipt.get('source_contract')!=source_contract(source)
                 or receipt.get('benchmark_contract')!=config['benchmark_contract']
                 or receipt.get('checkpoint_sha256')!=config['init_checkpoint_sha256']
+                or receipt.get('full_query_liveness_passed') is not True
+                or receipt.get('liveness_contract')!='full_sync16_fresh_dispatch_within_3rows_v1'
                 or receipt.get('world_size')!=8 or receipt.get('complete_smoke_episodes',0)<16):
             raise ValueError('formal Full baseline requires same-source eight-GPU full-episode acceptance')
         for row in receipt.get('evidence',[]):

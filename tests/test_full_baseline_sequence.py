@@ -100,6 +100,72 @@ class SequenceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'terminated'):
                 sequence.initial_snapshot({}, path)
 
+    def liveness_fixture(self, terminal=6.):
+        config = dict(action_dt=.18, max_observation_age=.24, model_query_timeout_s=30.)
+        events = [dict(event='full_bootstrap_plan', rows=16, install_row=2),
+                  dict(event='activation', physical_time=0.)]
+        return config, dict(events=events, physical_duration=terminal, inference_calls=1)
+
+    @staticmethod
+    def event(kind, now, **extra):
+        return dict(event=kind, clock_pair=dict(active=True, physical_time=now,
+                    expected_physical_time=now+.02), **extra)
+
+    def test_liveness_normal_full_query_and_install_pass(self):
+        config, report = self.liveness_fixture()
+        report['events'] += [self.event('capture', 3.24, exposure=3.06, available=3.24),
+            self.event('full_query_started', 3.244, query_id=1,
+                observation_physical_age=.184, observation_wall_age=.204),
+            self.event('full_plan_installed', 3.50, query_id=1, rows=16, execution_end_time=6.48)]
+        report['inference_calls'] = 2
+        audit = sequence.audit_task_liveness([report], config)[0]
+        self.assertEqual(audit['nonbootstrap_installs'], 1)
+        self.assertLess(audit['max_fresh_dispatch_wait_seconds'], .01)
+
+    def test_fresh_frames_with_no_dispatch_cannot_pass_valid_episode(self):
+        config, report = self.liveness_fixture(120.)
+        report['events'] += [self.event('capture', 3.24+.18*i, exposure=3.06+.18*i,
+                                      available=3.24+.18*i) for i in range(8)]
+        with self.assertRaisesRegex(ValueError, 'starvation'):
+            sequence.audit_task_liveness([report], config)
+
+    def test_model_inference_wait_is_not_dispatch_starvation(self):
+        config, report = self.liveness_fixture(8.)
+        report['events'] += [self.event('capture', 3.24, exposure=3.06, available=3.24),
+            self.event('full_query_started', 3.244, query_id=1,
+                observation_physical_age=.184, observation_wall_age=.204),
+            self.event('capture', 7., exposure=6.84, available=7.)]
+        report['inference_calls'] = 2
+        self.assertTrue(sequence.audit_task_liveness([report], config)[0]['passed'])
+
+    def test_wall_stale_capture_not_counted_as_fresh_opportunity(self):
+        config, report = self.liveness_fixture(3.8)
+        event = self.event('capture', 3.24, exposure=3.06, available=3.24)
+        event['clock_pair']['expected_physical_time'] = 3.50
+        report['events'].append(event)
+        audit = sequence.audit_full_liveness(report, config)
+        self.assertEqual(audit['fresh_opportunities'], 0)
+        with self.assertRaisesRegex(ValueError, 'never issued'):
+            sequence.audit_task_liveness([report], config)
+
+    def test_short_episode_can_end_before_next_query(self):
+        config, report = self.liveness_fixture(2.)
+        self.assertTrue(sequence.audit_task_liveness([report], config)[0]['short_episode'])
+
+    def test_pre_liveness_smoke_receipt_cannot_launch_formal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            receipt_path = Path(temp)/'acceptance.json'
+            source = {key: key for key in ('source_sha256', 'guard_sha256', 'supervisor_sha256',
+                'distributed_supervisor_sha256', 'scripts_sha256')}
+            sequence.save(receipt_path, dict(passed=True, source_contract=source,
+                benchmark_contract={'dt': .18}, checkpoint_sha256='official', world_size=8,
+                complete_smoke_episodes=16, evidence=[dict(path='/unused', sha256='unused')]))
+            config = dict(run_kind='full_baseline_suite', stage='formal', acceptance_receipt=str(receipt_path),
+                acceptance_receipt_sha256=sequence.sha(receipt_path), benchmark_contract={'dt': .18},
+                init_checkpoint_sha256='official')
+            with self.assertRaisesRegex(ValueError, 'same-source'):
+                sequence.guard.validate_acceptance(config, source)
+
 
 if __name__ == '__main__':
     unittest.main()

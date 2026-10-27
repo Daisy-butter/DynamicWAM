@@ -14,7 +14,25 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-PROTOCOL = 'continuous_full_sync16_v4_grid180_linear_bootstrap_v1'
+PROTOCOL = 'continuous_full_sync16_v4_grid180_linear_bootstrap_v2'
+
+
+def query_observation_timing(bridge, *, physical_now, request_wall, exposure,
+                             max_observation_age):
+    """Check source freshness in both clocks without relabelling either one."""
+    wall_equivalent = bridge.expected_physics(request_wall)
+    physical_age = physical_now-exposure
+    wall_age = wall_equivalent-exposure
+    age = max(physical_age, wall_age)
+    # A sub-tick numerical tolerance includes 60 actual float32(.004) ticks
+    # at a nominal .24 s boundary; it does not grant another physical tick.
+    fresh = (0 <= physical_age and
+             age <= max_observation_age+bridge.numeric_tolerance)
+    return fresh, dict(query_time=physical_now, request_wall_time=request_wall,
+        query_wall_equivalent_time=wall_equivalent, observation_time=exposure,
+        observation_physical_age=physical_age, observation_wall_age=wall_age,
+        observation_age=age, max_observation_age=max_observation_age,
+        freshness_time_basis='max_actual_physics_and_wall_equivalent')
 
 
 class FullChunkSchedule:
@@ -232,6 +250,8 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             physics_steps=physics_steps, physics_step_seconds=physics_dt,
             max_physics_step_wall_gap_s=max_gap, no_skipped_physics_steps=valid,
             wall_release_gating=True, source_exposures_on_action_grid=True,
+            query_requires_physics_caught_up=False,
+            query_freshness_time_basis='max_actual_physics_and_wall_equivalent',
             action_limit=action_limit, started_targets=last_row+1, completed_targets=completed_rows,
             generated_targets_started=generated_rows, generated_targets_completed=generated_completed,
             hold_rows_started=hold_rows, holds_consume_action_budget=True,
@@ -294,25 +314,32 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                           timing=capture_timing(c, owner_processed_wall=time.perf_counter())))
             now, lag = checked_now(); max_lag = max(max_lag, lag)
             tick = exact_grid_index(now, initial, physics_dt, tolerance=1e-8)
+            # Full has no RTC protected-prefix deadline. Once its complete
+            # chunk has executed, a published fresh image can start inference
+            # while physics catches up. Camera submissions still wait below;
+            # model outputs still cross the wall/physics release gate.
+            if schedule.can_query(tick):
+                snapshot = history.snapshot(now)
+                fresh, query_timing = query_observation_timing(bridge,
+                    physical_now=now, request_wall=time.perf_counter(),
+                    exposure=snapshot[-1].exposure, max_observation_age=max_observation_age)
+                if fresh:
+                    query_id = schedule.begin_query(tick)
+                    query_request = dict(query_id=query_id,
+                        observation_available=snapshot[-1].available, **query_timing)
+                    emit(dict(event='full_query_started', **query_request))
+                    if deferred_since is not None:
+                        emit(dict(event='query_resumed', physical_time=now,
+                                  deferred_seconds=now-deferred_since, **query_timing))
+                        deferred_since = None
+                    future = pool.submit(infer, snapshot, query_id); queries += 1
+                elif deferred_since is None:
+                    deferred_since = now
+                    emit(dict(event='query_deferred', physical_time=now, **query_timing,
+                              observation_available=snapshot[-1].available,
+                              reason='no_fresh_completed_capture'))
+            now, lag = checked_now(); max_lag = max(max_lag, lag)
             if bridge.caught_up(now):
-                if schedule.can_query(tick):
-                    snapshot = history.snapshot(now); age = now-snapshot[-1].exposure
-                    if 0 <= age <= max_observation_age+1e-8:
-                        query_id = schedule.begin_query(tick)
-                        query_request = dict(query_id=query_id, query_time=now,
-                            observation_time=snapshot[-1].exposure,
-                            observation_available=snapshot[-1].available,
-                            observation_age=age, request_wall_time=time.perf_counter())
-                        emit(dict(event='full_query_started', **query_request))
-                        if deferred_since is not None:
-                            emit(dict(event='query_resumed', physical_time=now,
-                                      deferred_seconds=now-deferred_since)); deferred_since = None
-                        future = pool.submit(infer, snapshot, query_id); queries += 1
-                    elif deferred_since is None:
-                        deferred_since = now
-                        emit(dict(event='query_deferred', physical_time=now,
-                                  observation_time=snapshot[-1].exposure, observation_age=age,
-                                  reason='no_fresh_completed_capture'))
                 now, lag = checked_now(); max_lag = max(max_lag, lag)
                 tick = exact_grid_index(now, initial, physics_dt, tolerance=1e-8)
                 if tick >= next_capture_tick and tick % capture_ticks == 0:
