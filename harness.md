@@ -1,3 +1,19 @@
+# Current authorization: post-training V4 evaluation, 2026-10-27
+
+This isolated .92 branch runs an independent one-shot script after the protected
+V4 training sequence finishes. Never change or signal the live training tree.
+Keep model/data/queue/sampling Python identical to training commit775c8e2.
+Only executor same-step contact caching and inactive cohort/failure hooks differ.
+Final phase20000/global31000, all8 strict restore, checkpoint hashes, closed
+training guards and exited controller are mandatory before any GPU preflight.
+Wait CPU-only at60s intervals, max48h. Run2x3GPU smoke4 complete episodes, then
+35x20 frozen700 scenes. Match Full external benchmark45ticks/1x/linear/2holds/
+globalrowbudgets/camera.24/backlog.25. Last2GPUs remain compute-idle.
+No retries, hardware recovery, fallback weights or edits after controller launch.
+Independent detached controller owns guards; the chat need not remain open.
+All outputs are on SSD under outputs/diagnostics/dualrate_posttrain_eval_20261027.
+
+---
 ## 当前任务优先约束：.92 DualRate 硬时序 V4（2026-10-26）
 
 用户明确授权完整修复墙钟/物理钟、观测与动作队列时序，安全退出旧训练，从官方 DynamicWAM_full.pt 重新开始全部三个阶段。只修改独立 worktree dualrate-hardtime-v4-20261026；保留旧正式权重和退出证据。.50/.100 不修改。共同实现契约见 docs/hardtime_v4_contract_20261026.md。

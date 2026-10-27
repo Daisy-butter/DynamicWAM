@@ -9,6 +9,7 @@ from .runtime import DualRateRuntime
 from .online import ObservationHistory
 from .actuators import ActuatorProjection
 from .physical_clock import WallPhysicsBridge
+from .contact_cache import StepContactCache
 
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
@@ -175,7 +176,7 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 
 def run_episode(session, system, builder, camera, runtime_config, *, action_limit,
                 frame_period=None, max_backlog=.25, record=None, seed=0, video=None,
-                camera_warmup_captures=3):
+                camera_warmup_captures=3, on_ready=None, on_failure=None):
     """One owner thread steps 250 Hz physics; two workers preprocess and infer.
 
     Initial reference and fast plan are established before activation, explicitly
@@ -190,9 +191,12 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     frame_period=runtime_config.action_dt if frame_period is None else float(frame_period)
     if action_limit<1 or frame_period<=0 or max_backlog<=0:
         raise ValueError('invalid bounded deployment limits')
-    events=[];bridge=None;owner_thread=threading.get_ident()
+    events=[];bridge=None;owner_thread=threading.get_ident();post_terminal=False
+    contact_cache=None;main_error=None
     def emit(event):
-        if bridge is not None and bridge.active:
+        if post_terminal:
+            event=dict(event,post_terminal=True)
+        elif bridge is not None and bridge.active:
             if threading.get_ident()==owner_thread:
                 event=dict(event,clock_pair=bridge.snapshot(clock()))
             else:
@@ -215,7 +219,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=WallPhysicsBridge(dt)
+    bridge=WallPhysicsBridge(dt,wall_clock=time.perf_counter)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
@@ -251,6 +255,10 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         graph_acceptance=runtime.fast_graph_receipt()
         if runtime_config.fast_cuda_graph and not (graph_acceptance.get('passed') and graph_acceptance.get('sealed')):
             raise TimingError('fast CUDA Graph must pass and seal before activation')
+        # Shared executor optimization: unchanged checks on every real physics
+        # step, one native contact snapshot reused by read-only consumers.
+        contact_cache=StepContactCache(session.env.scene,clock).install()
+        if on_ready is not None:on_ready()
         bootstrap_seconds=time.perf_counter()-bootstrap_started
         wall0=time.perf_counter();bridge.activate(initial,wall0)
         emit(dict(event='activation',physics_time=initial,wall_time=wall0,bootstrap_wall_seconds=bootstrap_seconds,
@@ -347,6 +355,9 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             if (row_complete or terminal is not None) and metrics_row<row:
                 if session.metrics_tracker is not None:session.metrics_tracker.on_step()
                 metrics_row=row
+            if contact_cache.error is not None:
+                # Native best-effort metrics must not swallow infrastructure failures.
+                raise contact_cache.error
         inflight=False;fast_during_slow=0
         for event in events:
             if event['event']=='activation':inflight=False
@@ -367,15 +378,28 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             reference_versions_consumed=sorted(seen_references),events=events,
             executable_action_source='fast_only',on_policy_training_distribution=False,
             fast_graph_acceptance=runtime.fast_graph_receipt(),
+            contact_cache=contact_cache.statistics(),
             **model_overlap_statistics(events))
         return report
     except BaseException as exc:
+        main_error=exc
         exc.dualrate_events=events
+        exc.dualrate_report=dict(protocol=PROTOCOL,time_contract=builder.manifest['time_contract'],
+            realtime_valid=False,continuous_valid=False,success=False,
+            error=f'{type(exc).__name__}: {exc}',events=events)
+        if on_failure is not None:
+            try:on_failure(exc)
+            except BaseException as callback_exc:
+                emit(dict(event='failure_callback_error',error=f'{type(callback_exc).__name__}: {callback_exc}'))
         raise
     finally:
         # Stop the episode clock before draining unfinished CPU/GPU/readback work.
+        post_terminal=True;cleanup_errors=[]
         try:
             if runtime is not None:runtime.close()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
             if pending is not None:
                 c=camera.finish(pending)
                 if video:video.append(c.observation['observation']['head_camera']['rgb'],
@@ -385,6 +409,17 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 video.append(c.observation['observation']['head_camera']['rgb'],
                     physics_time_s=c.physics_time_s,capture_wall_perf_s=c.capture_wall_perf_s)
         except BaseException as exc:
-            exc.dualrate_events=events
-            raise
+            cleanup_errors.append(exc)
+        try:
+            if contact_cache is not None:contact_cache.close()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        emit(dict(event='episode_workers_closed',
+            cleanup_errors=[f'{type(e).__name__}: {e}' for e in cleanup_errors],
+            contact_cache_restored=contact_cache is None or not contact_cache.installed))
+        if cleanup_errors and main_error is None:
+            exc=cleanup_errors[0];exc.dualrate_events=events
+            raise exc
+        if cleanup_errors and main_error is not None:
+            main_error.dualrate_cleanup_errors=[f'{type(e).__name__}: {e}' for e in cleanup_errors]
 

@@ -318,8 +318,9 @@ class DominoLevel1Session:
         if not getattr(self.env, "use_dynamic", False):
             return
         if (
-            _strict_gripper_contact(self.env)
-            and self.stop_on_contact
+            self.stop_on_contact
+            and not getattr(self.env, "_dynamic_object_stopped", False)
+            and _strict_gripper_contact(self.env)
         ):
             _strict_stop_dynamic_motion(self.env)
         if not getattr(self.env, "_dynamic_object_stopped", False):

@@ -19,7 +19,7 @@ import time
 import guarded_dualrate_smoke as base
 
 TRAIN_MODES = {"distributed_training_smoke", "formal_distributed_training"}
-MODES = TRAIN_MODES | {"domino_deployment_smoke"}
+MODES = TRAIN_MODES | {"domino_deployment_smoke", "dualrate_eval_suite"}
 OPERATIONAL_FIELDS = {"run_kind", "output", "steps", "sequence_id", "acceptance_receipt",
     "acceptance_receipt_sha256", "stage_init_checkpoint", "stage_init_checkpoint_sha256", "resume"}
 
@@ -46,6 +46,34 @@ def read_json(path):
 
 
 def validate_acceptance(config, source):
+    if config['run_kind'] == 'dualrate_eval_suite':
+        if config.get('stage') == 'smoke':
+            return None
+        if config.get('stage') != 'formal':
+            raise ValueError('evaluation requires explicit smoke/formal stage')
+        path = Path(config['acceptance_receipt']).resolve(strict=True)
+        if base.file_sha256(path) != config['acceptance_receipt_sha256']:
+            raise ValueError('evaluation acceptance changed')
+        receipt = read_json(path)
+        deployment = receipt.get('deployment_acceptance', {})
+        if (receipt.get('passed') is not True or receipt.get('source_contract') != source_contract(source)
+                or receipt.get('checkpoint_sha256') != config['checkpoint_sha256']
+                or receipt.get('benchmark_contract') != config['benchmark_contract']
+                or receipt.get('world_size') != 8 or receipt.get('complete_smoke_episodes') != 4
+                or receipt.get('native_mp4_full_decode') is not True
+                or receipt.get('hardtime_acceptance_passed') is not True
+                or deployment.get('passed') is not True
+                or deployment.get('fast_graph_passed') is not True
+                or deployment.get('fast_queries_during_slow', 0) <= 0
+                or deployment.get('model_overlap_fast_queries', 0) <= 0
+                or deployment.get('refreshed_reference_consumed') is not True):
+            raise ValueError('formal eval requires final-checkpoint, same-source four-episode acceptance')
+        if not receipt.get('evidence'):
+            raise ValueError('evaluation smoke evidence missing')
+        for row in receipt['evidence']:
+            if base.file_sha256(Path(row['path']).resolve(strict=True)) != row['sha256']:
+                raise ValueError('evaluation smoke evidence changed')
+        return receipt
     if config["run_kind"] != "formal_distributed_training":
         return None
     path = Path(config["acceptance_receipt"]).resolve(strict=True)
@@ -75,7 +103,7 @@ def selected_uuids(value, devices, mode):
     if not selected or len(set(selected)) != len(selected) or any(
             re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", u) is None or u not in devices for u in selected):
         raise ValueError("distinct exact inventory GPU UUIDs required")
-    if mode in TRAIN_MODES and (len(selected) != 8 or set(selected) != set(devices)):
+    if mode in TRAIN_MODES | {'dualrate_eval_suite'} and (len(selected) != 8 or set(selected) != set(devices)):
         raise ValueError("training requires exactly all eight adapters; no single-rank substitute")
     if mode == "domino_deployment_smoke" and len(selected) not in (1, 2, 3):
         raise ValueError("deployment smoke requires one to three explicitly pinned GPUs")
@@ -85,6 +113,9 @@ def selected_uuids(value, devices, mode):
 def worker_command(repo, config, frozen, authorization, resume=None):
     mode = config["run_kind"]
     common = ["--config", str(frozen), "--device", "cuda", "--authorization", str(authorization)]
+    if mode == 'dualrate_eval_suite':
+        return [sys.executable, str(repo/'scripts/dualrate_eval_suite.py'),
+                '--config', str(frozen), '--authorization', str(authorization)]
     if mode in TRAIN_MODES:
         if config.get("world_size") != 8:
             raise ValueError("configuration must explicitly require world_size=8")
@@ -171,10 +202,12 @@ def supervise(args, repo, out):
         if base.kernel_evidence() != before:
             raise RuntimeError("new driver evidence during initial telemetry")
         env = base.worker_environment(repo, out, ",".join(selected), binding, config=config)
-        if mode == "domino_deployment_smoke":
+        if mode in {"domino_deployment_smoke", "dualrate_eval_suite"}:
+            render_config = dict(config, run_kind='domino_deployment_smoke')
+            env.update(base.renderer_helpers().renderer_environment(render_config, env))
             base.atomic(out / "renderer_runtime_before.json", config["renderer_runtime"])
             base.atomic(out / "renderer_environment.json",
-                        base.renderer_helpers().verify_renderer_environment(config, env))
+                        base.renderer_helpers().verify_renderer_environment(render_config, env))
         env.pop("WORLD_SIZE", None)
         # Native communication settings: no driver/P2P recovery flags or retries.
         env.update(TORCH_NCCL_ASYNC_ERROR_HANDLING="1", TORCH_DISTRIBUTED_DEBUG="OFF")
@@ -187,7 +220,7 @@ def supervise(args, repo, out):
         if frozen_source(repo) != source or base.canonical_hash(read_json(args.config)) != identity["config_sha256"]:
             raise RuntimeError("source/config changed during preflight")
         receipt = dict(mode=mode, authorized=True, identity=identity, storage_root=str(storage),
-            cuda_visible_devices=",".join(selected), gpu_uuids=selected, world_size=8 if mode in TRAIN_MODES else 1,
+            cuda_visible_devices=",".join(selected), gpu_uuids=selected, world_size=8 if mode in TRAIN_MODES | {'dualrate_eval_suite'} else 1,
             expires_at_unix=time.time()+600., external_guard=dict(pid=os.getpid(),
                 start_ticks=base.proc_identity(os.getpid())["start_ticks"], mode=base.GUARD_MODE,
                 device_paths=[v["device_path"] for v in devices.values()]),
@@ -278,7 +311,7 @@ def supervise(args, repo, out):
                     base.atomic(out / "dependencies_after.json", final)
                     if final != binding:
                         errors.append("dependency overlay changed during job")
-                if config is not None and config.get("run_kind") == "domino_deployment_smoke":
+                if config is not None and config.get("run_kind") in {"domino_deployment_smoke", "dualrate_eval_suite"}:
                     renderer = base.renderer_helpers().validate_renderer_runtime(config)
                     base.atomic(out / "renderer_runtime_after.json", renderer)
             except BaseException as exc:
