@@ -1,0 +1,10 @@
+{
+  "native_profile": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v2-20261024/configs/dualrate_native_v2.yaml",
+  "init_checkpoint": "/SSD_DISK/users/wuruihan/wam/external/hf_dynamicwam_release/external/checkpoints/DynamicWAM_full.pt",
+  "init_checkpoint_sha256": "7c0dfc44a785ea1f6bd1f833f09dcadc2e470dadb1ba5508fa98918e147671d7",
+  "storage_root": "/SSD_DISK/users/wuruihan",
+  "min_free_bytes": 21474836480,
+  "run_kind": "data_preparation",
+  "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v2_20261024/full_01/prompts.json",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_joint_v2_20261024/full_01/text"
+}

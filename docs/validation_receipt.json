@@ -1,0 +1,43 @@
+{
+  "cpu_tests_passed": 99,
+  "cpu_test_log_sha256": "4bd42510cdbc4039f2dbd1641751495260568f1cea684303b7e07658b1ab5542",
+  "native_cpu_load": {
+    "strict_full_native_load": true,
+    "cpu_only": true,
+    "native_parameters": 988810702,
+    "fast_parameters": 15091734,
+    "observation_parameters": 2339616,
+    "readout_parameters": 33024,
+    "initialization_identity": {
+      "native_checkpoint_sha256": "7c0dfc44a785ea1f6bd1f833f09dcadc2e470dadb1ba5508fa98918e147671d7",
+      "action_normalization_sha256": "a7f54660920585a65adaa1f9d6247b8683e773ee7ba869dd75d838f63e7d4d69",
+      "motion_normalization_sha256": "48780ede6def2cb8c3f2bf647c429d283266377876e14d5249349a76394a225d"
+    },
+    "source_future_latent_shape": [
+      48,
+      2,
+      12,
+      10
+    ],
+    "full_model_forward": false,
+    "gpu_acceptance": false,
+    "formal_training_ready": false
+  },
+  "source_preservation": {
+    "main_source_hashes_checked": 97,
+    "changed": [],
+    "main_status_unchanged": true,
+    "main_head_unchanged": true,
+    "source_base": "dfbec6087fee8f23b1560f37f8374d75f6888df9",
+    "branch": "feat/dualrate-joint-v1-20261023",
+    "worktree": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v1-20261023",
+    "read_only_other_hosts": true,
+    "gpu_jobs_started": false,
+    "formal_training_ready": false
+  },
+  "full_native_forward": false,
+  "real_labels_prepared": false,
+  "domino_runtime_integrated": false,
+  "gpu_training_started": false,
+  "formal_training_ready": false
+}

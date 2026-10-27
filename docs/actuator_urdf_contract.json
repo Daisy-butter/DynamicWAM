@@ -1,0 +1,80 @@
+{
+  "urdf": "/SSD_DISK/users/wuruihan/wam/external/DOMINO/assets/embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf",
+  "urdf_sha256": "097c59fb19a7b482249c6097df8319586ea7cfd268c015516f103b289a7e761a",
+  "robot_config_sha256": "a4f043d2d4b44cca5ec47fb498a3194da3f87ff9530dcbfdcee1539a44423d57",
+  "actual_runtime_limits_require_joint_get_limits": true,
+  "joints": [
+    {
+      "name": "fl_joint1",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fl_joint2",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fl_joint3",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fl_joint4",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fl_joint5",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fl_joint6",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fr_joint1",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fr_joint2",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fr_joint3",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fr_joint4",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fr_joint5",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    },
+    {
+      "name": "fr_joint6",
+      "type": "revolute",
+      "lower": -10.0,
+      "upper": 10.0
+    }
+  ]
+}

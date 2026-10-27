@@ -26,3 +26,8 @@ dist/
 *.mov
 *.avi
 *.mkv
+
+# DualRate local SSD artifacts and shared read-only dependencies
+/external
+/data
+/tmp

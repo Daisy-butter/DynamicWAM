@@ -610,7 +610,12 @@ class SmallWAMActionModel(nn.Module):
         *,
         include_video_prediction: bool,
         build_video_cache: bool,
+        export_predictive_features: bool = False,
     ) -> Dict[str, torch.Tensor]:
+        if export_predictive_features and (
+            batch.get("predictive_reference") is not True or not include_video_prediction
+        ):
+            raise ValueError("feature export requires the source-only predictive reference path")
         text_embeddings = batch["text_embeddings"]
         noisy_actions = batch["noisy_actions"]
         action_t = batch["action_t"]
@@ -622,6 +627,12 @@ class SmallWAMActionModel(nn.Module):
                 batch["condition_latent"],
                 batch["future_latent"],
             )
+        )
+        # Preserve clean provenance: this prefix precedes ANY joint attention.
+        # The view is safe because subsequent residuals replace video_tokens.
+        source_tokens = (
+            video_tokens[:, :int(grid_sizes["condition_seq_len"])]
+            if export_predictive_features else None
         )
         text_context = self.compact_wan.prepare_text_context(text_embeddings)
         video_head_time_emb, video_adaln_params = self._build_video_time_embeddings(
@@ -726,6 +737,10 @@ class SmallWAMActionModel(nn.Module):
             action_core_length,
         )
         outputs = {"action_pred": action_pred}
+        if export_predictive_features:
+            outputs["source_tokens"] = source_tokens
+            outputs["future_hidden"] = video_tokens[:, int(grid_sizes["condition_seq_len"]):]
+            outputs["feature_grid_sizes"] = grid_sizes
         if include_video_prediction:
             outputs["video_pred"] = self.compact_wan.apply_multiscale_video_head(
                 video_tokens,

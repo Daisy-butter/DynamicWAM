@@ -1,0 +1,16 @@
+{
+  "files": {
+    "src/dynamicwam/runtime/domino_rt/__init__.py": "6c8490d193e02c090d85bf393bc90271d48840e539d1f6b3e838300bc0b096c7",
+    "src/dynamicwam/runtime/domino_rt/motion.py": "9730ff5843a0aec904511fff5119b93c6fee0af687cad0e547ea4b93c543b952",
+    "src/dynamicwam/runtime/domino_rt/segment.py": "67a7f0e3c6b8651c30d8923f98cb249a68869da883df9b372b572de611d12971",
+    "src/dynamicwam/runtime/domino_rt/domino_session.py": "082f47cda98c131e0c6a026089707256cbbef340799e12997b1f6b0868de1302",
+    "src/dynamicwam/runtime/domino_rt/camera_capture.py": "160a5ce8e08697357e6545a39e5c44989cb7aa569a6ca8490aa2f19bbe196177",
+    "src/dynamicwam/runtime/domino_rt/camera_stream.py": "95b57f15b373ab7d6b08d87f7357f28d12f8155ad42ef6293a6e36e85752097b",
+    "scripts/video_artifacts.py": "544667dd36cfd809ea78c80510e157032d54c3c5ebf9f8053df959a5c287b0b4",
+    "src/dynamicwam/runtime/domino_rt/_sapien_color_reader.cpython-310-x86_64-linux-gnu.so": "829c401e7f1baa487149d281431e63f126a9ad9612d6d81154e8ed3c23cd06b0",
+    "src/dynamicwam/runtime/domino_rt/_sapien_color_reader.build.json": "03213daf0120444f95b6459bd04b6b22cd86cb8b7adb8f374fc189c78111088a",
+    "src/dynamicwam/runtime/domino_rt/native_camera/sapien_color_reader.cpp": "d4592eb7be3c8c337ef23ca4c5ed5b7ce72c2d181860a725e9098ec82d6ec21f",
+    "src/dynamicwam/runtime/domino_rt/native_camera/README.md": "90ad5d0e33d754abe827fbfa8213e797ffe4b2746a9e34dba863e49ef345faef",
+    "src/dynamicwam/runtime/domino_rt/native_camera/build_color_reader.py": "7b6fdc6268ee5d66d7818c3b0ab46fce63b68b7433aea8b3c0f9533e47bfcdb8"
+  }
+}
