@@ -27,11 +27,12 @@ MODE = 'full_physics_replay'
 SCHEMA = 'full_physics_replay_comparison_v1'
 DIAGNOSIS_MODE = 'failed_trace_cost_v1'
 DIAGNOSIS_SCHEMA = 'full_failed_trace_cost_diagnosis_v1'
+CAMERA_MODE = 'camera_overlap_v1'
 
 
 def is_cost_diagnosis(config):
     mode=config.get('diagnosis_mode')
-    if mode not in (None,DIAGNOSIS_MODE):
+    if mode not in (None,DIAGNOSIS_MODE,CAMERA_MODE):
         raise ValueError('unknown explicitly selected replay diagnosis mode')
     return mode==DIAGNOSIS_MODE
 
@@ -69,7 +70,7 @@ def validate_trace(report, *, task, episode_index):
 
 
 def validate_config(config):
-    diagnosis=is_cost_diagnosis(config)
+    diagnosis=is_cost_diagnosis(config) or config.get('diagnosis_mode')==CAMERA_MODE
     tail = config.get('tail_hold_rows', 0)
     if type(tail) is not int or not 0 <= tail <= 10 or type(config.get('passive_force_dedup', False)) is not bool:
         raise ValueError('tail hold rows must be 0..10 and passive force setting must be boolean')
@@ -125,6 +126,9 @@ def validate_config(config):
     trace = validate_trace(recorded, task=config['task'], episode_index=config['episode_index'])
     if abs(float(config['action_dt'])-trace['action_dt']) > 1e-10:
         raise ValueError('configuration action grid differs from trace')
+    if config.get('diagnosis_mode')==CAMERA_MODE:
+        from full_camera_overlap import validate_camera_config
+        validate_camera_config(config,trace)
     return output, trace
 
 
@@ -207,7 +211,8 @@ def process_thread_count():
     return len(list(Path('/proc/self/task').iterdir()))
 
 
-def replay_controls(session, trace, state_reader, *, deadline, step_costs=None, passive_force_dedup=False):
+def replay_controls(session, trace, state_reader, *, deadline, step_costs=None, passive_force_dedup=False,
+                    before_tick=None,after_tick=None):
     """Mirror the Full per-tick executor; timing excludes diagnostic snapshots."""
     import numpy as np
     from contextlib import nullcontext
@@ -226,6 +231,7 @@ def replay_controls(session, trace, state_reader, *, deadline, step_costs=None, 
     for tick in range(trace['steps']):
         if time.monotonic() >= deadline:
             raise TimeoutError('bounded physics replay expired')
+        if before_tick is not None: before_tick(tick)
         row = tick//45
         if tick % 45 == 0:
             previous = target.copy(); target = np.asarray(trace['targets'][row], np.float64)
@@ -281,6 +287,7 @@ def replay_controls(session, trace, state_reader, *, deadline, step_costs=None, 
             step_costs.append(dict(tick=tick+1,row=row,physical_time=now,physx_wall_seconds=wall_used,
                 owner_thread_cpu_seconds=thread_used,process_cpu_seconds=process_used,
                 control_wall_seconds=control_used,terminal=terminal))
+        if after_tick is not None: after_tick(tick+1)
     return names, np.stack(states), np.asarray(physical_times, np.float64), rows
 
 
@@ -330,14 +337,17 @@ def camera_free_backlog_projection(recorded_report, step_costs, dt):
         interpretation='Optimistic isolated control-cost projection; not a guarantee of realtime feasibility.')
 
 
-def run_worker(config, authorization, workers):
+def run_worker(config, authorization, workers, *, camera_case=None):
     output, trace = validate_config(config); receipt, _ = validate_authorization(config, authorization, child=True)
-    diagnosis=is_cost_diagnosis(config)
+    camera_diagnosis=config.get('diagnosis_mode')==CAMERA_MODE
+    diagnosis=is_cost_diagnosis(config) or camera_diagnosis
+    if camera_diagnosis != (camera_case in ('sync','async')):
+        raise ValueError('explicit camera child must match camera diagnosis mode')
     recorded_steps = trace['steps']; tail = config.get('tail_hold_rows', 0)
     trace=extended_trace(trace,config)
     if workers not in config['cpu_workers']:
         raise ValueError('unrequested PhysX worker count')
-    case = output/f'workers_{workers}'; case.mkdir(parents=True, exist_ok=False)
+    case = output/(f'camera_{camera_case}' if camera_diagnosis else f'workers_{workers}'); case.mkdir(parents=True, exist_ok=False)
     descriptor, motion, _ = load_frozen_task(config, config['task'])[config['episode_index']]
     recorded = read(Path(config['trace_report']).parent/'manifest.json')
     expected_seed=config['expected_episode_seed'] if diagnosis else 100007
@@ -373,7 +383,7 @@ def run_worker(config, authorization, workers):
     import sapien
     domino = Path(config['domino_root']).resolve(strict=True)
     limits = yaml.safe_load((domino/'task_config/_eval_step_limit.yml').read_text())
-    env = cache = None; report = None; deadline = time.monotonic()+float(config['timeout_seconds'])
+    env = cache = camera = None; report = None; deadline = time.monotonic()+float(config['timeout_seconds'])
     thread_counts = dict(before_scene_creation=process_thread_count())
     try:
         with SapienInitLock():
@@ -412,9 +422,20 @@ def run_worker(config, authorization, workers):
         bind_gil_releasing_physx_step(env, _sapien_color_reader.step_cpu_physx)
         step_costs = []
         actor_names=('cup','coaster') if diagnosis else ('object','displaystand')
+        experiment=None;camera_sources=None
+        if camera_diagnosis:
+            from full_camera_overlap import CameraExperiment,source_evidence
+            from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture
+            camera_sources=source_evidence(sapien,_sapien_color_reader,config)
+            camera=AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch,
+                async_submit=camera_case=='async',worker_initializer=lambda:torch.cuda.set_device(0))
+            experiment=CameraExperiment(session,camera,case,async_submit=camera_case=='async',deadline=deadline)
+            experiment.warmup()
         names, states, times, rows = replay_controls(session, trace,
             lambda:snapshot_state(env, sapien.physx.PhysxRigidDynamicComponent,actor_names=actor_names), deadline=deadline,
-            step_costs=step_costs,passive_force_dedup=config.get('passive_force_dedup',False))
+            step_costs=step_costs,passive_force_dedup=config.get('passive_force_dedup',False),
+            before_tick=None if experiment is None else experiment.before_tick,
+            after_tick=None if experiment is None else experiment.after_tick)
         if cache.error is not None: raise cache.error
         thread_counts['after_replay'] = process_thread_count()
         np.savez_compressed(case/'state_trace.npz', names=np.asarray(names), states=states, physics_times=times)
@@ -436,22 +457,36 @@ def run_worker(config, authorization, workers):
                 state_snapshot_scope='actual_robot_articulations_and_task_cup_coaster',
                 recorded_state_parity_tested=False,tail_extension_steps=trace['steps']-recorded_steps,
                 no_score=True)
+        if camera_diagnosis:
+            if source_evidence(sapien,_sapien_color_reader,config)!=camera_sources:
+                raise ValueError('camera source files changed while the child was active')
+            report.update(experiment.report(),camera_source_evidence=camera_sources,
+                state_trace_path=str(case/'state_trace.npz'),state_count=len(states),
+                diagnosis_mode=CAMERA_MODE,cameras_submitted=6,native_take_picture_calls=24,
+                render_update_calls=6)
     except BaseException as exc:
         save(case/'failure.json',dict(complete=False,error=repr(exc),traceback=traceback.format_exc()))
         raise
     finally:
         try:
-            if cache is not None: cache.close()
+            if camera is not None: camera.close()
         finally:
-            if env is not None:
-                env.close_env(); env.release_episode_resources()
+            try:
+                if cache is not None: cache.close()
+            finally:
+                if env is not None:
+                    env.close_env(); env.release_episode_resources()
     report['environment_closed'] = True
+    if camera_diagnosis: report['camera_closed']=True
     save(case/'worker_report.json',report)
     return 0
 
 
 def main(config, authorization):
     config_path = Path(config).resolve(strict=True); config = read(config_path)
+    if config.get('diagnosis_mode')==CAMERA_MODE:
+        from full_camera_overlap import main as camera_main
+        return camera_main(config_path,authorization)
     output, trace = validate_config(config); receipt, claim = validate_authorization(config, authorization)
     output.mkdir(parents=True, exist_ok=True)
     with claim.open('x', encoding='utf-8') as handle:
@@ -585,7 +620,10 @@ if __name__ == '__main__':
     faulthandler.enable(all_threads=True)
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',required=True);parser.add_argument('--authorization',required=True)
-    parser.add_argument('--cpu-workers',type=int,choices=[0,2,4])
+    selection=parser.add_mutually_exclusive_group()
+    selection.add_argument('--cpu-workers',type=int,choices=[0,2,4])
+    selection.add_argument('--camera-case',choices=['sync','async'])
     args=parser.parse_args()
-    raise SystemExit(main(args.config,args.authorization) if args.cpu_workers is None
-                     else run_worker(read(args.config),args.authorization,args.cpu_workers))
+    raise SystemExit(run_worker(read(args.config),args.authorization,0,camera_case=args.camera_case)
+        if args.camera_case is not None else main(args.config,args.authorization) if args.cpu_workers is None
+        else run_worker(read(args.config),args.authorization,args.cpu_workers))

@@ -132,7 +132,7 @@ def validate_physics_replay(config, source=None):
     return receipt
 
 
-def _closed_replay_guard(directory, *, expected_source=None):
+def _closed_replay_guard(directory, *, expected_source=None, expected_mode='full_physics_replay'):
     """Validate saved diagnostic closure without querying GPUs or live processes."""
     directory = Path(directory).resolve(strict=True)
     names = ('status.json', 'owned_exit.json', 'kernel_after.json', 'source.json',
@@ -141,18 +141,18 @@ def _closed_replay_guard(directory, *, expected_source=None):
     if (status.get('state') != 'completed' or status.get('guard_closed') is not True or status.get('errors')
             or owned.get('remaining') != [] or owned.get('returncode') != 0
             or kernel.get('unchanged') is not True or kernel.get('same_boot') is not True or kernel.get('added') != []):
-        raise ValueError('passive-force replay guard is not cleanly closed')
-    if (config.get('run_kind') != 'full_physics_replay' or auth.get('mode') != 'full_physics_replay'
+        raise ValueError('diagnostic guard is not cleanly closed')
+    if (config.get('run_kind') != expected_mode or auth.get('mode') != expected_mode
             or auth.get('source') != source or auth.get('identity', {}).get('config_sha256') != canonical_hash(config)
             or consumed.get('receipt_sha256') != sha(directory/'authorization.json')):
-        raise ValueError('passive-force replay guard configuration/source/claim differs')
+        raise ValueError('diagnostic guard configuration/source/claim differs')
     if expected_source is not None and any(source.get(k) != expected_source[k] for k in ('source_sha256', 'scripts_sha256')):
-        raise ValueError('passive-force replay guard used another frozen source')
+        raise ValueError('diagnostic guard used another frozen source')
     opened = [(r['uuid'], r['path'], r['fd']) for r in events if r['event'] == 'after_open']
     closed = [(r['uuid'], r['path'], r['fd']) for r in events if r['event'] == 'after_close']
     if (len(opened) != 8 or len(closed) != 8 or len({r[0] for r in opened}) != 8 or set(opened) != set(closed)
             or len(auth.get('gpu_uuids', [])) != 1 or not set(auth['gpu_uuids']) <= {r[0] for r in opened}):
-        raise ValueError('passive-force replay did not close all eight guard descriptors')
+        raise ValueError('diagnostic did not close all eight guard descriptors')
     return config, [directory/name for name in names]
 
 
@@ -220,6 +220,140 @@ def validate_passive_force_replay(config, source=None):
                 for p in original_files+baseline_files+optimized_files])
 
 
+def validate_camera_async_submit(config, source=None):
+    """Require actual same-source camera parity before any async policy run."""
+    enabled = config.get('camera_async_submit', False)
+    if type(enabled) is not bool:
+        raise ValueError('camera_async_submit must be boolean')
+    if not enabled:
+        return None
+    if acceptance_smoke_count(config) < 13:
+        raise ValueError('async camera requires smoke covering the complete failed episode12')
+    expanded = expanded_acceptance_contract(config)
+    required = expanded['required_acceptance_cases']
+    failure_keys = {(row['task'], row['episode_index']) for row in required}
+    if not {('place_object_stand', 7), ('place_empty_cup', 12)} <= failure_keys:
+        raise ValueError('async camera requires both exact frozen stand7 and cup12 failure cases')
+    cup = next(row for row in required if (row['task'], row['episode_index']) == ('place_empty_cup', 12))
+    path = Path(config['camera_async_parity_receipt']).resolve(strict=True)
+    if sha(path) != config['camera_async_parity_receipt_sha256']:
+        raise ValueError('async camera parity receipt changed')
+    proof = read(path)
+    flags = ('passed', 'complete', 'rgb_bitwise_equal', 'metadata_bitwise_equal',
+             'exposure_times_equal', 'state_bitwise_equal', 'physics_advanced_while_pending',
+             'physics_advanced_while_submitting', 'environment_closed', 'all_children_exit_zero')
+    if proof.get('schema') != 'full_camera_overlap_parity_v1' or any(proof.get(key) is not True for key in flags):
+        raise ValueError('async camera lacks exact RGB/metadata/state/overlap parity')
+    current = source or dict(source_sha256=source_hash(ROOT/'src/dynamicwam'), scripts_sha256=source_hash(ROOT/'scripts'))
+    if any(proof.get(key) != current[key] for key in ('source_sha256', 'scripts_sha256')):
+        raise ValueError('async camera parity used another frozen source')
+    directory = Path(config['camera_async_parity_guard']).resolve(strict=True)
+    diagnostic, guard_files = _closed_replay_guard(directory, expected_source=current)
+    diagnostic_auth = read(directory/'authorization.json')
+    guarded_devices = {row['uuid'] for row in read(directory/'guard_events.json') if row['event'] == 'after_open'}
+    if (diagnostic.get('gpu_uuids') != diagnostic_auth.get('gpu_uuids')
+            or guarded_devices != set(config['gpu_uuids'])):
+        raise ValueError('async camera proof used another GPU resource allocation')
+    contract_keys = ('source_sha256', 'guard_sha256', 'supervisor_sha256',
+                     'distributed_supervisor_sha256', 'scripts_sha256')
+    guarded_source = read(directory/'source.json')
+    if proof.get('source_contract') != {key: guarded_source.get(key) for key in contract_keys}:
+        raise ValueError('async camera proof source/guard contract differs')
+    if (diagnostic.get('diagnosis_mode') != 'camera_overlap_v1'
+            or path != (Path(diagnostic['output'])/'camera_overlap.json').resolve(strict=True)
+            or proof.get('config_sha256') != canonical_hash(diagnostic)
+            or diagnostic.get('cpu_workers') != [config.get('physx_cpu_workers', 0)]
+            or diagnostic.get('passive_force_dedup', False) != config.get('passive_force_dedup', False)
+            or diagnostic.get('deployment_artifact_sha256') != config.get('deployment_artifact_sha256')
+            or diagnostic.get('benchmark_contract') != config['benchmark_contract']
+            or proof.get('benchmark_contract') != config['benchmark_contract']
+            or proof.get('prepared_sha256') != config['prepared_sha256']
+            or diagnostic.get('prepared_sha256') != config['prepared_sha256']):
+        raise ValueError('async camera proof changed scene, physical settings or guarded configuration')
+    if {key: proof.get(key) for key in cup} != cup:
+        raise ValueError('async camera parity used another frozen cup scene')
+    camera_names = ['left_camera', 'right_camera', 'head_camera', 'front_camera']
+    ticks = [0, 2250, 2475]
+    if (proof.get('camera_names') != camera_names or proof.get('capture_ticks') != ticks
+            or proof.get('warmup_captures') != 3 or proof.get('overlap_steps') != 45
+            or diagnostic.get('camera_capture_ticks') != ticks
+            or diagnostic.get('camera_overlap_steps') != 45 or diagnostic.get('camera_warmup_captures') != 3):
+        raise ValueError('async camera proof lacks the bounded original four-view capture matrix')
+    trace = Path(diagnostic['trace_report']).resolve(strict=True)
+    trace_manifest = trace.with_name('manifest.json')
+    frozen_manifest = Path(config['prepared'])/'place_empty_cup/episode_0012/manifest.json'
+    if (sha(trace) != diagnostic['trace_report_sha256'] or proof.get('trace_report_sha256') != sha(trace)
+            or sha(trace_manifest) != diagnostic['trace_manifest_sha256']
+            or proof.get('trace_manifest_sha256') != sha(trace_manifest)
+            or sha(frozen_manifest) != cup['manifest_sha256']):
+        raise ValueError('async camera proof failed trace/manifest changed')
+    descriptor, evaluated_descriptor = read(frozen_manifest), read(trace_manifest)
+    if any(key not in evaluated_descriptor or evaluated_descriptor[key] != value
+           for key, value in descriptor.items()):
+        raise ValueError('async camera failed trace changed a frozen scene descriptor field')
+    trace_report = read(trace)
+    if ((trace_report.get('task'), trace_report.get('episode_index')) != ('place_empty_cup', 12)
+            or proof.get('physics_steps') != trace_report.get('physics_steps')
+            or proof.get('state_count') != trace_report.get('physics_steps', -1)+1):
+        raise ValueError('async camera state parity does not cover the complete recorded trace')
+    evidence = proof.get('evidence', [])
+    evidence_map = {}
+    for row in evidence:
+        file = Path(row['path']).resolve(strict=True)
+        if file in evidence_map or sha(file) != row['sha256']:
+            raise ValueError('async camera evidence changed or duplicated')
+        evidence_map[file] = row['sha256']
+    camera_sources = proof.get('camera_source_evidence', [])
+    if (len(camera_sources) != 4 or {row.get('role') for row in camera_sources}
+            != {'libsapien', 'libsvulkan2', 'rt_camera_shader', 'native_bridge'}):
+        raise ValueError('async camera lacks actual installed renderer source evidence')
+    for row in camera_sources:
+        file = Path(row['path']).resolve(strict=True)
+        if evidence_map.get(file) != row['sha256']:
+            raise ValueError('async camera renderer source evidence is not bound')
+        if row['role'] == 'native_bridge' and config.get('deployment_artifact_sha256', {}).get(str(file)) != row['sha256']:
+            raise ValueError('async camera fixture used another native bridge')
+    required_files = [trace, trace_manifest, frozen_manifest, Path(config['prepared'])/'frozen_manifest.json',
+                      Path(config['prepared'])/'place_empty_cup/episode_0012/expert_motion.pkl']
+    children = proof.get('children', [])
+    if len(children) != 2 or {child.get('case') for child in children} != {'sync', 'async'}:
+        raise ValueError('async camera proof needs two fresh complete children')
+    overlap = False
+    for child in children:
+        name = child['case']; case_dir = Path(diagnostic['output'])/('camera_'+name)
+        report_path = (case_dir/'worker_report.json').resolve(strict=True)
+        if Path(child['report_path']).resolve(strict=True) != report_path or sha(report_path) != child['sha256']:
+            raise ValueError('async camera child report identity changed')
+        report = read(report_path)
+        if (report.get('camera_case') != name or report.get('async_submit') is not (name == 'async')
+                or report.get('complete') is not True or report.get('environment_closed') is not True
+                or report.get('camera_names') != camera_names or report.get('warmup_captures') != 3
+                or report.get('camera_source_evidence') != camera_sources
+                or report.get('capture_ticks') != ticks or report.get('overlap_steps') != 45
+                or len(report.get('captures', [])) != 3):
+            raise ValueError('async camera child is incomplete or uses another capture contract')
+        required_files.extend([report_path, case_dir/'state_trace.npz'])
+        for index, capture in enumerate(report['captures']):
+            before_submit = capture.get('physics_ticks_before_submission_finish')
+            before_finish = capture.get('physics_ticks_before_native_finish')
+            if (capture.get('tick') != ticks[index]
+                    or type(before_submit) is not int or type(before_finish) is not int
+                    or not 0 <= before_submit <= before_finish <= 45
+                    or (name == 'sync' and before_submit != 0)):
+                raise ValueError('async camera overlap counts are not actual bounded physical ticks')
+            overlap |= name == 'async' and before_submit > 0
+            for field, suffix in (('metadata', 'json'), ('rgb', 'npz')):
+                expected = (case_dir/f'capture_{index:04d}.{suffix}').resolve(strict=True)
+                if Path(capture[field+'_path']).resolve(strict=True) != expected or sha(expected) != capture[field+'_sha256']:
+                    raise ValueError('async camera capture bytes/identity changed')
+                required_files.append(expected)
+    if not overlap:
+        raise ValueError('async camera lacks physics advance during submission; readback-only overlap is insufficient')
+    if any(file.resolve(strict=True) not in evidence_map for file in required_files):
+        raise ValueError('async camera proof omits required RGB/state/metadata/trace evidence')
+    return dict(proof=proof, guard_evidence=[dict(path=str(file), sha256=sha(file)) for file in guard_files])
+
+
 def task_partition(full_tasks, retained):
     if (len(full_tasks) != 35 or len(set(full_tasks)) != 35 or len(retained) != 24
             or len(set(retained)) != 24 or not set(retained) <= set(full_tasks)):
@@ -232,6 +366,10 @@ def task_partition(full_tasks, retained):
 
 
 def compare_benchmark(old, new):
+    # Async submission changes when physics can advance and observations become
+    # usable. Equal frozen pixels alone cannot make old closed-loop runs equal.
+    if old.get('camera_async_submit', False) != new.get('camera_async_submit', False):
+        raise ValueError('continuation changes camera submission scheduling; rerun the full benchmark')
     for key in COMPARISON_FIELDS:
         if key not in old or old.get(key) != new.get(key):
             raise ValueError('continuation changes benchmark/policy identity: ' + key)

@@ -49,10 +49,12 @@ def validate_full_baseline_scope(config):
     """A reduced formal set is legal only with an immutable completed-task audit."""
     stage = config.get('stage')
     from full_baseline_resume import (acceptance_smoke_count, expanded_acceptance_contract,
-                                      validate_physics_replay, validate_passive_force_replay)
+                                      validate_physics_replay, validate_passive_force_replay,
+                                      validate_camera_async_submit)
     smoke_count = acceptance_smoke_count(config)
     validate_physics_replay(config)
     validate_passive_force_replay(config)
+    validate_camera_async_submit(config)
     if stage not in ('smoke', 'formal') or config.get('action_limit') is not None:
         raise ValueError('Full baseline requires smoke/formal and complete native episode budgets')
     if config.get('resumption_receipt') or config.get('resumption_receipt_sha256'):
@@ -115,6 +117,11 @@ def validate_acceptance(config, source):
         if config.get('passive_force_dedup', False) and (
                 receipt.get('passive_force_replay_receipt_sha256') != config['passive_force_replay_receipt_sha256']):
             raise ValueError('policy smoke used another passive-force replay proof')
+        if receipt.get('camera_async_submit', False) != config.get('camera_async_submit', False):
+            raise ValueError('policy smoke camera submission implementation differs')
+        if config.get('camera_async_submit', False) and (
+                receipt.get('camera_async_parity_receipt_sha256') != config['camera_async_parity_receipt_sha256']):
+            raise ValueError('policy smoke used another camera overlap proof')
         for row in receipt.get('evidence',[]):
             if base.file_sha256(Path(row['path']).resolve(strict=True))!=row['sha256']:
                 raise ValueError('baseline acceptance evidence changed')

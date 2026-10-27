@@ -61,6 +61,12 @@ class WholeTaskResumeTest(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 resume.validate_resumption(dict(new, **mutation))
 
+    def test_asynchronous_camera_cannot_reuse_synchronous_completed_tasks(self):
+        old, new, _ = self.configs()
+        with self.assertRaisesRegex(ValueError, 'camera submission scheduling'):
+            resume.validate_resumption(dict(new, camera_async_submit=True))
+        resume.compare_benchmark(old, dict(new, camera_async_submit=False))
+
     def test_smoke_cannot_drop_failed_task_or_shortcut_full_budgets(self):
         _, new, _ = self.configs()
         with self.assertRaises(ValueError):

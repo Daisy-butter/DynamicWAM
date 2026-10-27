@@ -74,6 +74,8 @@ def validate_config(config):
     validate_physx_cpu_workers(config.get('physx_cpu_workers',0))
     if type(config.get('passive_force_dedup',False)) is not bool:
         raise ValueError('passive_force_dedup must be a boolean')
+    if type(config.get('camera_async_submit',False)) is not bool:
+        raise ValueError('camera_async_submit must be a boolean')
     from full_baseline_resume import acceptance_smoke_count
     smoke_episodes=acceptance_smoke_count(config)
     if config['stage']=='smoke' and (len(tasks)!=8 or config['episodes']!=smoke_episodes
@@ -274,6 +276,9 @@ def checked_episode(config, task, episode):
     if 'passive_force_dedup' in config and (report.get('passive_force_dedup') is not config['passive_force_dedup']
                                            or descriptor.get('passive_force_dedup') is not config['passive_force_dedup']):
         raise ValueError('episode passive-force setting differs')
+    if 'camera_async_submit' in config and (report.get('camera_async_submit') is not config['camera_async_submit']
+                                           or descriptor.get('camera_async_submit') is not config['camera_async_submit']):
+        raise ValueError('episode camera submission implementation differs')
     if report['seed'] != descriptor['seed'] or metric['seed'] != descriptor['seed']:
         raise ValueError('episode/metric/scene seed mismatch')
     if bool(metric['success']) != bool(report['success']):
@@ -395,10 +400,13 @@ def main():
             session.physx_binding = physics_binding
             session.metrics_tracker = EvalMetricsTracker(env, {'use_dynamic': True})
             session.metrics_tracker.on_episode_start()
-            camera = AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
+            camera = AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch,
+                async_submit=config.get('camera_async_submit',False),
+                worker_initializer=lambda: torch.cuda.set_device(0))
             save(directory / 'manifest.json', dict(descriptor, evaluation_instruction=prompt, prompt_source=prompt_source,
                 action_dt=config['action_dt'], prepared_sha256=config['prepared_sha256'],physx_binding=physics_binding,
-                passive_force_dedup=config.get('passive_force_dedup',False)))
+                passive_force_dedup=config.get('passive_force_dedup',False),
+                camera_async_submit=config.get('camera_async_submit',False)))
             (directory / 'expert_motion.pkl').write_bytes(motion_bytes)
             report = run_episode(session, policy, camera, action_dt=float(config['action_dt']),
                 action_limit=min(int(limits[args.task]), int(config.get('action_limit') or limits[args.task])),
