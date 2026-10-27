@@ -172,10 +172,12 @@ def audit_task_liveness(reports, config):
 def make_acceptance(smoke, smoke_guard, source, destination):
     from full_baseline_suite import audit_task
     from video_artifacts import probe_head_video
-    from full_baseline_resume import acceptance_smoke_count, expanded_acceptance_contract, validate_physics_replay
+    from full_baseline_resume import (acceptance_smoke_count, expanded_acceptance_contract,
+                                      validate_physics_replay, validate_passive_force_replay)
     smoke_count = acceptance_smoke_count(smoke)
     expanded = expanded_acceptance_contract(smoke)
     replay = validate_physics_replay(smoke, source)
+    passive = validate_passive_force_replay(smoke, source)
     expected_count = 8*smoke_count
     identities = {(r['task'], r['episode_index']): r for r in expanded['episode_identities']} if expanded else {}
     resumption = guard.validate_full_baseline_scope(smoke)
@@ -234,6 +236,12 @@ def make_acceptance(smoke, smoke_guard, source, destination):
                        physics_replay_receipt_sha256=smoke['physics_replay_receipt_sha256'])
         receipt['evidence'].append(dict(path=str(Path(smoke['physics_replay_receipt']).resolve()),
                                         sha256=smoke['physics_replay_receipt_sha256']))
+    if passive is not None:
+        receipt.update(passive_force_dedup=True,
+                       passive_force_replay_receipt_sha256=smoke['passive_force_replay_receipt_sha256'])
+        receipt['evidence'].append(dict(path=str(Path(smoke['passive_force_replay_receipt']).resolve()),
+                                        sha256=smoke['passive_force_replay_receipt_sha256']))
+        receipt['evidence'].extend(passive['guard_evidence'])
     if resumption is not None:
         receipt.update(resumption_receipt_sha256=smoke['resumption_receipt_sha256'],
                        smoke_tasks=list(smoke['tasks']))

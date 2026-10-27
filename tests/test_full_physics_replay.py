@@ -51,6 +51,15 @@ class TraceTests(unittest.TestCase):
                        {'episode_index':0},{'timeout_seconds':float('nan')}):
             with self.assertRaises(ValueError):replay.validate_config(dict(base,**change))
 
+    def test_continuation_backlog_is_labelled_optimistic_and_keeps_fixed_limit(self):
+        r=dict(max_backlog_limit_s=.25,events=[dict(event='capture_submitted',exposure_tick=0),
+            dict(event='execute',physical_tick=0,clock_pair={'backlog_seconds':.1})])
+        costs=[dict(tick=i+1,row=0,physical_time=(i+1)*.004,control_wall_seconds=.002) for i in range(60)]
+        result=replay.camera_free_backlog_projection(r,costs,.004)
+        self.assertEqual(result['backlog_limit_unchanged_s'],.25)
+        self.assertFalse(result['actual_benchmark_clock_test'])
+        self.assertAlmostEqual(result['final_projected_backlog_s'],0.)
+
 
 @unittest.skipUnless(HAS_NUMPY,'numpy unavailable on local control host')
 class NumericalTests(unittest.TestCase):
@@ -104,6 +113,18 @@ class NumericalTests(unittest.TestCase):
             changed=copy.deepcopy(data);changed['physics_times'][17]+=.004
             np.savez_compressed(b,**changed)
             with self.assertRaises(ValueError):replay.compare_state_files(a,b,atol=1e-6)
+
+    def test_prefix_and_signed_zero_bits_are_not_silently_relaxed(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as tmp:
+            a=Path(tmp)/'a.npz';b=Path(tmp)/'b.npz'
+            np.savez(a,names=np.array(['x']),states=np.zeros((3,1)),physics_times=np.arange(3)*.004)
+            extended=np.zeros((5,1))
+            np.savez(b,names=np.array(['x']),states=extended,physics_times=np.arange(5)*.004)
+            self.assertTrue(replay.compare_state_files(a,b,atol=0.,prefix_ticks=3)['bitwise_equal'])
+            extended[1,0]=-0.
+            np.savez(b,names=np.array(['x']),states=extended,physics_times=np.arange(5)*.004)
+            self.assertFalse(replay.compare_state_files(a,b,atol=0.,prefix_ticks=3)['passed'])
 
     def test_timeout_does_not_advance_scene(self):
         import numpy as np

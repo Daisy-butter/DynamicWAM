@@ -48,9 +48,11 @@ def read_json(path):
 def validate_full_baseline_scope(config):
     """A reduced formal set is legal only with an immutable completed-task audit."""
     stage = config.get('stage')
-    from full_baseline_resume import acceptance_smoke_count, expanded_acceptance_contract, validate_physics_replay
+    from full_baseline_resume import (acceptance_smoke_count, expanded_acceptance_contract,
+                                      validate_physics_replay, validate_passive_force_replay)
     smoke_count = acceptance_smoke_count(config)
     validate_physics_replay(config)
+    validate_passive_force_replay(config)
     if stage not in ('smoke', 'formal') or config.get('action_limit') is not None:
         raise ValueError('Full baseline requires smoke/formal and complete native episode budgets')
     if config.get('resumption_receipt') or config.get('resumption_receipt_sha256'):
@@ -108,6 +110,11 @@ def validate_acceptance(config, source):
                 receipt.get('physx_cpu_workers') != config['physx_cpu_workers']
                 or receipt.get('physics_replay_receipt_sha256') != config['physics_replay_receipt_sha256']):
             raise ValueError('policy smoke used another PhysX candidate or replay proof')
+        if receipt.get('passive_force_dedup', False) != config.get('passive_force_dedup', False):
+            raise ValueError('policy smoke passive-force setting differs')
+        if config.get('passive_force_dedup', False) and (
+                receipt.get('passive_force_replay_receipt_sha256') != config['passive_force_replay_receipt_sha256']):
+            raise ValueError('policy smoke used another passive-force replay proof')
         for row in receipt.get('evidence',[]):
             if base.file_sha256(Path(row['path']).resolve(strict=True))!=row['sha256']:
                 raise ValueError('baseline acceptance evidence changed')

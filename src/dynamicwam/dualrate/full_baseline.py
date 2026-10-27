@@ -155,7 +155,8 @@ def build_native_packet(frames, policy, *, action_dt, pair_cache):
 def run_episode(session, policy, camera, *, action_dt, action_limit, frame_period=None,
                 max_backlog=.25, max_observation_age=.24, seed=0, video=None, record=None,
                 camera_warmup_captures=3, bootstrap_hold_steps=2,
-                model_query_timeout_s=30., on_ready=None, on_armed=None, on_failure=None):
+                model_query_timeout_s=30., on_ready=None, on_armed=None, on_failure=None,
+                passive_force_dedup=False):
     """Run one bounded episode; a single inference worker never owns the scene.
 
     ``on_ready`` precedes three frozen-state camera rewarm captures; ``on_armed``
@@ -173,8 +174,12 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
     from .online import ObservationHistory, ObservationPairCache
     from .physical_clock import WallPhysicsBridge
     from .contact_cache import StepContactCache
+    from .passive_force import passive_force_scope
     from .timing import TimingError
 
+    if type(passive_force_dedup) is not bool:
+        raise ValueError('passive_force_dedup must be a boolean')
+    passive_force_counts=dict(native_evaluations=0,reused_calls=0)
     if (type(action_limit) is not int or action_limit < 1 or
             not all(math.isfinite(x) and x > 0 for x in
                     (action_dt, max_backlog, max_observation_age, model_query_timeout_s))):
@@ -315,6 +320,8 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             post_barrier_warmup_last_two_limit_s=max_observation_age,
             history_frame_period_s=frame_period, max_observation_age_s=max_observation_age,
             inference_metrics=inference_metrics, events=events,
+            passive_force_dedup=passive_force_dedup,
+            passive_force_counts=dict(passive_force_counts) if passive_force_dedup else None,
             owner_stage_timing=dict(totals=owner_stage_totals, recent_rows=list(owner_stage_recent),
                                    clock='process_monotonic_perf_counter', recent_row_limit=4),
             contact_cache=None if contact_cache is None else contact_cache.statistics(),
@@ -452,10 +459,14 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             position = previous+(target-previous)*fraction; velocity = (target-previous)/action_dt
             position[[6,13]] = target[[6,13]]; velocity[[6,13]] = 0
             robot = session.env.robot
-            robot._entity_qf(robot.left_entity); robot._entity_qf(robot.right_entity)
-            robot.set_arm_joints(position[:6], velocity[:6], 'left')
-            robot.set_arm_joints(position[7:13], velocity[7:13], 'right')
-            robot.set_gripper(position[6], 'left'); robot.set_gripper(position[13], 'right')
+            with passive_force_scope(robot,enabled=passive_force_dedup) as force_counts:
+                robot._entity_qf(robot.left_entity); robot._entity_qf(robot.right_entity)
+                robot.set_arm_joints(position[:6], velocity[:6], 'left')
+                robot.set_arm_joints(position[7:13], velocity[7:13], 'right')
+                robot.set_gripper(position[6], 'left'); robot.set_gripper(position[13], 'right')
+            if force_counts is not None:
+                for name in passive_force_counts:
+                    passive_force_counts[name]+=force_counts[name]
             stage_started = stage_finished(row, 'actuator', stage_started)
             session.env._update_kinematic_tasks()
             stage_started = stage_finished(row, 'kinematic', stage_started)

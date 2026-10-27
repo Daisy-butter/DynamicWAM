@@ -132,6 +132,94 @@ def validate_physics_replay(config, source=None):
     return receipt
 
 
+def _closed_replay_guard(directory, *, expected_source=None):
+    """Validate saved diagnostic closure without querying GPUs or live processes."""
+    directory = Path(directory).resolve(strict=True)
+    names = ('status.json', 'owned_exit.json', 'kernel_after.json', 'source.json',
+             'config.frozen.json', 'authorization.json', 'authorization.json.consumed', 'guard_events.json')
+    status, owned, kernel, source, config, auth, consumed, events = [read(directory/name) for name in names]
+    if (status.get('state') != 'completed' or status.get('guard_closed') is not True or status.get('errors')
+            or owned.get('remaining') != [] or owned.get('returncode') != 0
+            or kernel.get('unchanged') is not True or kernel.get('same_boot') is not True or kernel.get('added') != []):
+        raise ValueError('passive-force replay guard is not cleanly closed')
+    if (config.get('run_kind') != 'full_physics_replay' or auth.get('mode') != 'full_physics_replay'
+            or auth.get('source') != source or auth.get('identity', {}).get('config_sha256') != canonical_hash(config)
+            or consumed.get('receipt_sha256') != sha(directory/'authorization.json')):
+        raise ValueError('passive-force replay guard configuration/source/claim differs')
+    if expected_source is not None and any(source.get(k) != expected_source[k] for k in ('source_sha256', 'scripts_sha256')):
+        raise ValueError('passive-force replay guard used another frozen source')
+    opened = [(r['uuid'], r['path'], r['fd']) for r in events if r['event'] == 'after_open']
+    closed = [(r['uuid'], r['path'], r['fd']) for r in events if r['event'] == 'after_close']
+    if (len(opened) != 8 or len(closed) != 8 or len({r[0] for r in opened}) != 8 or set(opened) != set(closed)
+            or len(auth.get('gpu_uuids', [])) != 1 or not set(auth['gpu_uuids']) <= {r[0] for r in opened}):
+        raise ValueError('passive-force replay did not close all eight guard descriptors')
+    return config, [directory/name for name in names]
+
+
+def validate_passive_force_replay(config, source=None):
+    enabled = config.get('passive_force_dedup', False)
+    if type(enabled) is not bool:
+        raise ValueError('passive_force_dedup must be boolean')
+    if not enabled:
+        return None
+    if config.get('physx_cpu_workers', 0) != 0 or acceptance_smoke_count(config) < 10:
+        raise ValueError('passive-force dedup requires CPU workers0 and at least 8x10 real-policy smoke')
+    expanded = expanded_acceptance_contract(config)
+    path = Path(config['passive_force_replay_receipt']).resolve(strict=True)
+    if sha(path) != config['passive_force_replay_receipt_sha256']:
+        raise ValueError('passive-force replay comparison changed')
+    proof = read(path)
+    flags = ('passed', 'state_parity_passed', 'extension_bitwise_equal', 'prefix_bitwise_equal',
+             'selected_passive_force_dedup', 'timing_benefit_recorded', 'control_wall_improved', 'environment_closed')
+    if (proof.get('schema') != 'full_passive_force_dedup_replay_v1'
+            or any(proof.get(key) is not True for key in flags) or proof.get('physx_cpu_workers') != 0
+            or proof.get('state_count') != 3151 or proof.get('prefix_state_count') != 2662
+            or proof.get('tail_hold_rows') != 10):
+        raise ValueError('passive-force replay lacks exact 3151/2662-state bitwise acceptance')
+    current = source or dict(source_sha256=source_hash(ROOT/'src/dynamicwam'), scripts_sha256=source_hash(ROOT/'scripts'))
+    if any(proof.get(key) != current[key] for key in ('source_sha256', 'scripts_sha256')):
+        raise ValueError('passive-force replay ran another frozen source')
+    case = {key: proof.get(key) for key in ('task', 'episode_index', 'seed', 'manifest_sha256', 'motion_sha256')}
+    if case not in expanded['required_acceptance_cases'] or proof.get('frozen_manifest_sha256') != config['prepared_sha256']:
+        raise ValueError('passive-force replay used another frozen failure scene')
+    timing_keys = ('total_control_wall_seconds', 'total_physx_wall_seconds', 'worst_full_row_control_wall_seconds')
+    for label in ('timing_before', 'timing_after'):
+        values = proof.get(label, {})
+        if any(type(values.get(k)) not in (int, float) or not math.isfinite(values[k]) or values[k] <= 0 for k in timing_keys):
+            raise ValueError('passive-force replay timing evidence is absent/nonfinite')
+    if proof['timing_after']['total_control_wall_seconds'] >= proof['timing_before']['total_control_wall_seconds']:
+        raise ValueError('passive-force replay did not record a control CPU wall-time benefit')
+    # No per-row <=180ms gate: bounded bursts still need actual 80-episode
+    # policy/camera/backlog acceptance. Recorded-control replay alone cannot pass.
+    guards = config.get('passive_force_replay_guards', {})
+    if set(guards) != {'original', 'baseline', 'optimized'}:
+        raise ValueError('three closed original/baseline/optimized replay guards required')
+    original, original_files = _closed_replay_guard(guards['original'])
+    baseline, baseline_files = _closed_replay_guard(guards['baseline'], expected_source=current)
+    optimized, optimized_files = _closed_replay_guard(guards['optimized'], expected_source=current)
+    if (path != (Path(optimized['output'])/'comparison.json').resolve(strict=True)
+            or canonical_hash(optimized) != proof.get('config_sha256')
+            or baseline.get('passive_force_dedup', False) is not False
+            or optimized.get('passive_force_dedup') is not True
+            or baseline.get('cpu_workers') != [0] or optimized.get('cpu_workers') != [0]
+            or baseline.get('tail_hold_rows') != 10 or optimized.get('tail_hold_rows') != 10):
+        raise ValueError('passive-force proof is not the exact paired CPU0 continuation')
+    references = {'reference_state_trace': Path(original['output'])/'workers_0/state_trace.npz',
+                  'reference_extension_trace': Path(baseline['output'])/'workers_0/state_trace.npz',
+                  'reference_extension_timings': Path(baseline['output'])/'workers_0/row_timings.json'}
+    for key, expected in references.items():
+        if Path(optimized[key]).resolve(strict=True) != expected.resolve(strict=True) or sha(expected) != optimized[key+'_sha256']:
+            raise ValueError('passive-force replay reference does not belong to its closed guard: ' + key)
+    evidence = proof.get('evidence', [])
+    if not evidence or not any(row.get('sha256') == proof.get('source_report_sha256') for row in evidence):
+        raise ValueError('passive-force comparison lacks original failed trace evidence')
+    for row in evidence:
+        if sha(row['path']) != row['sha256']:
+            raise ValueError('passive-force replay evidence changed: ' + row['path'])
+    return dict(proof=proof, guard_evidence=[dict(path=str(p), sha256=sha(p))
+                for p in original_files+baseline_files+optimized_files])
+
+
 def task_partition(full_tasks, retained):
     if (len(full_tasks) != 35 or len(set(full_tasks)) != 35 or len(retained) != 24
             or len(set(retained)) != 24 or not set(retained) <= set(full_tasks)):
@@ -361,6 +449,11 @@ def finalize(config_path, guard_dir, destination, stamp):
         simulator_cpu_workers_change=config.get('simulator_cpu_workers_change'),
         physics_replay_receipt=config.get('physics_replay_receipt'),
         physics_replay_receipt_sha256=config.get('physics_replay_receipt_sha256'),
+        passive_force_dedup_old=bool(old_config.get('passive_force_dedup', False)),
+        passive_force_dedup_new=bool(config.get('passive_force_dedup', False)),
+        passive_force_replay_receipt=config.get('passive_force_replay_receipt'),
+        passive_force_replay_receipt_sha256=config.get('passive_force_replay_receipt_sha256'),
+        passive_force_replay_guards=config.get('passive_force_replay_guards'),
         video_storage='symlink references to hash-bound originals; merger never writes original bytes', origins=origins)
     save(destination/'suite_completed.json', result)
     return result

@@ -60,7 +60,10 @@ def validate_trace(report, *, task, episode_index):
 
 
 def validate_config(config):
-    if (config.get('run_kind') != MODE or config.get('cpu_workers') != [0, 2, 4]
+    tail = config.get('tail_hold_rows', 0)
+    if type(tail) is not int or not 0 <= tail <= 10 or type(config.get('passive_force_dedup', False)) is not bool:
+        raise ValueError('tail hold rows must be 0..10 and passive force setting must be boolean')
+    if (config.get('run_kind') != MODE or config.get('cpu_workers') != ([0] if tail else [0, 2, 4])
             or config.get('task') != 'place_object_stand' or config.get('episode_index') != 7
             or config.get('seed') != 100000 or config.get('episodes') != 20):
         raise ValueError('explicit failed stand episode7, frozen20 and workers[0,2,4] required')
@@ -76,6 +79,17 @@ def validate_config(config):
         raise ValueError('diagnostic output must be on the verified wuruihan artifact disk')
     if sha(config['trace_report']) != config['trace_report_sha256']:
         raise ValueError('failed trace changed')
+    if tail:
+        if sha(config['reference_state_trace']) != config['reference_state_trace_sha256']:
+            raise ValueError('original workers0 state reference changed')
+        if config.get('reference_extension_trace') is not None:
+            if sha(config['reference_extension_trace']) != config['reference_extension_trace_sha256']:
+                raise ValueError('extended baseline state reference changed')
+    if config.get('passive_force_dedup', False):
+        if not tail or not config.get('reference_extension_trace'):
+            raise ValueError('dedup candidate requires the baseline extended state reference')
+        if sha(config['reference_extension_timings']) != config['reference_extension_timings_sha256']:
+            raise ValueError('extended baseline timing reference changed')
     trace = validate_trace(read(config['trace_report']), task=config['task'], episode_index=config['episode_index'])
     if abs(float(config['action_dt'])-trace['action_dt']) > 1e-10:
         raise ValueError('configuration action grid differs from trace')
@@ -152,15 +166,22 @@ def process_thread_count():
     return len(list(Path('/proc/self/task').iterdir()))
 
 
-def replay_controls(session, trace, state_reader, *, deadline):
+def replay_controls(session, trace, state_reader, *, deadline, step_costs=None, passive_force_dedup=False):
     """Mirror the Full per-tick executor; timing excludes diagnostic snapshots."""
     import numpy as np
+    from contextlib import nullcontext
+    if passive_force_dedup:
+        from dynamicwam.dualrate.passive_force import passive_force_scope
+        force_scope = lambda: passive_force_scope(session.env.robot, enabled=True)
+    else:
+        force_scope = lambda: nullcontext(None)
     env = session.env; robot = env.robot; dt = trace['dt']; action_dt = trace['action_dt']
     names, initial = state_reader(); states = [initial]; rows = []; physical_times = [session.physics_time()]
     if abs(physical_times[0]) > 1e-12:
         raise ValueError('prepared replay clock is not zero')
     previous = np.asarray(trace['targets'][0], np.float64)
     target = previous.copy(); terminal = None
+    recorded_steps = trace.get('recorded_steps', trace['steps'])
     for tick in range(trace['steps']):
         if time.monotonic() >= deadline:
             raise TimeoutError('bounded physics replay expired')
@@ -169,14 +190,19 @@ def replay_controls(session, trace, state_reader, *, deadline):
             previous = target.copy(); target = np.asarray(trace['targets'][row], np.float64)
             env.take_action_cnt = int(getattr(env, 'take_action_cnt', 0))+1
             rows.append(dict(row=row, steps=0, physx_wall_seconds=0., owner_thread_cpu_seconds=0.,
-                             process_cpu_seconds=0., max_step_wall_seconds=0., control_wall_seconds=0.))
+                             process_cpu_seconds=0., max_step_wall_seconds=0., control_wall_seconds=0.,
+                             passive_force_native_evaluations=0,passive_force_reused_calls=0))
         stat = rows[-1]; control_start = time.perf_counter()
         position = previous+(target-previous)*((tick % 45+1)/45); velocity = (target-previous)/action_dt
         position[[6,13]] = target[[6,13]]; velocity[[6,13]] = 0
-        robot._entity_qf(robot.left_entity); robot._entity_qf(robot.right_entity)
-        robot.set_arm_joints(position[:6], velocity[:6], 'left')
-        robot.set_arm_joints(position[7:13], velocity[7:13], 'right')
-        robot.set_gripper(position[6], 'left'); robot.set_gripper(position[13], 'right')
+        with force_scope() as force_stats:
+            robot._entity_qf(robot.left_entity); robot._entity_qf(robot.right_entity)
+            robot.set_arm_joints(position[:6], velocity[:6], 'left')
+            robot.set_arm_joints(position[7:13], velocity[7:13], 'right')
+            robot.set_gripper(position[6], 'left'); robot.set_gripper(position[13], 'right')
+        if force_stats is not None:
+            stat['passive_force_native_evaluations'] += force_stats['native_evaluations']
+            stat['passive_force_reused_calls'] += force_stats['reused_calls']
         env._update_kinematic_tasks()
         wall0 = time.perf_counter(); thread0 = time.thread_time_ns(); process0 = time.process_time_ns()
         env.scene.step()
@@ -190,37 +216,85 @@ def replay_controls(session, trace, state_reader, *, deadline):
             raise ValueError('native replay skipped or duplicated a real physics step')
         # The recorded failure fires after its last scene.step, before these
         # hooks. All preceding ticks use the original transient/event flow.
-        if tick+1 < trace['steps']:
+        if tick+1 != recorded_steps and tick+1 < trace['steps']:
             env._update_transient_checks(); session._consume_events()
             terminal = session.stop_reason()
-            if terminal is not None:
+            if terminal is not None and tick+1 < recorded_steps:
                 raise ValueError('replay terminated before the recorded failure: '+terminal)
-        stat['control_wall_seconds'] += time.perf_counter()-control_start
+        control_used = time.perf_counter()-control_start
         labels, values = state_reader()
         if labels != names:
             raise ValueError('actual state layout changed during replay')
         states.append(values); physical_times.append(now)
+        if tick+1 == recorded_steps and trace['steps'] > recorded_steps:
+            # Save the exact original failure state before performing the
+            # transient hooks skipped by its backlog exception. Continuing is
+            # unscored fixed-control diagnosis, even after a task stop event.
+            hook_start = time.perf_counter()
+            env._update_transient_checks(); session._consume_events(); terminal = session.stop_reason()
+            control_used += time.perf_counter()-hook_start
+        stat['control_wall_seconds'] += control_used
+        if terminal is not None and 'first_terminal_tick' not in stat:
+            stat.update(first_terminal_tick=tick+1,terminal=terminal)
+        if step_costs is not None:
+            step_costs.append(dict(tick=tick+1,row=row,physical_time=now,physx_wall_seconds=wall_used,
+                owner_thread_cpu_seconds=thread_used,process_cpu_seconds=process_used,
+                control_wall_seconds=control_used,terminal=terminal))
     return names, np.stack(states), np.asarray(physical_times, np.float64), rows
 
 
-def compare_state_files(reference, candidate, *, atol):
+def compare_state_files(reference, candidate, *, atol, prefix_ticks=None):
     import numpy as np
     with np.load(reference, allow_pickle=False) as a, np.load(candidate, allow_pickle=False) as b:
         if (set(a.files) != {'names','states','physics_times'} or set(a.files) != set(b.files)
                 or not np.array_equal(a['names'], b['names'])
-                or not np.array_equal(a['physics_times'], b['physics_times'])
-                or a['states'].shape != b['states'].shape
+                or a['states'].dtype != np.float64 or b['states'].dtype != np.float64
+                or a['physics_times'].dtype != np.float64 or b['physics_times'].dtype != np.float64
                 or not np.isfinite(a['states']).all() or not np.isfinite(b['states']).all()):
             raise ValueError('replay state layout, clocks or finite values differ')
-        delta = np.abs(a['states']-b['states']); flat = int(delta.argmax())
+        a_states, b_states = a['states'], b['states']; a_times, b_times = a['physics_times'], b['physics_times']
+        if prefix_ticks is not None:
+            if len(a_states) != prefix_ticks or len(b_states) < prefix_ticks:
+                raise ValueError('reference does not cover exactly the original prefix')
+            b_states=b_states[:prefix_ticks]; b_times=b_times[:prefix_ticks]
+        if a_states.shape != b_states.shape or a_times.shape != b_times.shape or a_times.tobytes()!=b_times.tobytes():
+            raise ValueError('replay state layout, clocks or finite values differ')
+        delta = np.abs(a_states-b_states); flat = int(delta.argmax())
         step, field = np.unravel_index(flat, delta.shape); maximum = float(delta[step,field])
-        return dict(passed=maximum <= atol, max_absolute_difference=maximum, atol=atol,
+        bitwise = a_states.tobytes()==b_states.tobytes()
+        return dict(passed=bitwise if atol==0 else maximum <= atol,bitwise_equal=bitwise,
+                    max_absolute_difference=maximum, atol=atol,
                     worst_tick=int(step), worst_field=str(a['names'][field]),
                     compared_ticks=int(delta.shape[0]), compared_fields=int(delta.shape[1]))
 
 
+def camera_free_backlog_projection(recorded_report, step_costs, dt):
+    """Optimistic cost projection, not an active-clock test or guaranteed bound."""
+    capture = [e for e in recorded_report['events'] if e.get('event')=='capture_submitted'][-1]
+    anchor = next(e for e in recorded_report['events'] if e.get('event')=='execute'
+                  and e['physical_tick']==capture['exposure_tick'])
+    lag = float(anchor['clock_pair']['backlog_seconds']); peak=lag; peak_tick=anchor['physical_tick']
+    rows=[]; recovered=[]
+    for item in step_costs:
+        if item['tick'] <= anchor['physical_tick']: continue
+        before=lag;lag=max(0.,lag+item['control_wall_seconds']-dt)
+        if lag>peak:peak=lag;peak_tick=item['tick']
+        if before>1e-9 and lag<=1e-9:recovered.append(item['tick'])
+        if item['tick']%45==0 or item is step_costs[-1]:
+            rows.append(dict(tick=item['tick'],physical_time=item['physical_time'],projected_backlog_s=lag))
+    return dict(anchor_tick=anchor['physical_tick'],anchor_backlog_s=anchor['clock_pair']['backlog_seconds'],
+        peak_projected_backlog_s=peak,peak_tick=peak_tick,final_projected_backlog_s=lag,recovery_ticks=recovered,
+        backlog_limit_unchanged_s=recorded_report['max_backlog_limit_s'],row_boundaries=rows,
+        actual_benchmark_clock_test=False,excludes='camera, model, pacing, state snapshots and benchmark instrumentation',
+        interpretation='Optimistic isolated control-cost projection; not a guarantee of realtime feasibility.')
+
+
 def run_worker(config, authorization, workers):
     output, trace = validate_config(config); receipt, _ = validate_authorization(config, authorization, child=True)
+    recorded_steps = trace['steps']; tail = config.get('tail_hold_rows', 0)
+    if tail:
+        trace = dict(trace, recorded_steps=recorded_steps,steps=len(trace['targets'])*45+tail*45,
+                     targets=trace['targets']+[trace['targets'][-1]]*tail)
     if workers not in config['cpu_workers']:
         raise ValueError('unrequested PhysX worker count')
     case = output/f'workers_{workers}'; case.mkdir(parents=True, exist_ok=False)
@@ -295,16 +369,23 @@ def run_worker(config, authorization, workers):
             instruction=prompt, control_interval_s=trace['action_dt'])
         cache = StepContactCache(env.scene, session.physics_time).install()
         bind_gil_releasing_physx_step(env, _sapien_color_reader.step_cpu_physx)
+        step_costs = []
         names, states, times, rows = replay_controls(session, trace,
-            lambda:snapshot_state(env, sapien.physx.PhysxRigidDynamicComponent), deadline=deadline)
+            lambda:snapshot_state(env, sapien.physx.PhysxRigidDynamicComponent), deadline=deadline,
+            step_costs=step_costs,passive_force_dedup=config.get('passive_force_dedup',False))
         if cache.error is not None: raise cache.error
         thread_counts['after_replay'] = process_thread_count()
         np.savez_compressed(case/'state_trace.npz', names=np.asarray(names), states=states, physics_times=times)
         save(case/'row_timings.json', rows)
+        save(case/'step_timings.json', step_costs)
         report = dict(complete=True, diagnostic_only=True, benchmark_acceptance=False, realtime_valid=False,
             cpu_workers=workers, physics_steps=trace['steps'], task=config['task'], episode_index=config['episode_index'],
+            recorded_physics_steps=recorded_steps,tail_hold_rows=tail,
+            passive_force_dedup=config.get('passive_force_dedup',False),
+            tail_ignores_task_terminal_for_diagnostic=bool(tail),
             seed=descriptor['seed'], renderer=renderer, physx_binding=binding, process_thread_counts=thread_counts,
             states_sha256=sha(case/'state_trace.npz'), row_timings_sha256=sha(case/'row_timings.json'),
+            step_timings_sha256=sha(case/'step_timings.json'),
             native_control_semantics='recorded_endpoint_linear_arm_native_gripper',
             cameras_submitted=0, model_calls=0, no_wall_pacing=True,
             timing_scope='native_scene_step_wall_owner_thread_and_process_CPU; control_excludes_state_snapshot')
@@ -363,8 +444,46 @@ def main(config, authorization):
             worst = max(r['control_wall_seconds'] for r in rows if r['steps']==45)
             candidates.append(dict(cpu_workers=workers,worst_full_row_control_wall_seconds=worst,
                                    all_full_rows_within_action_dt=worst<=trace['action_dt']))
-            for name in ('state_trace.npz','row_timings.json','worker_report.json'):
+            for name in ('state_trace.npz','row_timings.json','step_timings.json','worker_report.json'):
                 evidence.append(dict(path=str(case/name),sha256=sha(case/name)))
+            if config.get('tail_hold_rows',0):
+                prefix = compare_state_files(config['reference_state_trace'],case/'state_trace.npz',
+                    atol=0.,prefix_ticks=trace['steps']+1)
+                comparisons.append(dict(kind='original_failure_prefix',**prefix))
+                if not prefix['passed']: raise ValueError('continuation changed original failure prefix bits')
+                evidence.append(dict(path=config['reference_state_trace'],sha256=sha(config['reference_state_trace'])))
+                projection = camera_free_backlog_projection(read(config['trace_report']),
+                    read(case/'step_timings.json'),trace['dt'])
+                save(output/'backlog_projection.json',projection)
+                evidence.append(dict(path=str(output/'backlog_projection.json'),sha256=sha(output/'backlog_projection.json')))
+                extra = dict(schema='full_physics_replay_continuation_v1',passed=True,state_parity_passed=True,
+                    state_count=report['physics_steps']+1,prefix_state_count=trace['steps']+1,
+                    physics_steps=report['physics_steps'],recorded_physics_steps=trace['steps'],
+                    prefix_bitwise_equal=True,selected_candidate_passed=False,selected_physx_cpu_workers=None,
+                    physx_cpu_workers=0,tail_hold_rows=config['tail_hold_rows'],
+                    environment_closed=True,selected_passive_force_dedup=False,
+                    camera_free_backlog_projection=projection,comparisons=comparisons,evidence=evidence)
+                if config.get('passive_force_dedup',False):
+                    extension=compare_state_files(config['reference_extension_trace'],case/'state_trace.npz',atol=0.)
+                    comparisons.append(dict(kind='baseline_full_extension',**extension))
+                    if not extension['passed']: raise ValueError('dedup changed extended baseline state bits')
+                    before_rows=read(config['reference_extension_timings'])
+                    if [(r['row'],r['steps']) for r in rows] != [(r['row'],r['steps']) for r in before_rows]:
+                        raise ValueError('baseline and dedup timing grids differ')
+                    def totals(items):
+                        return dict(total_control_wall_seconds=sum(r['control_wall_seconds'] for r in items),
+                            total_physx_wall_seconds=sum(r['physx_wall_seconds'] for r in items),
+                            worst_full_row_control_wall_seconds=max(r['control_wall_seconds'] for r in items if r['steps']==45))
+                    before,after=totals(before_rows),totals(rows)
+                    evidence.extend(dict(path=config[k],sha256=sha(config[k])) for k in
+                                    ('reference_extension_trace','reference_extension_timings'))
+                    extra.update(schema='full_passive_force_dedup_replay_v1',extension_bitwise_equal=True,
+                        selected_passive_force_dedup=True,timing_before=before,timing_after=after,
+                        timing_benefit_recorded=True,
+                        control_wall_improved=after['total_control_wall_seconds']<before['total_control_wall_seconds'])
+                save(output/'comparison.json',dict(common,**extra))
+                save(output/'status.json',dict(state='completed',diagnostic_only=True))
+                return 0
             if workers:
                 result = compare_state_files(output/'workers_0/state_trace.npz',case/'state_trace.npz',
                                              atol=float(config.get('parity_atol',1e-6)))

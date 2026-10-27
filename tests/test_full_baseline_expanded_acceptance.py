@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import full_baseline_resume as resume
@@ -129,6 +130,91 @@ class ExpandedAcceptanceTests(unittest.TestCase):
         save(failure, {'changed': True})
         with self.assertRaisesRegex(ValueError, 'evidence changed'):
             resume.validate_physics_replay(config, source)
+
+
+class PassiveForceReplayGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def fixture(self):
+        source = dict(source_sha256='current-source', scripts_sha256='current-scripts')
+        outputs = {name: self.root/name for name in ('original', 'baseline', 'optimized')}
+        for output in outputs.values():
+            (output/'workers_0').mkdir(parents=True)
+            (output/'workers_0/state_trace.npz').write_bytes(b'bound-state-fixture')
+            save(output/'workers_0/row_timings.json', [])
+        configs = {name: dict(run_kind='full_physics_replay', output=str(output), cpu_workers=[0],
+                             tail_hold_rows=10, passive_force_dedup=name=='optimized') for name, output in outputs.items()}
+        for key, path in {'reference_state_trace': outputs['original']/'workers_0/state_trace.npz',
+                          'reference_extension_trace': outputs['baseline']/'workers_0/state_trace.npz',
+                          'reference_extension_timings': outputs['baseline']/'workers_0/row_timings.json'}.items():
+            configs['optimized'].update({key: str(path), key+'_sha256': sha(path)})
+        guards = {name: self.root/(name+'_guard') for name in outputs}
+        for name, directory in guards.items():
+            save(directory/'status.json', dict(state='completed', guard_closed=True, errors=[]))
+            save(directory/'owned_exit.json', dict(remaining=[], returncode=0))
+            save(directory/'kernel_after.json', dict(unchanged=True, same_boot=True, added=[]))
+            save(directory/'source.json', source)
+            save(directory/'config.frozen.json', configs[name])
+            save(directory/'authorization.json', dict(mode='full_physics_replay', source=source,
+                identity={'config_sha256': resume.canonical_hash(configs[name])}, gpu_uuids=['GPU-0']))
+            save(directory/'authorization.json.consumed', {'receipt_sha256': sha(directory/'authorization.json')})
+            save(directory/'guard_events.json', [dict(event=e,uuid=f'GPU-{i}',path=f'/dev/nvidia{i}',fd=i+10)
+                for e in ('after_open','after_close') for i in range(8)])
+        case = dict(task='place_object_stand', episode_index=7, seed=100007, manifest_sha256='manifest', motion_sha256='motion')
+        failure = self.root/'failure.json'
+        save(failure, case)
+        proof = dict(schema='full_passive_force_dedup_replay_v1', passed=True, state_parity_passed=True,
+            extension_bitwise_equal=True, prefix_bitwise_equal=True, selected_passive_force_dedup=True,
+            timing_benefit_recorded=True, control_wall_improved=True, environment_closed=True,
+            state_count=3151, prefix_state_count=2662, physx_cpu_workers=0, tail_hold_rows=10,
+            frozen_manifest_sha256='frozen', config_sha256=resume.canonical_hash(configs['optimized']),
+            source_report_sha256=sha(failure), evidence=[dict(path=str(failure),sha256=sha(failure))],
+            timing_before=dict(total_control_wall_seconds=4.,total_physx_wall_seconds=3.,worst_full_row_control_wall_seconds=.3),
+            timing_after=dict(total_control_wall_seconds=2.,total_physx_wall_seconds=1.,worst_full_row_control_wall_seconds=.22),
+            **source, **case)
+        path = outputs['optimized']/'comparison.json'
+        save(path, proof)
+        config = dict(passive_force_dedup=True, physx_cpu_workers=0, acceptance_smoke_episodes_per_task=10,
+            passive_force_replay_receipt=str(path), passive_force_replay_receipt_sha256=sha(path), prepared_sha256='frozen',
+            passive_force_replay_guards={k:str(v) for k,v in guards.items()})
+        return config, proof, source, case
+
+    def validate(self, config, source, case):
+        with patch.object(resume, 'expanded_acceptance_contract', return_value={'required_acceptance_cases':[case]}):
+            return resume.validate_passive_force_replay(config, source)
+
+    def test_true_bitwise_pair_with_closed_guards_and_absorbable_burst(self):
+        config, _, source, case = self.fixture()
+        result = self.validate(config, source, case)
+        self.assertEqual(len(result['guard_evidence']), 24)
+        self.assertIsNone(resume.validate_passive_force_replay({}))
+
+    def test_short_wrong_nonbitwise_and_nonbeneficial_pairs_fail(self):
+        config, proof, source, case = self.fixture()
+        for mutation in ({'state_count':3150}, {'prefix_state_count':2661}, {'extension_bitwise_equal':False},
+                         {'prefix_bitwise_equal':False}, {'control_wall_improved':False}, {'scripts_sha256':'old'}):
+            with self.subTest(mutation=mutation):
+                save(config['passive_force_replay_receipt'], dict(proof, **mutation))
+                config['passive_force_replay_receipt_sha256'] = sha(config['passive_force_replay_receipt'])
+                with self.assertRaises(ValueError):
+                    self.validate(config, source, case)
+
+    def test_kernel_failure_or_missing_guard_closure_rejected(self):
+        config, _, source, case = self.fixture()
+        directory = Path(config['passive_force_replay_guards']['baseline'])
+        save(directory/'kernel_after.json', dict(unchanged=False,same_boot=True,added=['error']))
+        with self.assertRaisesRegex(ValueError, 'cleanly closed'):
+            self.validate(config, source, case)
+        save(directory/'kernel_after.json', dict(unchanged=True,same_boot=True,added=[]))
+        events = resume.read(directory/'guard_events.json')
+        save(directory/'guard_events.json', events[:-1])
+        with self.assertRaisesRegex(ValueError, 'eight guard'):
+            self.validate(config, source, case)
 
 
 if __name__ == '__main__':
