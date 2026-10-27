@@ -206,3 +206,47 @@ def test_failure_callback_error_preserves_original_failure_and_cleanup(monkeypat
         mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=40,on_failure=on_failure)
     assert caught.value.dualrate_report['failure_callback_error']=='OSError: marker unavailable'
     assert pools[0].closed and camera.pending is None
+
+
+@pytest.mark.parametrize('with_provenance', [False, True])
+def test_actual_native_profile_passes_strict_runtime_schema_without_cuda(monkeypatch, with_provenance):
+    from copy import deepcopy
+    from pathlib import Path
+    from dynamicwam.inference import model_loader as loader
+    config=loader.load_deploy_config(Path(__file__).resolve().parents[1]/'configs/dualrate_native_v2.yaml')
+    metadata={'checkpoint_artifact_id','checkpoint_manifest','external_assets_manifest'}
+    assert metadata <= config.keys()
+    numerical={key:value for key,value in config.items() if key not in metadata}
+    if not with_provenance:
+        config=deepcopy(numerical)
+    before=deepcopy(config)
+    model=object();encoder=object();normalizer=object();seen=[]
+    monkeypatch.setattr(loader,'_load_checkpoint_payload',lambda path: {'config':{}})
+    def build_model(runtime_config,payload,*,device):
+        assert runtime_config==numerical and device=='cuda'
+        seen.append(runtime_config)
+        return model
+    monkeypatch.setattr(loader,'_build_model',build_model)
+    monkeypatch.setattr(loader,'_build_t5_encoder',lambda config,device:encoder)
+    monkeypatch.setattr(loader,'_build_action_normalizer',lambda config,checkpoint_config:normalizer)
+    runtime=loader.build_runtime_from_config(config)
+    assert seen and config==before
+    assert runtime.model is model and runtime.t5_encoder is encoder and runtime.action_normalizer is normalizer
+    assert runtime.num_inference_steps==10 and runtime.video_refresh_steps==(0,1)
+    assert runtime.chunk_size==16 and runtime.head_flow_config==config['head_flow']
+    assert runtime.action_interval_seconds==config['inference']['action_interval_ms']/1000.
+
+
+@pytest.mark.parametrize('location', ['top', 'inference'])
+def test_native_runtime_still_rejects_unknown_fields_before_loading(monkeypatch, location):
+    from pathlib import Path
+    from dynamicwam.inference import model_loader as loader
+    config=loader.load_deploy_config(Path(__file__).resolve().parents[1]/'configs/dualrate_native_v2.yaml')
+    target=config if location=='top' else config['inference']
+    target['unknown_metadata']=True
+    def forbidden(*args,**kwargs):
+        pytest.fail('invalid config reached checkpoint/model loading')
+    monkeypatch.setattr(loader,'_load_checkpoint_payload',forbidden)
+    monkeypatch.setattr(loader,'_build_model',forbidden)
+    with pytest.raises(ValueError,match='unknown_metadata'):
+        loader.build_runtime_from_config(config)

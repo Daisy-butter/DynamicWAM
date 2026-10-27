@@ -311,6 +311,14 @@ def _video_refresh_steps(
 def build_runtime_from_config(
     config: dict[str, Any],
 ) -> DynamicWAMRuntime:
+    # Resolved profiles also carry artifact provenance. These three optional
+    # fields are audited by callers and do not configure the numerical runtime.
+    # Strip only these known fields from a copy; keep the runtime schema strict.
+    config = dict(config)
+    for metadata_key in (
+        "checkpoint_artifact_id", "checkpoint_manifest", "external_assets_manifest"
+    ):
+        config.pop(metadata_key, None)
     require_exact_keys(
         config,
         {
