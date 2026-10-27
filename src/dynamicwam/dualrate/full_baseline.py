@@ -11,6 +11,7 @@ import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 
 import numpy as np
 
@@ -142,6 +143,7 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                              capture_timing, bind_gil_releasing_physx_step)
     from .online import ObservationHistory, ObservationPairCache
     from .physical_clock import WallPhysicsBridge
+    from .contact_cache import StepContactCache
     from .timing import TimingError
 
     if (type(action_limit) is not int or action_limit < 1 or
@@ -189,7 +191,24 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
     last_row = -1; metrics_row = -1; accepted_captures = skip_captures = 0
     terminal = None; deferred_since = None; bootstrap_seconds = 0.; wall0 = None
     row_kind = None; schedule = None; inference_metrics = []
+    contact_cache = None
+    owner_stage_totals = {name: dict(calls=0, wall_seconds=0., max_wall_seconds=0.)
+                          for name in ('actuator', 'kinematic', 'physx', 'transient', 'events')}
+    owner_stage_recent = deque(maxlen=4)
     bootstrap_started = time.perf_counter()
+
+    def stage_finished(row, name, started):
+        finished = time.perf_counter(); duration = finished-started
+        total = owner_stage_totals[name]
+        total['calls'] += 1; total['wall_seconds'] += duration
+        total['max_wall_seconds'] = max(total['max_wall_seconds'], duration)
+        if not owner_stage_recent or owner_stage_recent[-1]['row'] != row:
+            owner_stage_recent.append(dict(row=row, stages={}))
+        stages = owner_stage_recent[-1]['stages']
+        stage = stages.setdefault(name, dict(calls=0, wall_seconds=0., max_wall_seconds=0.))
+        stage['calls'] += 1; stage['wall_seconds'] += duration
+        stage['max_wall_seconds'] = max(stage['max_wall_seconds'], duration)
+        return finished
 
     def infer(frames, query_id):
         worker_started = time.perf_counter()
@@ -261,6 +280,9 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             skipped_capture_requests=skip_captures, camera_warmup_captures=camera_warmup_captures,
             history_frame_period_s=frame_period, max_observation_age_s=max_observation_age,
             inference_metrics=inference_metrics, events=events,
+            owner_stage_timing=dict(totals=owner_stage_totals, recent_rows=list(owner_stage_recent),
+                                   clock='process_monotonic_perf_counter', recent_row_limit=4),
+            contact_cache=None if contact_cache is None else contact_cache.statistics(),
             executable_action_source='official_full_sync16',
             model_forecast_time_not_relabelled=True)
 
@@ -280,6 +302,7 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                   install_row=bootstrap_hold_steps, rows=16, prefix_overwritten=False, **info))
         emit(dict(event='actuator_contract', bounds=projection.serialized_bounds,
                   provenance=projection.provenance, projection='generated_full_commands_only'))
+        contact_cache = StepContactCache(session.env.scene, clock).install()
         if on_ready:
             on_ready()
         bootstrap_seconds = time.perf_counter()-bootstrap_started
@@ -375,6 +398,7 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                           controller='endpoint_linear_arm_native_gripper'))
             elif not np.array_equal(action, target):
                 raise TimingError('active committed endpoint changed')
+            stage_started = time.perf_counter()
             fraction = (tick % action_ticks+1)/action_ticks
             position = previous+(target-previous)*fraction; velocity = (target-previous)/action_dt
             position[[6,13]] = target[[6,13]]; velocity[[6,13]] = 0
@@ -383,13 +407,21 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
             robot.set_arm_joints(position[:6], velocity[:6], 'left')
             robot.set_arm_joints(position[7:13], velocity[7:13], 'right')
             robot.set_gripper(position[6], 'left'); robot.set_gripper(position[13], 'right')
-            session.env._update_kinematic_tasks(); session.env.scene.step()
+            stage_started = stage_finished(row, 'actuator', stage_started)
+            session.env._update_kinematic_tasks()
+            stage_started = stage_finished(row, 'kinematic', stage_started)
+            session.env.scene.step()
+            stage_finished(row, 'physx', stage_started)
             if abs(clock()-(now+physics_dt)) > 1e-8:
                 raise TimingError('scene step skipped or rewrote physical time')
             physics_steps += 1; step_wall = time.perf_counter()
             max_gap = max(max_gap, step_wall-last_step_wall); last_step_wall = step_wall
             _, lag = checked_now(); max_lag = max(max_lag, lag)
-            session.env._update_transient_checks(); session._consume_events(); terminal = session.stop_reason()
+            stage_started = time.perf_counter()
+            session.env._update_transient_checks()
+            stage_started = stage_finished(row, 'transient', stage_started)
+            session._consume_events(); terminal = session.stop_reason()
+            stage_finished(row, 'events', stage_started)
             row_complete = (tick+1) % action_ticks == 0
             if row_complete:
                 completed_rows += 1; generated_completed += int(row_kind == 'generated')
@@ -397,6 +429,10 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                 if session.metrics_tracker is not None:
                     session.metrics_tracker.on_step()
                 metrics_row = row
+            if contact_cache.error is not None:
+                # Native metrics can catch read errors; an infrastructure
+                # contact failure must still abort the whole episode.
+                raise contact_cache.error
         report = make_report(True)
         return report
     except BaseException as exc:
@@ -432,6 +468,11 @@ def run_episode(session, policy, camera, *, action_dt, action_limit, frame_perio
                 c = completed_capture
                 video.append(c.observation['observation']['head_camera']['rgb'],
                              physics_time_s=c.physics_time_s, capture_wall_perf_s=c.capture_wall_perf_s)
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        try:
+            if contact_cache is not None:
+                contact_cache.close()
         except BaseException as exc:
             cleanup_errors.append(exc)
         emit(dict(event='episode_workers_closed', inference_thread_joined=True,

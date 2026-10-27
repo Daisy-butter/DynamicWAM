@@ -95,6 +95,7 @@ def _owner_fixture(monkeypatch, *, fail_active=False, active_delay=.4,
     class Scene:
         ticks=0
         def step(self):self.ticks+=1;wall.t+=step_seconds
+        def get_contacts(self):return []
     scene=Scene()
     env=SimpleNamespace(robot=Robot(),scene=scene,take_action_cnt=0,
                         _update_kinematic_tasks=lambda:None,_update_transient_checks=lambda:None)
@@ -169,6 +170,9 @@ def test_actual_owner_loop_counts_waits_budget_and_never_queries_early(monkeypat
     assert all(e['installation_time']>=e['publication_time']-1e-7 for e in installed)
     assert report['events'][-1]['event']=='episode_workers_closed'
     assert report['events'][-1]['post_terminal']
+    assert not hasattr(session.env.scene, '_full_step_contact_cache')
+    assert all(x['calls']==40*45 for x in report['owner_stage_timing']['totals'].values())
+    assert len(report['owner_stage_timing']['recent_rows'])==4
 
 
 def test_model_error_drains_owned_worker_and_attaches_failure_evidence(monkeypatch):
@@ -176,6 +180,7 @@ def test_model_error_drains_owned_worker_and_attaches_failure_evidence(monkeypat
     with pytest.raises(RuntimeError,match='intentional model failure') as caught:
         mod.run_episode(session,policy,camera,action_dt=45*h,action_limit=40)
     assert pools[0].closed
+    assert not hasattr(session.env.scene, '_full_step_contact_cache')
     assert not caught.value.dualrate_report['realtime_valid']
     assert caught.value.dualrate_report['stop_reason']=='infrastructure_error'
     assert any(e['event']=='full_query_started' for e in caught.value.dualrate_events)

@@ -142,3 +142,33 @@ def test_session_event_path_uses_strict_helpers():
     with pytest.raises(RuntimeError) as caught:
         session._consume_events()
     assert caught.value is error
+
+
+@pytest.mark.parametrize('stop_on_contact,already_stopped', [(False,False),(True,True)])
+def test_session_skips_contact_read_only_when_stop_action_cannot_apply(stop_on_contact, already_stopped):
+    env=make_env();env._dynamic_object_stopped=already_stopped
+    checks=[]
+    env.check_success=lambda:checks.append('success') or False
+    env.get_gripper_actor_contact_position=fail(AssertionError('unnecessary native contact read'))
+    session=DominoLevel1Session(env,flow=None,observation_config={},stop_on_contact=stop_on_contact,
+        check_z_threshold=None,lift_actor=None,start_z=None)
+    session._consume_events()
+    assert checks==['success'] and session.stop_reason() is None
+    assert env._dynamic_object_stopped is already_stopped
+    if not already_stopped:
+        env._eval_target_actor.actor.get_pose=lambda:SimpleNamespace(p=(1.,0.,0.))
+        session._consume_events()
+        assert session.stop_reason()=='out_of_bounds'  # Boundary check remains active.
+
+
+def test_session_contact_stop_still_mutates_once_and_retains_success_checks(monkeypatch):
+    env,component,unrelated=stop_fixture(monkeypatch)
+    reads=[];checks=[]
+    env.get_gripper_actor_contact_position=lambda name:reads.append(name) or [(0.,0.,0.)]
+    env.check_success=lambda:checks.append('success') or False
+    session=DominoLevel1Session(env,flow=None,observation_config={},stop_on_contact=True,
+        check_z_threshold=None,lift_actor=None,start_z=None)
+    session._consume_events();session._consume_events()
+    assert reads==['target'] and checks==['success','success']
+    assert env._dynamic_object_stopped and len(component.calls)==5
+    assert env.active_kinematic_tasks==[unrelated]
