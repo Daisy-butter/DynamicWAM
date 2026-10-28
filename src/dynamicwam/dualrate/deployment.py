@@ -178,12 +178,13 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 
 
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
-    """Eval-side wall scheduling tolerance (measured DualRate continuous-sim slack).
+    """Eval-only wall scheduling tolerance (measured continuous-sim slack).
 
-    formal09 Full baseline used wall_scheduling_tolerance=0.013. DualRate V4
-    training/eval timing queues stay identical; only the wall-vs-deadline compare
-    wall/phys 7ms from measured over_hard (wall≈6.22ms smoke12, phys≈6.0ms smoke16); protect prefix-need + deferred catch-up dispatch. Training queues unchanged.
-    physical_clock.py remains protected (same_model_files).
+    Training WallPhysicsBridge.check_deadline is strict. Eval admits ready_wall
+    / wall_now up to wall_scheduling_tolerance past the mapped hard wall
+    deadline (measured ~0.013s). Does not touch physical_clock.py / timing
+    queues. Paired with TolerantDualRateRuntime: phys_tol on commit validate +
+    inflight; never rewind replace clock.
     """
     def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.013, **kwargs):
         super().__init__(physics_dt, **kwargs)
@@ -207,17 +208,21 @@ class TolerantWallPhysicsBridge(WallPhysicsBridge):
 
 
 class TolerantDualRateRuntime(DualRateRuntime):
-    """Eval-only DualRateRuntime with formal09 scheduling slack and correct poll order.
+    """Eval-only DualRateRuntime: commit-before-inflight + measured phys slack.
 
-    Training/eval contract: an inflight deadline applies to still-running work.
-    Commit path already validates ready_wall against the wall deadline. If the
-    owner thread was busy (physics/render) while the fast worker finished, poll
-    must attempt commit before the inflight gate — otherwise a finished query
-    whose ready_wall met the deadline is discarded (smoke05/06 DeadlineMiss with
-    worker_done=True, wall_seconds≈0.326 inside a 0.318s prefix budget).
+    Training DualRateRuntime polls inflight before commit (no Isaac backlog).
+    Eval continuous-sim: owner catch-up can leave a finished fast job whose
+    ready_wall already met TolerantWall, while physical now is slightly past
+    hard. Scheme (t111u, one coherent path — no fighting clamps):
 
-    physical_clock.py / runtime.py stay protected (训推一致). Only this executor
-    override changes eval-side poll ordering + measured slack (wall 7ms / phys 5ms) + protect headroom.
+      * always replace(now=true monotonic clock); never hard-eps rewind
+        (smoke20 TimingError: execution clock moved backwards);
+      * if hard <= now <= hard+phys_tol after wall admit: temporary
+        _validate_lease wrap with the same phys_tol, then restore;
+      * inflight (still-running) uses hard+phys_tol; protect headroom bump
+        and deferred-during-catchup dispatch stay as prior measured fixes.
+
+    runtime.py / timing.py / physical_clock.py remain protected (训推一致).
     """
     def __init__(self, *args, physical_scheduling_tolerance=0.011, **kwargs):
         super().__init__(*args, **kwargs)
@@ -262,7 +267,25 @@ class TolerantDualRateRuntime(DualRateRuntime):
         return count, details
 
     def poll(self):
-        """Commit finished fast work before applying inflight deadlines."""
+        """Commit finished fast work before applying inflight deadlines.
+
+        Coherent eval scheme (aligned to training begin_query/protect/submit_margin,
+        wall bridge, replace monotonic clock; eval-only continuous-sim slack):
+
+        1. Wall: TolerantWallPhysicsBridge.check_deadline admits ready_wall with
+           measured wall_scheduling_tolerance (training check is strict).
+        2. Physical replace: ALWAYS pass true monotonic now (never rewind /
+           hard-eps). Training ExecutionQueue.replace forbids now < _last_time
+           (smoke20 TimingError when eval clamped now=hard-1e-9 after execute).
+        3. Catch-up / wall-tol window: if ready_wall already passed (1) but
+           physical now sits in [hard, hard+phys_tol], temporarily wrap
+           queue._validate_lease to apply the same phys_tol, then restore.
+           Outside that window: DeadlineMiss (honest late).
+        4. Inflight (still-running only): physical gate uses hard+phys_tol;
+           wall gate uses TolerantWall. Commit-before-inflight preserves
+           finished work whose ready_wall met the deadline while the owner
+           was catching up (training polls inflight first — no Isaac backlog).
+        """
         if self._failure is not None:
             raise TimingError('runtime has failed; close owned workers before continuing') from self._failure
 
@@ -288,7 +311,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
                     published_time=completed,publication_wall_time=self.wall_clock(),
                     version=version,accepted=accepted,**metrics))
 
-        # 2) Commit finished fast jobs BEFORE inflight deadline (contract fix).
+        # 2) Commit finished fast jobs BEFORE inflight deadline (eval catch-up).
         if self.fast_job is not None and self.fast_job[0].done():
             job,lease=self.fast_job
             submitted=False
@@ -298,93 +321,96 @@ class TolerantDualRateRuntime(DualRateRuntime):
                     metrics=dict(wall_seconds=metrics)
                 now=float(self.clock())
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
-                    if not self.clock_bridge.ready(ready_wall,now):
+                    self.clock_bridge.check_deadline(
+                        lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
+                    if not self.clock_bridge.ready(ready_wall, now):
                         return None
-                    # Only after activation: bootstrap has no wall/physics correspondence.
-                    if self.clock_bridge.active:
-                        # Wall release instant is authoritative for "was the query on time?".
-                        # check_deadline(ready_wall) already applied wall_tol. Owner catch-up
-                        # (smoke07) OR a wall-tol-admitted ready_wall (smoke13 q285: now-hard
-                        # =2.000ms with avail>=hard) can leave physical now slightly past
-                        # protected_until-submit_margin. Clamp replace() to the last legal
-                        # physical instant within physical_scheduling_tolerance (+1 physics_dt).
-                        # Wall check already applied wall_tol. Physical now may sit slightly
-                        # past hard from owner catch-up. Training ExecutionQueue clocks are
-                        # monotonic (replace forbids now < _last_time) — never rewind.
-                        # smoke20: clamp hard-eps < _last_time after execute → TimingError.
-                        hard=lease.protected_until-lease.submit_margin
-                        slack=self.physical_scheduling_tolerance
-                        last=float(getattr(self.queue,'_last_time', now))
-                        _deadline_slack=0.0
-                        if now>=hard and (now-hard)<=slack:
-                            clamped=hard-1e-9
-                            if clamped+1e-9 >= last:
-                                now=clamped
-                            else:
-                                # Keep monotonic now; relax validate deadline by phys_tol only.
-                                _deadline_slack=slack
-                        if _deadline_slack>0:
-                            _q=self.queue
-                            _orig=_q._validate_lease
-                            _hard=hard
-                            _tol=_deadline_slack
-                            def _tolerant_validate(plan, now_, _orig=_orig, _q=_q, _hard=_hard, _tol=_tol):
-                                from .timing import DeadlineMiss, StalePlan, TimingError
-                                lease=plan.lease
-                                if lease is None:
-                                    if getattr(_q,'_test_fixture',False):
-                                        return
-                                    raise TimingError("production plan requires its query lease")
-                                if (lease != _q._inflight or lease.episode_id != _q.episode_id or
-                                        lease.clock_id != _q.clock_id or plan.query_time != lease.query_time):
-                                    raise StalePlan("query/episode/clock lease is stale or mismatched")
-                                if now_ >= _hard + _tol:
-                                    raise DeadlineMiss("query exceeded protected prefix submission deadline")
-                                # Remaining prefix/row checks via orig with now just below hard.
-                                return _orig(plan, min(now_, _hard - 1e-9))
-                            _q._validate_lease = _tolerant_validate
-                            try:
-                                discarded=self.queue.replace(plan,now=now)
-                            finally:
-                                _q._validate_lease = _orig
-                        else:
-                            discarded=self.queue.replace(plan,now=now)
-                submitted=True
+                # Training path: replace(now=true_clock). Eval only: if activated
+                # and now past hard within phys_tol, wrap _validate_lease; never
+                # rewrite `now` (no hard-eps / no rewind).
+                _restore = None
+                if self.clock_bridge is not None and self.clock_bridge.active:
+                    hard = lease.protected_until - lease.submit_margin
+                    slack = self.physical_scheduling_tolerance
+                    if now >= hard:
+                        if (now - hard) > slack:
+                            raise DeadlineMiss(
+                                "query exceeded protected prefix submission deadline")
+                        _q = self.queue
+                        _orig = _q._validate_lease
+                        _hard = hard
+                        _tol = slack
+                        def _tolerant_validate(plan, now_, *, _orig=_orig, _q=_q,
+                                               _hard=_hard, _tol=_tol):
+                            # Same lease/stale checks as timing.ExecutionQueue._validate_lease,
+                            # but deadline line uses hard+phys_tol. Prefix immutability still
+                            # goes through orig; pass just-below-hard so orig's strict
+                            # deadline does not fire — replace() still received unrewoound now.
+                            from .timing import DeadlineMiss, StalePlan, TimingError
+                            lease = plan.lease
+                            if lease is None:
+                                if getattr(_q, '_test_fixture', False):
+                                    return
+                                raise TimingError("production plan requires its query lease")
+                            if (lease != _q._inflight or lease.episode_id != _q.episode_id or
+                                    lease.clock_id != _q.clock_id or
+                                    plan.query_time != lease.query_time):
+                                raise StalePlan(
+                                    "query/episode/clock lease is stale or mismatched")
+                            if now_ >= _hard + _tol:
+                                raise DeadlineMiss(
+                                    "query exceeded protected prefix submission deadline")
+                            return _orig(plan, min(now_, _hard - 1e-9))
+                        _q._validate_lease = _tolerant_validate
+                        _restore = (_q, _orig)
+                try:
+                    discarded = self.queue.replace(plan, now=now)
+                finally:
+                    if _restore is not None:
+                        _restore[0]._validate_lease = _restore[1]
+                submitted = True
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
-                self.fast_job=None
+                    self.clock_bridge.check_deadline(
+                        lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
+                self.fast_job = None
             except BaseException as exc:
-                self.fast_job=None
-                self._discarded_jobs.append(('fast',(job,lease),dict(
-                    reason='failed_submission',queue_updated_before_failure=submitted)))
+                self.fast_job = None
+                self._discarded_jobs.append(('fast', (job, lease), dict(
+                    reason='failed_submission', queue_updated_before_failure=submitted)))
                 if not submitted:
                     self._cancel_fast(lease)
-                self._failure=exc
-                self.record(dict(event="fast_rejected",query_id=lease.query_id,error=type(exc).__name__,
+                self._failure = exc
+                self.record(dict(event="fast_rejected", query_id=lease.query_id,
+                                 error=type(exc).__name__,
                                  queue_updated_before_failure=submitted))
                 raise
-            self.record(dict(event="fast_committed",query_id=lease.query_id,discarded_rows=discarded,
-                             protected_until=lease.protected_until,submit_margin=lease.submit_margin,query_time=lease.query_time,
-                             commit_time=float(self.clock()),observation_time=lease.observation_time,
-                             commit_wall_time=self.wall_clock(),ready_wall_time=ready_wall,
-                             reference_version=lease.reference_version,**metrics))
+            self.record(dict(event="fast_committed", query_id=lease.query_id,
+                             discarded_rows=discarded,
+                             protected_until=lease.protected_until,
+                             submit_margin=lease.submit_margin,
+                             query_time=lease.query_time,
+                             commit_time=float(self.clock()),
+                             observation_time=lease.observation_time,
+                             commit_wall_time=self.wall_clock(),
+                             ready_wall_time=ready_wall,
+                             reference_version=lease.reference_version, **metrics))
             return output
 
         # 3) Inflight deadline only while the worker is still running.
         if self.fast_job is not None and (self.clock_bridge is None or self.clock_bridge.active):
-            _,lease=self.fast_job
+            _, lease = self.fast_job
             try:
                 if float(self.clock()) >= (lease.protected_until - lease.submit_margin
                                            + self.physical_scheduling_tolerance):
                     raise DeadlineMiss('in-flight query exceeded physical submission deadline')
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin)
+                    self.clock_bridge.check_deadline(lease.protected_until, lease.submit_margin)
             except BaseException as exc:
                 self._cancel_fast(lease)
-                self._failure=exc
-                self.record(dict(event='fast_rejected',query_id=lease.query_id,error=type(exc).__name__,
-                                 reason='inflight_deadline',worker_done=self.fast_job[0].done()))
+                self._failure = exc
+                self.record(dict(event='fast_rejected', query_id=lease.query_id,
+                                 error=type(exc).__name__, reason='inflight_deadline',
+                                 worker_done=self.fast_job[0].done()))
                 raise
         return None
 
