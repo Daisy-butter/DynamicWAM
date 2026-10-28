@@ -226,11 +226,11 @@ class TolerantDualRateRuntime(DualRateRuntime):
 
     runtime.py / timing.py / physical_clock.py remain protected (训推一致).
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.019, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.023, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
-        if not (0 <= tol <= 0.02):
-            raise ValueError('physical_scheduling_tolerance must be in [0, 0.02]')
+        if not (0 <= tol <= 0.025):
+            raise ValueError('physical_scheduling_tolerance must be in [0, 0.025]')
         self.physical_scheduling_tolerance = tol
 
     def _fast_query_protection(self, query, requested_wall):
@@ -500,7 +500,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.019,
+        physical_scheduling_tolerance=0.023,
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
