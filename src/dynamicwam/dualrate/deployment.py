@@ -5,7 +5,7 @@ import threading
 import time
 import numpy as np
 import torch
-from .timing import ExecutionQueue, TimedPlan, TimingError, DeadlineMiss, prefix_digest
+from .timing import ExecutionQueue, TimedPlan, TimingError, DeadlineMiss, BufferUnderrun, prefix_digest
 from .runtime import DualRateRuntime
 from .online import ObservationHistory
 from .actuators import ActuatorProjection
@@ -14,6 +14,27 @@ from .contact_cache import StepContactCache
 from .producer import NUMERIC_TIME_EPSILON
 
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
+
+
+def queue_can_commit_protect(queue, *, query_time, protect_steps):
+    """Eval-only read-only mirror of commit_prefix coverage (timing.py stays frozen).
+
+    Soft-horizon reserve hold must not invent actions; this only asks whether the
+    existing queue already has the contiguous rows begin_query would reserve.
+    """
+    if protect_steps < 1:
+        raise ValueError('protect_steps must be >= 1')
+    if not math.isfinite(query_time):
+        raise ValueError('query_time must be finite')
+    with queue._lock:
+        first = queue._floor(query_time)
+        until = queue.origin + (first + protect_steps) * queue.dt
+        last = max(queue._committed_end, queue._ceil(until))
+        if query_time > queue.origin + first * queue.dt + 1e-9:
+            last = max(last, first + 1)
+        return all(index in queue._rows for index in range(first, last))
+
+
 
 
 def exact_grid_index(when, origin, interval, *, tolerance=1e-6):
@@ -174,6 +195,17 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                     observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
                     observation_age=age,max_observation_age=builder.max_observation_age,
                     reason='insufficient_prefix_budget'))
+                continue
+            except BufferUnderrun as exc:
+                # Soft horizon exhausted for next protect (formal700: camera defer
+                # ~2.25s ate queued future rows). Do not abort: re-defer and let
+                # run_episode soft-horizon reserve hold keep the last pose.
+                deferred[route]=began if began is not None else now
+                emit(dict(event='query_deferred',route=route,physical_time=now,
+                    observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
+                    observation_age=age,max_observation_age=builder.max_observation_age,
+                    reason='insufficient_soft_horizon',error=type(exc).__name__,
+                    error_message=str(exc)))
                 continue
         else:
             if getattr(builder,'hardtime',False):
@@ -570,12 +602,12 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                   physics_step_seconds=dt,action_ticks=action_ticks,
                   wall_scheduling_tolerance=float(bridge.wall_scheduling_tolerance),
                   physical_scheduling_tolerance=float(runtime.physical_scheduling_tolerance),
-                  inflight_catchup_hold=True))
+                  inflight_catchup_hold=True,soft_horizon_reserve_hold=True))
         max_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture_tick=capture_ticks
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
         bind_gil_releasing_physx_step(session.env, _sapien_color_reader.step_cpu_physx)
-        accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={}
+        accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={};soft_horizon_hold_wall=None;soft_horizon_starve_seconds=30.0
         physics_steps=0;max_step_wall_gap=0.;last_step_wall=time.perf_counter()
         while terminal is None:
             now,lag=checked_now();max_lag=max(max_lag,lag)
@@ -628,6 +660,11 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             wait=(now-initial)+dt-(time.perf_counter()-wall0)
             if wait>0:
                 time.sleep(min(wait,.001));continue
+            # Commit finished fast work before any hold decision so replace can
+            # refill the soft horizon (smoke40: hold-before-poll left a done job
+            # uncommitted, then wall backlog blew past 0.25s).
+            runtime.poll()
+            now,lag=checked_now();max_lag=max(max_lag,lag)
             # Training wall≈phys: no Isaac backlog burn during a leased fast query.
             # Eval catch-up otherwise advances phys faster than wall and exhausts
             # protected_until while the worker is still running (smoke35 ~26ms
@@ -635,12 +672,47 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             # the fast worker finishes; resume catch-up after commit/reject.
             # Wall may lead while held — TolerantWall + catch-up wall admit cover it.
             if (runtime.fast_job is not None and not runtime.fast_job[0].done()):
-                runtime.poll()
                 time.sleep(0.0005)
                 continue
-            # A plan can become ready during the blocking capture above. Commit
-            # it before this tick consumes the last covered action.
-            runtime.poll()
+            # Soft-horizon reserve hold (formal700 BufferUnderrun): keep the last
+            # protect_need rows for the next begin_query. Hold when consuming one
+            # more row would leave fewer than protect_need (protect_need+1 probe).
+            # Only when no fast job is inflight/pending — otherwise poll/replace
+            # refills. Pause wall↔phys while held so multi-second camera wait does
+            # not trip max_backlog (smoke40). Do not invent/replay actions.
+            protect_need=int(runtime_config.max_protect_steps or runtime_config.protect_steps)
+            if (runtime.fast_job is None and
+                    not queue_can_commit_protect(queue,query_time=now,protect_steps=protect_need+1)):
+                if soft_horizon_hold_wall is None:
+                    soft_horizon_hold_wall=time.perf_counter()
+                    emit(dict(event='soft_horizon_hold',physical_time=now,
+                              protect_steps=protect_need,reserve_probe_steps=protect_need+1,
+                              reason='insufficient_future_rows_for_protect',
+                              deferred_routes=sorted(deferred)))
+                elif time.perf_counter()-soft_horizon_hold_wall>soft_horizon_starve_seconds:
+                    raise BufferUnderrun(
+                        f'soft-horizon reserve hold starved after '
+                        f'{soft_horizon_starve_seconds:.3f}s waiting for new plan')
+                # Re-anchor wall correspondence to the frozen phys pose.
+                bridge.wall_origin=bridge.wall_now()-(now-bridge.physics_origin)
+                wall0=time.perf_counter()-(now-initial)
+                # Phys is frozen, so the normal capture grid cannot advance. If no
+                # camera work is in flight, force a fresh capture at the held pose
+                # (smoke41 hold#4: stuck off-grid with a stale in-flight frame and
+                # starved). Age-0 exposure at `now` lets deferred routes resume.
+                if pending is None and completed_capture is None:
+                    pending=camera.begin(session.env,now)
+                    render_wall=time.perf_counter()-pending.capture_wall_perf_s
+                    after,lag=checked_now();max_lag=max(max_lag,lag)
+                    if after!=now or pending.physics_time_s!=now:
+                        raise TimingError('hold capture advanced scene time or relabelled exposure')
+                    emit(dict(event='capture_submitted',capture_id=pending.capture_id,exposure=now,
+                              exposure_tick=tick,owner_submit_wall_seconds=render_wall,
+                              reason='soft_horizon_hold_refresh'))
+                    next_capture_tick=next_grid_capture_tick(tick,capture_ticks,dt,render_wall)
+                time.sleep(0.0005)
+                continue
+            soft_horizon_hold_wall=None
             now,lag=checked_now();max_lag=max(max_lag,lag)
             tick=exact_grid_index(now,initial,dt,tolerance=1e-8)
             row=tick//action_ticks
