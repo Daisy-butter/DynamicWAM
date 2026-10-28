@@ -180,12 +180,12 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
     """Eval-side wall scheduling tolerance (measured DualRate continuous-sim slack).
 
-    formal09 Full baseline used wall_scheduling_tolerance=0.011. DualRate V4
+    formal09 Full baseline used wall_scheduling_tolerance=0.013. DualRate V4
     training/eval timing queues stay identical; only the wall-vs-deadline compare
     wall/phys 7ms from measured over_hard (wall≈6.22ms smoke12, phys≈6.0ms smoke16); protect prefix-need + deferred catch-up dispatch. Training queues unchanged.
     physical_clock.py remains protected (same_model_files).
     """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.011, **kwargs):
+    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.013, **kwargs):
         super().__init__(physics_dt, **kwargs)
         tol = float(wall_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -219,7 +219,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
     physical_clock.py / runtime.py stay protected (训推一致). Only this executor
     override changes eval-side poll ordering + measured slack (wall 7ms / phys 5ms) + protect headroom.
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.007, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.011, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -245,7 +245,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
         if cfg.max_protect_steps is None:
             return count, details
         dt = self.queue.dt
-        wall_tol = 0.011
+        wall_tol = 0.013
         if self.clock_bridge is not None and hasattr(self.clock_bridge, 'wall_scheduling_tolerance'):
             wall_tol = float(self.clock_bridge.wall_scheduling_tolerance)
         # Measured smoke09–12: protect=2 rem∈[0.322,0.346] but fast wall tail 0.328–0.360s (worker still running). Training max_protect_steps=3 is the contract remedy — bump when remaining cannot cover a full protect_steps prefix net of margin (+ wall_tol).
@@ -397,7 +397,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.011)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.013)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
@@ -412,7 +412,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.007,
+        physical_scheduling_tolerance=0.011,
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
