@@ -183,6 +183,7 @@ def validate_config(config):
     if (config.get('executor_contract') != 'immutable_wall_continuous_v1'
             or config.get('camera_async_submit') is not True
             or config.get('deployment_language_cache') != 'exact_per_device_v1'
+            or config.get('slow_model_process') != 'same_gpu_strict_parity_v1'
             or float(config.get('wall_scheduling_tolerance', -1)) != 0.
             or float(config.get('physical_scheduling_tolerance', -1)) != 0.
             or float(config.get('backlog_scheduling_tolerance', -1)) != .005):
@@ -418,7 +419,7 @@ def checked_episode(config, task, episode):
     return report, metric
 
 
-def main():
+def _run_worker(resources):
     faulthandler.enable(all_threads=True)
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('config', 'task', 'authorization', 'cohort-dir'):
@@ -478,6 +479,10 @@ def main():
     placement = place_inference_devices(system, fast_device=fast_device, slow_device=slow_device)
     checkpoint_meta = {k: payload.get(k) for k in ('schema', 'phase', 'phase_step', 'global_step', 'run_kind')}
     del payload
+    from dualrate_slow_process import SlowProcessSystem
+    system = SlowProcessSystem(system, config, slow_device=str(slow_device),
+        receipt_path=output/args.task/'slow_process.json')
+    resources['slow_process'] = system
     torch.cuda.set_device(0)
     from dynamicwam.dualrate.producer import episode_prompt
     from dualrate_deployment_inputs import build_cached_online_batch_builder
@@ -630,6 +635,15 @@ def main():
         episodes=len(metrics), checkpoint_sha256=config['checkpoint_sha256'], config_sha256=canonical_hash(config),
         gpu_uuids=uuids, native_result_dir=str(native), no_retry=True))
     return 0
+
+
+def main():
+    resources = {}
+    try:
+        return _run_worker(resources)
+    finally:
+        if 'slow_process' in resources:
+            resources['slow_process'].close()
 
 
 if __name__ == '__main__':
