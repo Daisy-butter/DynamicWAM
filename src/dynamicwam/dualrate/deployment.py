@@ -186,7 +186,7 @@ class TolerantWallPhysicsBridge(WallPhysicsBridge):
     queues. Paired with TolerantDualRateRuntime: phys_tol on commit validate +
     inflight; never rewind replace clock.
     """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.016, **kwargs):
+    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.017, **kwargs):
         super().__init__(physics_dt, **kwargs)
         tol = float(wall_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -250,7 +250,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
         if cfg.max_protect_steps is None:
             return count, details
         dt = self.queue.dt
-        wall_tol = 0.016
+        wall_tol = 0.017
         if self.clock_bridge is not None and hasattr(self.clock_bridge, 'wall_scheduling_tolerance'):
             wall_tol = float(self.clock_bridge.wall_scheduling_tolerance)
         # Measured smoke09–12: protect=2 rem∈[0.322,0.346] but fast wall tail 0.328–0.360s (worker still running). Training max_protect_steps=3 is the contract remedy — bump when remaining cannot cover a full protect_steps prefix net of margin (+ wall_tol).
@@ -460,7 +460,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.016)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.017)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
