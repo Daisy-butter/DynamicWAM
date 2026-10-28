@@ -226,6 +226,40 @@ class TolerantDualRateRuntime(DualRateRuntime):
             raise ValueError('physical_scheduling_tolerance must be in [0, 0.02]')
         self.physical_scheduling_tolerance = tol
 
+    def _fast_query_protection(self, query, requested_wall):
+        """Same bounded-budget lease as training, with formal09 scheduling headroom.
+
+        Training ceil((phase+lag+min_budget+margin)/dt) can leave only ~0.322s of
+        remaining prefix when protect_steps=2. Occasional eval fast wall times
+        reach ~0.35s (smoke09 q21), so the lease is born already too tight and
+        inflight wall deadline fires while the worker is still finishing.
+
+        Keep runtime.py protected; only bump effective protect_steps when the
+        remaining prefix would be < min_query_budget + submit_margin + wall_tol
+        (and still <= max_protect_steps). Does not change model/timing queues.
+        """
+        count, details = DualRateRuntime._fast_query_protection(self, query, requested_wall)
+        cfg = self.config
+        if not (cfg.min_query_budget_seconds > 0 and self.clock_bridge is not None and self.clock_bridge.active):
+            return count, details
+        if cfg.max_protect_steps is None:
+            return count, details
+        dt = self.queue.dt
+        wall_tol = 0.005
+        if self.clock_bridge is not None and hasattr(self.clock_bridge, 'wall_scheduling_tolerance'):
+            wall_tol = float(self.clock_bridge.wall_scheduling_tolerance)
+        need = cfg.min_query_budget_seconds + 2 * cfg.submit_margin + wall_tol  # ~0.325; razor-thin 0.322s leases bump to protect=3
+        while count < cfg.max_protect_steps:
+            until = self.queue.origin + (math.floor((query - self.queue.origin) / dt + 1e-9) + count) * dt
+            remaining = until - cfg.submit_margin - query
+            if remaining >= need:
+                break
+            count += 1
+        details = dict(details)
+        details['effective_protect_steps'] = count
+        details['eval_protect_headroom_seconds'] = need
+        return count, details
+
     def poll(self):
         """Commit finished fast work before applying inflight deadlines."""
         if self._failure is not None:
