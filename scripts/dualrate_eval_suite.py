@@ -89,12 +89,15 @@ def deployment_acceptance(reports):
         and r['fast_graph_acceptance'].get('shape_count') == 2 for r in reports)
     during = sum(r.get('fast_queries_during_slow', 0) for r in reports)
     overlap = sum(r.get('model_overlap_fast_queries', 0) for r in reports)
+    camera_steps = sum(r.get('physics_steps_during_camera', 0) for r in reports)
+    fast_steps = sum(r.get('physics_steps_during_fast_inflight', 0) for r in reports)
     consumed = [consumed_background_versions(r) for r in reports]
     refreshed = any(consumed)
     return dict(fast_graph_passed=graph, fast_queries_during_slow=during,
         model_overlap_fast_queries=overlap, refreshed_reference_consumed=refreshed,
+        physics_steps_during_camera=camera_steps, physics_steps_during_fast_inflight=fast_steps,
         consumed_background_versions=consumed,
-        passed=bool(graph and during and overlap and refreshed))
+        passed=bool(graph and during and overlap and refreshed and camera_steps>0 and fast_steps>0))
 
 
 def cleanup_children(active):

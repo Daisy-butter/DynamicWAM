@@ -90,11 +90,17 @@ def validate_source_compatibility(config, checkpoint_contract=None):
         raise ValueError('online inference-only change identity differs')
     if sha(ROOT/'src/dynamicwam/dualrate/online.py') != online['evaluation_sha256']:
         raise ValueError('online inference-only evaluation hash differs')
+    camera = receipt.get('camera_executor_change', {})
+    if (camera.get('change') != 'owner_frozen_snapshot_background_render_and_readback'
+            or camera.get('evaluation_sha256') != sha(ROOT/'src/dynamicwam/runtime/domino_rt/camera_capture.py')
+            or re.fullmatch(r'[0-9a-f]{64}', str(camera.get('training_sha256', ''))) is None):
+        raise ValueError('exact asynchronous camera executor binding required')
     protected = {p.relative_to(ROOT/'src/dynamicwam').as_posix(): p
                  for p in (ROOT/'src/dynamicwam').rglob('*.py')
                  if p.relative_to(ROOT/'src/dynamicwam').as_posix() not in
                  {'dualrate/deployment.py', 'runtime/domino_rt/domino_session.py',
-                  'dualrate/contact_cache.py', 'dualrate/online.py'}}
+                  'dualrate/contact_cache.py', 'dualrate/online.py',
+                  'runtime/domino_rt/camera_capture.py'}}
     if set(files) != set(protected):
         raise ValueError('compatibility receipt must cover every non-executor Python source')
     for name, digest in files.items():
@@ -156,6 +162,12 @@ def validate_config(config):
             any(not re.fullmatch(r'[a-z][a-z0-9_]*', task) for task in tasks)):
         raise ValueError('distinct safe task names required')
     environment_groups(config)
+    if (config.get('executor_contract') != 'immutable_wall_continuous_v1'
+            or config.get('camera_async_submit') is not True
+            or float(config.get('wall_scheduling_tolerance', -1)) != 0.
+            or float(config.get('physical_scheduling_tolerance', -1)) != 0.
+            or float(config.get('backlog_scheduling_tolerance', -1)) != .005):
+        raise ValueError('continuous executor requires async rendering, strict deadlines and Full09 backlog tolerance')
     if type(config['episodes']) is not int or not 1 <= config['episodes'] <= 20:
         raise ValueError('episode count must be 1..20')
     if config['stage'] == 'formal' and (len(tasks) != 35 or config['episodes'] != 20 or config.get('action_limit') is not None):
@@ -282,7 +294,7 @@ class EpisodeCohort:
             pass
 
     def wait(self, episode, phase):
-        if phase not in ('ready', 'finished', 'finalized') or not 0 <= episode < self.manifest['episodes']:
+        if phase not in ('ready', 'armed', 'finished', 'finalized') or not 0 <= episode < self.manifest['episodes']:
             raise ValueError('invalid inactive episode barrier')
         directory = self.directory / f'episode_{episode:04d}' / phase
         save(directory / f'{self.task}.json', dict(task=self.task, episode=episode, phase=phase, pid=os.getpid()))
@@ -364,8 +376,10 @@ def episode_language(config, manifest, prompt, device, directory):
 
 def checked_episode(config, task, episode):
     from video_artifacts import validate_video_artifacts
+    from dualrate_continuous_acceptance import validate_continuous_report
     base = Path(config['output']) / task / f'episode_{episode:04d}'
     report, metric, descriptor = (read(base / f) for f in ('report.json', 'metrics.json', 'manifest.json'))
+    validate_continuous_report(report, config)
     if (report.get('protocol') != config['protocol'] or report.get('realtime_valid') is not True
             or report.get('continuous_valid') is not True or report.get('complete') is not True
             or report.get('video_required') is not True or not validate_video_artifacts(report)):
@@ -515,7 +529,8 @@ def main():
                 instruction=prompt, control_interval_s=config['action_dt'])
             session.metrics_tracker = EvalMetricsTracker(env, {'use_dynamic': True})
             session.metrics_tracker.on_episode_start()
-            camera = AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
+            camera = AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch,
+                async_submit=config['camera_async_submit'], worker_initializer=lambda: torch.cuda.set_device(0))
             save(directory / 'manifest.json', dict(descriptor, evaluation_instruction=prompt, prompt_source=prompt_source,
                 action_dt=config['action_dt'], prepared_sha256=config['prepared_sha256']))
             (directory / 'expert_motion.pkl').write_bytes(motion_bytes)
@@ -524,9 +539,11 @@ def main():
                 frame_period=float(config['frame_period']), max_backlog=float(config['max_backlog']),
                 seed=descriptor['seed'], video=video,
                 camera_warmup_captures=int(config.get('camera_warmup_captures', 3)),
-                wall_scheduling_tolerance=float(config.get('wall_scheduling_tolerance', 0.017)),
-                physical_scheduling_tolerance=float(config.get('physical_scheduling_tolerance', 0.011)),
+                wall_scheduling_tolerance=float(config['wall_scheduling_tolerance']),
+                physical_scheduling_tolerance=float(config['physical_scheduling_tolerance']),
+                backlog_scheduling_tolerance=float(config['backlog_scheduling_tolerance']),
                 on_ready=lambda: cohort.wait(episode, 'ready'),
+                on_armed=lambda: cohort.wait(episode, 'armed'),
                 on_failure=lambda exc: publish_runtime_failure(output, cohort, args.task, episode, exc))
             report.update(task=args.task, episode_index=episode, seed=descriptor['seed'],
                 requested_seed=descriptor['requested_seed'], checkpoint_sha256=config['checkpoint_sha256'],

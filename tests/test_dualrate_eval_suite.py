@@ -142,11 +142,14 @@ class DualRateEvalSuiteTest(unittest.TestCase):
     def test_smoke_acceptance_requires_graph_actual_overlap_and_new_reference(self):
         report = dict(fast_graph_acceptance=dict(enabled=True, passed=True, sealed=True, shape_count=2),
                       fast_queries_during_slow=1, model_overlap_fast_queries=1, reference_versions_consumed=[1, 2],
+                      physics_steps_during_camera=10, physics_steps_during_fast_inflight=10,
                       events=[dict(event='slow_completed', accepted=True, version=2, source_time=.1, completed_time=.3),
                               dict(event='fast_started', query_id=4, reference_version=2, query_time=.4),
                               dict(event='fast_committed', query_id=4, reference_version=2, query_time=.4, commit_time=.5)])
         self.assertTrue(suite.deployment_acceptance([report])['passed'])
         self.assertFalse(suite.deployment_acceptance([dict(report, model_overlap_fast_queries=0)])['passed'])
+        self.assertFalse(suite.deployment_acceptance([dict(report, physics_steps_during_camera=0)])['passed'])
+        self.assertFalse(suite.deployment_acceptance([dict(report, physics_steps_during_fast_inflight=0)])['passed'])
         self.assertFalse(suite.deployment_acceptance([dict(report, reference_versions_consumed=[0, 1], events=[])])['passed'])
         with self.assertRaisesRegex(ValueError, 'event proof'):
             suite.deployment_acceptance([dict(report, reference_versions_consumed=[0])])
@@ -226,8 +229,14 @@ class DualRateEvalSuiteTest(unittest.TestCase):
         (src/'dualrate/model.py').write_text('weight = 1\n')
         (src/'dualrate/deployment.py').write_text('callback = None\n')
         (src/'dualrate/online.py').write_text('normalization_precision = "float32"\n')
+        (src/'runtime/domino_rt').mkdir(parents=True)
+        camera = src/'runtime/domino_rt/camera_capture.py'
+        camera.write_text('async_submit = True\n')
         receipt_path = self.root/'compatibility.json'
         receipt = dict(training_source_sha256='training', evaluation_source_sha256=worker.source_hash(src),
+                       camera_executor_change=dict(training_sha256='2'*64,
+                           evaluation_sha256=worker.sha(camera),
+                           change='owner_frozen_snapshot_background_render_and_readback'),
                        same_model_files_sha256={'dualrate/model.py': worker.sha(src/'dualrate/model.py')},
                        inference_only_files_sha256={'dualrate/online.py': dict(training_sha256='1'*64,
                            evaluation_sha256=worker.sha(src/'dualrate/online.py'),

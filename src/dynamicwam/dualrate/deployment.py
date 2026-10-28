@@ -16,43 +16,70 @@ from .producer import NUMERIC_TIME_EPSILON
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
 
-def queue_can_commit_protect(queue, *, query_time, protect_steps):
-    """Eval-only read-only mirror of commit_prefix coverage (timing.py stays frozen).
+class ContinuousWallPhysicsBridge(WallPhysicsBridge):
+    """Fixed activation mapping; Full formal09's 5ms backlog tolerance only.
 
-    Soft-horizon reserve hold must not invent actions; this only asks whether the
-    existing queue already has the contiguous rows begin_query would reserve.
+    This tolerance is not a query deadline extension. Neither wall origin nor
+    elapsed wall time may be adjusted during an active episode.
     """
-    if protect_steps < 1:
-        raise ValueError('protect_steps must be >= 1')
-    if not math.isfinite(query_time):
-        raise ValueError('query_time must be finite')
-    with queue._lock:
-        first = queue._floor(query_time)
-        until = queue.origin + (first + protect_steps) * queue.dt
-        last = max(queue._committed_end, queue._ceil(until))
-        if query_time > queue.origin + first * queue.dt + 1e-9:
-            last = max(last, first + 1)
-        return all(index in queue._rows for index in range(first, last))
+    def __init__(self, *args, backlog_scheduling_tolerance=.005, **kwargs):
+        super().__init__(*args, **kwargs)
+        value = float(backlog_scheduling_tolerance)
+        if not math.isfinite(value) or not 0 <= value <= .005:
+            raise ValueError('backlog scheduling tolerance must be within [0,.005]')
+        self.backlog_scheduling_tolerance = value
+        self._activation_origins = None
 
-def credit_wall_while_phys_frozen(bridge, *, now, frozen_wall_seconds):
-    """Eval-only: phys held at `now` while wall advanced; do not count as backlog.
+    def activate(self, physics_time, wall_time=None):
+        super().activate(physics_time, wall_time)
+        self._activation_origins = (self.physics_origin, self.wall_origin)
 
-    camera.begin render (~0.10s) and inflight/soft-horizon phys freezes burn wall
-    with phys fixed. Without a credit, pre-existing catch-up lag (~0.14s) plus one
-    render trips max_backlog=0.25 (formal703 ep1). Shift wall_origin by the frozen
-    wall interval only — preserves real lag, does not raise the backlog ceiling.
-    Caller must also add the same duration to run_episode wall0 so wait()-paced
-    catch-up stays coherent (smoke43 negative-lag race).
-    """
-    frozen = float(frozen_wall_seconds)
-    if not math.isfinite(frozen) or frozen < 0:
-        raise ValueError('frozen_wall_seconds must be a finite non-negative duration')
-    if frozen > 0 and bridge.active:
-        bridge.wall_origin += frozen
+    def assert_fixed_origins(self):
+        if self.active and self._activation_origins != (self.physics_origin, self.wall_origin):
+            raise TimingError('active wall/physics origin changed')
 
+    def expected_physics(self, wall_time=None):
+        self.assert_fixed_origins()
+        return super().expected_physics(wall_time)
+
+    def check_backlog(self, physical_now, max_backlog, *, wall_time=None):
+        # Delegate all signed-lag and finite-value checks to the original clock.
+        if not math.isfinite(max_backlog) or max_backlog <= 0:
+            raise ValueError('positive finite backlog bound required')
+        return super().check_backlog(physical_now,
+            max_backlog + self.backlog_scheduling_tolerance, wall_time=wall_time)
 
 
-
+def continuous_clock_evidence(bridge, *, activation_wall, activation_physics,
+                              end_wall, end_physics, physics_steps, max_lag,
+                              min_lag, max_backlog):
+    """Validate raw, non-rebased clocks before declaring continuous real time."""
+    bridge.assert_fixed_origins()
+    wall = float(end_wall) - float(activation_wall)
+    physics = float(end_physics) - float(activation_physics)
+    dt = bridge.physics_dt
+    raw_lag = wall - physics
+    limit = float(max_backlog) + bridge.backlog_scheduling_tolerance
+    checks = dict(
+        immutable_activation=(bridge.wall_origin == activation_wall and
+                              bridge.physics_origin == activation_physics),
+        finite_clocks=all(math.isfinite(x) for x in (wall, physics, max_lag, min_lag)),
+        physics_steps_match=abs(physics-physics_steps*dt) <= 1e-7,
+        raw_wall_not_behind=raw_lag >= -dt-bridge.numeric_tolerance,
+        raw_backlog_in_bound=raw_lag <= limit,
+        observed_backlog_in_bound=max_lag <= limit,
+        observed_no_future_steps=min_lag >= -dt-bridge.numeric_tolerance,
+        positive_active_duration=wall >= 0 and physics >= 0)
+    if not all(checks.values()):
+        raise TimingError('continuous raw-clock acceptance failed: '+str(checks))
+    return dict(passed=all(checks.values()),checks=checks,
+        activation_wall_time=float(activation_wall),activation_physics_time=float(activation_physics),
+        final_wall_time=float(end_wall),final_physics_time=float(end_physics),
+        active_wall_seconds=wall,physical_duration=physics,raw_end_backlog_s=raw_lag,
+        observed_min_backlog_s=min_lag,observed_max_backlog_s=max_lag,
+        configured_max_backlog_s=float(max_backlog),
+        backlog_scheduling_tolerance_s=bridge.backlog_scheduling_tolerance,
+        measured_physics_per_wall_second=physics/wall if wall>0 else None)
 
 
 def exact_grid_index(when, origin, interval, *, tolerance=1e-6):
@@ -71,6 +98,39 @@ def next_grid_capture_tick(tick, action_ticks, physics_dt, render_wall, *, recov
         raise ValueError('invalid capture tick schedule')
     intervals=max(1,math.ceil((render_wall+recovery_seconds)/(action_ticks*physics_dt)-1e-9))
     return int(tick)+intervals*int(action_ticks)
+
+
+def action_response_statistics(events):
+    """First executed mutable row per query; exclude superseded/terminal plans.
+
+    Queue replacement preserves rows before protected_until, so the newest
+    committed plan whose mutable frontier reaches an executed row owns that row.
+    This measures actual response, not merely GPU sampling time.
+    """
+    activation=next((e['wall_time'] for e in events if e['event']=='activation'),math.inf)
+    commits=[];seen=set();responses=[]
+    for event in events:
+        if event.get('post_terminal'):continue
+        if event['event']=='fast_committed':
+            commits.append(event)
+        elif event['event']=='execute':
+            owner=next((e for e in reversed(commits)
+                if e['protected_until']<=event['start_time']+1e-9),None)
+            if owner is None or owner['query_id'] in seen:continue
+            seen.add(owner['query_id'])
+            query_wall=owner.get('query_request_wall_time')
+            exposure_wall=owner.get('observation_exposure_wall_time')
+            if query_wall is None or query_wall<activation:continue
+            executed_wall=event['execution_wall_time']
+            if executed_wall<query_wall:raise TimingError('action executed before its query')
+            responses.append(dict(query_id=owner['query_id'],reference_version=owner['reference_version'],
+                observation_time=owner['observation_time'],query_time=owner['query_time'],
+                first_mutable_action_time=owner['protected_until'],actual_execution_time=event['actual_start'],
+                execution_wall_time=executed_wall,query_request_wall_time=query_wall,
+                observation_exposure_wall_time=exposure_wall,
+                query_to_execution_wall_seconds=executed_wall-query_wall,
+                observation_to_execution_wall_seconds=None if exposure_wall is None else executed_wall-exposure_wall))
+    return dict(action_response_events=responses,action_response_measurement='first_executed_mutable_row_by_queue_provenance')
 
 
 def model_overlap_statistics(events):
@@ -117,11 +177,10 @@ def bind_gil_releasing_physx_step(env, step_physx) -> None:
 
 
 def next_capture_deadline(initial, now, frame_period, render_wall) -> float:
-    """Schedule the next submission after this render can be absorbed at 1x.
+    """Legacy synchronous-camera cadence helper, unused by the async executor.
 
-    ``take_picture`` freezes physics for the whole wait. Submitting again on
-    the raw 0.06 s grid stacks that wait faster than the scene can catch up
-    and trips the backlog gate. The returned time stays on the capture grid.
+    The active executor uses actual background render duration and integer
+    action-grid slots through ``next_grid_capture_tick``.
     """
     if frame_period <= 0 or render_wall < 0 or not math.isfinite(render_wall):
         raise ValueError("capture schedule requires a positive frame and a finite render wait")
@@ -163,22 +222,23 @@ def warm_camera(camera, session, *, count, emit):
     return captured
 
 
-def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,deferred,seen_references):
+def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,deferred,seen_references,
+                         exposure_walls=None,wall_clock=time.perf_counter):
     """Wait for genuinely fresh available pixels while physics/queue continue.
 
     Deferral never advances the route's last-query tick. A later lease uses its
     actual physical time and the original floor-grid/protect_steps deadline.
 
-    Eval-only: when catch-up-hold leaves residual wall/phys lag, a deferred
-    fresh-capture resume can hit training's bounded-budget ceil at protect=4
-    while max_protect_steps=3 (smoke38). Training lag≈0 so it never trips;
-    keep the same formula/cap — defer until phase+lag fits instead of abort.
+    Dispatch can occur during catch-up. Real wall availability, observation age,
+    and the trained bounded 2/3-row lease still apply; physics never waits here.
     """
     fast_due,slow_due=runtime.due(now)
     if not (fast_due or slow_due):return
     snapshot=history.snapshot(now)
     age=now-snapshot[-1].exposure
-    fresh=0<=age<=builder.max_observation_age+NUMERIC_TIME_EPSILON
+    wall_age = None if exposure_walls is None else float(wall_clock())-exposure_walls[snapshot[-1].exposure]
+    fresh=(0<=age<=builder.max_observation_age+NUMERIC_TIME_EPSILON and
+           (wall_age is None or 0<=wall_age<=builder.max_observation_age+NUMERIC_TIME_EPSILON))
     for route,due in (('fast',fast_due),('slow',slow_due)):
         if not due:continue
         if not fresh:
@@ -186,7 +246,7 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                 deferred[route]=now
                 emit(dict(event='query_deferred',route=route,physical_time=now,
                     observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
-                    observation_age=age,max_observation_age=builder.max_observation_age,
+                    observation_age=age,observation_wall_age=wall_age,max_observation_age=builder.max_observation_age,
                     reason='no_fresh_completed_capture'))
             continue
         began=None
@@ -197,7 +257,6 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                 observation_age=age))
         if route=='fast':
             ref=runtime.store.snapshot(now)
-            if ref:seen_references.add(ref.version)
             trace=queue.completed_execution_trace(initial,now)
             try:
                 runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
@@ -211,20 +270,10 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                 deferred[route]=began if began is not None else now
                 emit(dict(event='query_deferred',route=route,physical_time=now,
                     observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
-                    observation_age=age,max_observation_age=builder.max_observation_age,
+                    observation_age=age,observation_wall_age=wall_age,max_observation_age=builder.max_observation_age,
                     reason='insufficient_prefix_budget'))
                 continue
-            except BufferUnderrun as exc:
-                # Soft horizon exhausted for next protect (formal700: camera defer
-                # ~2.25s ate queued future rows). Do not abort: re-defer and let
-                # run_episode soft-horizon reserve hold keep the last pose.
-                deferred[route]=began if began is not None else now
-                emit(dict(event='query_deferred',route=route,physical_time=now,
-                    observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
-                    observation_age=age,max_observation_age=builder.max_observation_age,
-                    reason='insufficient_soft_horizon',error=type(exc).__name__,
-                    error_message=str(exc)))
-                continue
+            if ref:seen_references.add(ref.version)
         else:
             if getattr(builder,'hardtime',False):
                 exposure=snapshot[-1].exposure
@@ -245,295 +294,16 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 
 
 
-class TolerantWallPhysicsBridge(WallPhysicsBridge):
-    """Eval-only wall scheduling tolerance (measured continuous-sim slack).
-
-    Training WallPhysicsBridge.check_deadline is strict (wall≈phys). Eval admits
-    ready_wall / wall_now up to wall_scheduling_tolerance past the mapped hard
-    wall deadline (config-wired; default 0.017, cap 0.02). Does not touch
-    physical_clock.py / timing queues. Paired with TolerantDualRateRuntime and
-    run_episode inflight catch-up hold.
-    """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.017, **kwargs):
-        super().__init__(physics_dt, **kwargs)
-        tol = float(wall_scheduling_tolerance)
-        if not (0 <= tol <= 0.02):
-            raise ValueError('wall_scheduling_tolerance must be in [0, 0.02]')
-        self.wall_scheduling_tolerance = tol
-
-    def check_deadline(self, protected_until, submit_margin=0., *, ready_wall=None, wall_now=None):
-        if not self.active:
-            return
-        if not math.isfinite(protected_until) or not math.isfinite(submit_margin) or submit_margin < 0:
-            raise ValueError("invalid protected wall deadline")
-        deadline = (self.wall_origin + (protected_until - self.physics_origin)
-                    - submit_margin + self.wall_scheduling_tolerance)
-        now = self.wall_now() if wall_now is None else float(wall_now)
-        for value in (now,) if ready_wall is None else (float(ready_wall), now):
-            if not math.isfinite(value) or value >= deadline:
-                raise DeadlineMiss("query exceeded protected prefix wall-clock submission deadline")
-
-
-
-class TolerantDualRateRuntime(DualRateRuntime):
-    """Eval-only DualRateRuntime: commit-before-inflight + small measured phys slack.
-
-    Training DualRateRuntime polls inflight before commit with STRICT deadlines
-    (no phys/wall tol) because wall≈phys — training has no Isaac render backlog.
-    Eval continuous-sim previously catch-up-stepped while a leased fast worker
-    ran, so phys advanced faster than wall and burned protected_until (smoke35:
-    ~26ms over_hard while clearing ~36ms backlog in one ~0.41s query). Raising
-    phys_tol then let commits land past the mutability frontier → TimingError
-    (smoke34); converting that to DeadlineMiss only renamed the failure.
-
-    Primary fix is in run_episode: hold catch-up while fast_job is inflight so
-    the lease window restores training's wall≈phys invariant. Remaining eval
-    slack is measurement jitter only (wall_tol≤0.02, phys_tol≤0.02):
-
-      * TolerantWall admits ready_wall within wall_tol of mapped hard;
-      * catch-up wall admit on commit/inflight when phys still < hard+phys_tol
-        (wall can lead while phys is held);
-      * never rewind replace clock (smoke20); safe hard-eps clamp only when
-        hard-eps >= _last_time; else true now + tolerant validate.
-
-    runtime.py / timing.py / physical_clock.py remain protected (训推一致).
-    """
-    def __init__(self, *args, physical_scheduling_tolerance=0.011, **kwargs):
-        super().__init__(*args, **kwargs)
-        tol = float(physical_scheduling_tolerance)
-        if not (0 <= tol <= 0.02):
-            raise ValueError('physical_scheduling_tolerance must be in [0, 0.02]')
-        self.physical_scheduling_tolerance = tol
-
-    def _fast_query_protection(self, query, requested_wall):
-        """Same bounded-budget lease as training, with formal09 scheduling headroom.
-
-        Training ceil((phase+lag+min_budget+margin)/dt) can leave only ~0.322s of
-        remaining prefix when protect_steps=2. Occasional eval fast wall times
-        reach ~0.35s (smoke09 q21), so the lease is born already too tight and
-        inflight wall deadline fires while the worker is still finishing.
-
-        Keep runtime.py protected; only bump effective protect_steps when the
-        remaining prefix would be < min_query_budget + submit_margin + wall_tol
-        (and still <= max_protect_steps). Does not change model/timing queues.
-        """
-        count, details = DualRateRuntime._fast_query_protection(self, query, requested_wall)
-        cfg = self.config
-        if not (cfg.min_query_budget_seconds > 0 and self.clock_bridge is not None and self.clock_bridge.active):
-            return count, details
-        if cfg.max_protect_steps is None:
-            return count, details
-        dt = self.queue.dt
-        wall_tol = 0.017
-        if self.clock_bridge is not None and hasattr(self.clock_bridge, 'wall_scheduling_tolerance'):
-            wall_tol = float(self.clock_bridge.wall_scheduling_tolerance)
-        # Measured smoke09–12: protect=2 rem∈[0.322,0.346] but fast wall tail 0.328–0.360s (worker still running). Training max_protect_steps=3 is the contract remedy — bump when remaining cannot cover a full protect_steps prefix net of margin (+ wall_tol).
-        need = cfg.protect_steps * dt - cfg.submit_margin + wall_tol  # ≈0.357 @dt=0.18,tol=7ms
-        while count < cfg.max_protect_steps:
-            until = self.queue.origin + (math.floor((query - self.queue.origin) / dt + 1e-9) + count) * dt
-            remaining = until - cfg.submit_margin - query
-            if remaining >= need:
-                break
-            count += 1
-        details = dict(details)
-        details['effective_protect_steps'] = count
-        details['eval_protect_headroom_seconds'] = need
-        return count, details
-
-    def poll(self):
-        """Commit finished fast work before applying inflight deadlines.
-
-        Coherent eval scheme (aligned to training begin_query/protect/submit_margin,
-        wall bridge, replace monotonic clock; eval-only continuous-sim slack):
-
-        1. Wall: TolerantWallPhysicsBridge.check_deadline admits ready_wall with
-           measured wall_scheduling_tolerance (training check is strict).
-        2. Physical replace: ALWAYS pass true monotonic now (never rewind /
-           hard-eps). Training ExecutionQueue.replace forbids now < _last_time
-           (smoke20 TimingError when eval clamped now=hard-1e-9 after execute).
-        3. Catch-up / wall-tol window: if ready_wall already passed (1) but
-           physical now sits in [hard, hard+phys_tol], temporarily wrap
-           queue._validate_lease to apply the same phys_tol, then restore.
-           Outside that window: DeadlineMiss (honest late).
-        4. Inflight (still-running only): physical gate uses hard+phys_tol;
-           wall gate uses TolerantWall. Commit-before-inflight preserves
-           finished work whose ready_wall met the deadline while the owner
-           was catching up (training polls inflight first — no Isaac backlog).
-        """
-        if self._failure is not None:
-            raise TimingError('runtime has failed; close owned workers before continuing') from self._failure
-
-        # 1) Publish finished slow jobs (same as parent).
-        if self.slow_job is not None and self.slow_job[0].done():
-            job,source,prefix,version=self.slow_job
-            world,device_world,ready_wall,metrics=job.result()
-            completed=float(self.clock())
-            if self.clock_bridge is None or self.clock_bridge.ready(ready_wall,completed):
-                self.slow_job=None
-                payload={k:v for k,v in world.items() if isinstance(v,torch.Tensor)}
-                payload['completed_time']=torch.tensor([completed],dtype=torch.float64)
-                intervals=payload["world_intervals"][0][payload["world_types"][0]==1]
-                times=tuple(sorted(set(intervals.flatten().tolist())))
-                accepted=self.store.publish(source_time=source,completed_time=completed,version=version,
-                    generation_stage=str(world["generation_stage"]),future_times=times,
-                    future_valid=(True,)*len(times),payload=payload,now=completed,
-                    episode_id=self.queue.episode_id,clock_id=self.queue.clock_id,
-                    source_queue_version=prefix.queue_version,source_prefix_hash=prefix_digest(prefix))
-                if accepted:
-                    self._published_device_world=(version,device_world)
-                self.record(dict(event="slow_completed",source_time=source,completed_time=completed,
-                    published_time=completed,publication_wall_time=self.wall_clock(),
-                    version=version,accepted=accepted,**metrics))
-
-        # 2) Commit finished fast jobs BEFORE inflight deadline (eval catch-up).
-        if self.fast_job is not None and self.fast_job[0].done():
-            job,lease=self.fast_job
-            submitted=False
-            discarded=0
-            try:
-                plan,output,ready_wall,metrics=job.result()
-                if not isinstance(metrics,dict):
-                    metrics=dict(wall_seconds=metrics)
-                now=float(self.clock())
-                if self.clock_bridge is not None:
-                    try:
-                        self.clock_bridge.check_deadline(
-                            lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
-                    except DeadlineMiss:
-                        # Owner catch-up / backlog: wall can lead physics so ready_wall
-                        # trips TolerantWall while physical now is still inside
-                        # hard+phys_tol (smoke31 q26: over_hard_wall~0.12s with
-                        # backlog~0.11s but over_hard_phys=10ms). Admit for commit;
-                        # never rewind. Truly late phys still raises below / via replace.
-                        hard = lease.protected_until - lease.submit_margin
-                        if not (self.clock_bridge.active
-                                and now < hard + self.physical_scheduling_tolerance):
-                            raise
-                    if not self.clock_bridge.ready(ready_wall, now):
-                        return None
-                # Commit clock policy (t111u, smoke20/34):
-                # - Never pass replace a now < _last_time (smoke20 rewind TimingError).
-                # - If hard <= now <= hard+phys_tol and hard-eps >= _last_time: safe
-                #   non-rewind clamp replace(now=hard-eps) so mutability window matches
-                #   training deadline (avoids smoke34 TimingError changing executing row).
-                # - If hard-eps < _last_time: keep true now + temporary tolerant validate;
-                #   if replace still hits executing-row TimingError, treat as DeadlineMiss.
-                replace_now = now
-                _restore = None
-                if self.clock_bridge is not None and self.clock_bridge.active:
-                    hard = lease.protected_until - lease.submit_margin
-                    slack = self.physical_scheduling_tolerance
-                    last = float(getattr(self.queue, '_last_time', now))
-                    if now >= hard:
-                        if (now - hard) > slack:
-                            raise DeadlineMiss(
-                                "query exceeded protected prefix submission deadline")
-                        candidate = hard - 1e-9
-                        if candidate + 1e-9 >= last:
-                            replace_now = candidate
-                        else:
-                            _q = self.queue
-                            _orig = _q._validate_lease
-                            _hard = hard
-                            _tol = slack
-                            def _tolerant_validate(plan, now_, *, _orig=_orig, _q=_q,
-                                                   _hard=_hard, _tol=_tol):
-                                from .timing import DeadlineMiss, StalePlan, TimingError
-                                lease = plan.lease
-                                if lease is None:
-                                    if getattr(_q, '_test_fixture', False):
-                                        return
-                                    raise TimingError("production plan requires its query lease")
-                                if (lease != _q._inflight or lease.episode_id != _q.episode_id or
-                                        lease.clock_id != _q.clock_id or
-                                        plan.query_time != lease.query_time):
-                                    raise StalePlan(
-                                        "query/episode/clock lease is stale or mismatched")
-                                if now_ >= _hard + _tol:
-                                    raise DeadlineMiss(
-                                        "query exceeded protected prefix submission deadline")
-                                return _orig(plan, min(now_, _hard - 1e-9))
-                            _q._validate_lease = _tolerant_validate
-                            _restore = (_q, _orig)
-                try:
-                    try:
-                        discarded = self.queue.replace(plan, now=replace_now)
-                    except TimingError as exc:
-                        if (replace_now == now and now >= (lease.protected_until - lease.submit_margin)
-                                and "currently executing or committed action" in str(exc)):
-                            raise DeadlineMiss(
-                                "query exceeded protected prefix submission deadline") from exc
-                        raise
-                finally:
-                    if _restore is not None:
-                        _restore[0]._validate_lease = _restore[1]
-                submitted = True
-                if self.clock_bridge is not None:
-                    try:
-                        self.clock_bridge.check_deadline(
-                            lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
-                    except DeadlineMiss:
-                        hard = lease.protected_until - lease.submit_margin
-                        if not (self.clock_bridge.active
-                                and float(self.clock()) < hard + self.physical_scheduling_tolerance):
-                            raise
-                self.fast_job = None
-            except BaseException as exc:
-                self.fast_job = None
-                self._discarded_jobs.append(('fast', (job, lease), dict(
-                    reason='failed_submission', queue_updated_before_failure=submitted)))
-                if not submitted:
-                    self._cancel_fast(lease)
-                self._failure = exc
-                self.record(dict(event="fast_rejected", query_id=lease.query_id,
-                                 error=type(exc).__name__,
-                                 queue_updated_before_failure=submitted))
-                raise
-            self.record(dict(event="fast_committed", query_id=lease.query_id,
-                             discarded_rows=discarded,
-                             protected_until=lease.protected_until,
-                             submit_margin=lease.submit_margin,
-                             query_time=lease.query_time,
-                             commit_time=float(self.clock()),
-                             observation_time=lease.observation_time,
-                             commit_wall_time=self.wall_clock(),
-                             ready_wall_time=ready_wall,
-                             reference_version=lease.reference_version, **metrics))
-            return output
-
-        # 3) Inflight deadline only while the worker is still running.
-        if self.fast_job is not None and (self.clock_bridge is None or self.clock_bridge.active):
-            _, lease = self.fast_job
-            try:
-                if float(self.clock()) >= (lease.protected_until - lease.submit_margin
-                                           + self.physical_scheduling_tolerance):
-                    raise DeadlineMiss('in-flight query exceeded physical submission deadline')
-                if self.clock_bridge is not None:
-                    try:
-                        self.clock_bridge.check_deadline(lease.protected_until, lease.submit_margin)
-                    except DeadlineMiss:
-                        hard = lease.protected_until - lease.submit_margin
-                        # Same catch-up skew as commit: wall ahead of phys under backlog.
-                        if not (float(self.clock()) < hard + self.physical_scheduling_tolerance):
-                            raise
-            except BaseException as exc:
-                self._cancel_fast(lease)
-                self._failure = exc
-                self.record(dict(event='fast_rejected', query_id=lease.query_id,
-                                 error=type(exc).__name__, reason='inflight_deadline',
-                                 worker_done=self.fast_job[0].done()))
-                raise
-        return None
-
 def run_episode(session, system, builder, camera, runtime_config, *, action_limit,
                 frame_period=None, max_backlog=.25, record=None, seed=0, video=None,
-                camera_warmup_captures=3, on_ready=None, on_failure=None,
-                wall_scheduling_tolerance=0.017, physical_scheduling_tolerance=0.011):
+                camera_warmup_captures=3, on_ready=None, on_armed=None, on_failure=None,
+                wall_scheduling_tolerance=0., physical_scheduling_tolerance=0.,
+                backlog_scheduling_tolerance=.005):
     """One owner thread steps 250 Hz physics; two workers preprocess and infer.
 
     Initial reference and fast plan are established before activation, explicitly
     recorded as bootstrap latency. Once activated every operation is wall-clock
-    charged. Rendering can block physics; catch-up is bounded and never skips
+    charged. Background rendering overlaps physics; catch-up is bounded and never skips
     scene steps or makes a result available before its wall-mapped release tick.
     Target rows are endpoints over [.18i,.18(i+1)); arms interpolate linearly from
     the preceding committed endpoint, grippers keep native command semantics.
@@ -544,8 +314,17 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     if action_limit<1 or frame_period<=0 or max_backlog<=0:
         raise ValueError('invalid bounded deployment limits')
     events=[];bridge=None;owner_thread=threading.get_ident();post_terminal=False
-    contact_cache=None;main_error=None
+    contact_cache=None;main_error=None;exposure_walls={};query_requests={}
     def emit(event):
+        if event.get('event')=='fast_started':
+            exposure=event['observation_time']
+            event=dict(event,observation_exposure_wall_time=exposure_walls.get(exposure))
+            query_requests[event['query_id']]=event
+        elif event.get('event')=='fast_committed':
+            request=query_requests.get(event['query_id'],{})
+            event=dict(event,query_request_wall_time=request.get('request_wall_time'),
+                observation_exposure_wall_time=request.get('observation_exposure_wall_time'),
+                first_mutable_action_time=event['protected_until'])
         if post_terminal:
             event=dict(event,post_terminal=True)
         elif bridge is not None and bridge.active:
@@ -571,22 +350,25 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=float(wall_scheduling_tolerance))
+    if float(wall_scheduling_tolerance) != 0 or float(physical_scheduling_tolerance) != 0:
+        raise ValueError('continuous executor uses the trained strict query deadlines')
+    bridge=ContinuousWallPhysicsBridge(dt,wall_clock=time.perf_counter,
+        backlog_scheduling_tolerance=backlog_scheduling_tolerance)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
     bootstrap_started=time.perf_counter()
     captured=warm_camera(camera,session,count=camera_warmup_captures,emit=emit)
     history.append(captured.observation,exposure=captured.physics_time_s,available=initial)
+    exposure_walls[captured.physics_time_s]=captured.capture_wall_perf_s
     if video:video.append(captured.observation['observation']['head_camera']['rgb'],
                          physics_time_s=initial,capture_wall_perf_s=captured.capture_wall_perf_s)
     held=tuple(float(x) for x in captured.observation['joint_action']['vector'])
     queue=ExecutionQueue(TimedPlan(initial,runtime_config.action_dt,(held,)*16,0,initial),
         episode_id=f'domino-{seed}',clock_id='sapien-scene-step-clock')
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
-    runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
+    runtime=DualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=float(physical_scheduling_tolerance),
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
@@ -611,36 +393,47 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         # Shared executor optimization: unchanged checks on every real physics
         # step, one native contact snapshot reused by read-only consumers.
         contact_cache=StepContactCache(session.env.scene,clock).install()
-        if on_ready is not None:on_ready()
+        if on_ready is not None:
+            on_ready()
+            # The peer/model ready wait can leave the renderer idle. Rewarm the
+            # still frozen scene without replacing the bootstrap observation/plan.
+            warm_camera(camera,session,count=camera_warmup_captures,
+                emit=lambda event:emit(dict(event,phase='post_ready_rewarm')))
+        if on_armed is not None:on_armed()
         bootstrap_seconds=time.perf_counter()-bootstrap_started
         wall0=time.perf_counter();bridge.activate(initial,wall0)
         emit(dict(event='activation',physics_time=initial,wall_time=wall0,bootstrap_wall_seconds=bootstrap_seconds,
                   bootstrap_policy='initial_reference_then_fast_plan_before_activation',
                   held_prefix_seconds=runtime_config.protect_steps*queue.dt,
                   physics_step_seconds=dt,action_ticks=action_ticks,
-                  wall_scheduling_tolerance=float(bridge.wall_scheduling_tolerance),
-                  physical_scheduling_tolerance=float(runtime.physical_scheduling_tolerance),
-                  inflight_catchup_hold=True,soft_horizon_reserve_hold=True))
-        max_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
+                  wall_scheduling_tolerance=0.,physical_scheduling_tolerance=0.,
+                  backlog_scheduling_tolerance=float(bridge.backlog_scheduling_tolerance),
+                  immutable_wall_origin=True,inflight_catchup_hold=False,soft_horizon_reserve_hold=False))
+        max_lag=0.;min_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture_tick=capture_ticks
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
         bind_gil_releasing_physx_step(session.env, _sapien_color_reader.step_cpu_physx)
-        accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={};soft_horizon_hold_wall=None;soft_horizon_starve_seconds=30.0
-        physics_steps=0;max_step_wall_gap=0.;last_step_wall=time.perf_counter()
+        accepted_captures=1;skip_captures=0;seen_references=set();terminal=None;deferred={}
+        exposure_walls={captured.physics_time_s:captured.capture_wall_perf_s}
+        physics_steps=0;fast_inflight_steps=0;camera_inflight_steps=0;max_step_wall_gap=0.;last_step_wall=time.perf_counter()
         while terminal is None:
-            now,lag=checked_now();max_lag=max(max_lag,lag)
+            now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             tick=exact_grid_index(now,initial,dt,tolerance=1e-8)
             if tick>=action_limit*action_ticks:
                 terminal='action_budget_exhausted';break
             runtime.poll()
-            now,lag=checked_now();max_lag=max(max_lag,lag)
+            now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             if pending is not None and camera.ready(pending):
                 completed_capture=camera.finish(pending);pending=None
-                now,lag=checked_now();max_lag=max(max_lag,lag)
+                render_wall=completed_capture.render_submitted_wall_perf_s-completed_capture.capture_wall_perf_s
+                source_tick=exact_grid_index(completed_capture.physics_time_s,initial,dt,tolerance=1e-8)
+                next_capture_tick=max(next_capture_tick,next_grid_capture_tick(source_tick,capture_ticks,dt,render_wall))
+                now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             if completed_capture is not None and bridge.ready(completed_capture.finished_wall_perf_s,now):
                 c=completed_capture;completed_capture=None
                 exact_grid_index(c.physics_time_s,initial,queue.dt)
                 history.append(c.observation,exposure=c.physics_time_s,available=now)
+                exposure_walls[c.physics_time_s]=c.capture_wall_perf_s
                 accepted_captures+=1
                 if video:video.append(c.observation['observation']['head_camera']['rgb'],
                     physics_time_s=c.physics_time_s,capture_wall_perf_s=c.capture_wall_perf_s)
@@ -648,103 +441,41 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                     readback_ready_wall=c.readback_finished_wall_perf_s,owner_ready_wall=c.finished_wall_perf_s,
                     availability_lower_bound=bridge.availability_time(c.finished_wall_perf_s),
                     timing=capture_timing(c,owner_processed_wall=time.perf_counter())))
-            now,lag=checked_now();max_lag=max(max_lag,lag)
-            # smoke14 BufferUnderrun: dispatch was gated on caught_up only. With backlog
-            # (0.04–0.13s) a deferred fast route waiting on fresh pixels never resumed —
-            # capture completed (age would be fresh) but catch-up skipped dispatch until
-            # exposure aged past max_observation_age (0.24s). Training deferral contract
-            # ("physics/queue continue while waiting for fresh pixels") requires dispatch
-            # while deferred even mid-catch-up; caught_up still gates new non-deferred dues.
-            if bridge.caught_up(now) or deferred:
-                dispatch_due_queries(runtime,builder,history,queue,now=now,initial=initial,vae=vae,
-                                     emit=emit,deferred=deferred,seen_references=seen_references)
-                now,lag=checked_now();max_lag=max(max_lag,lag)
-                tick=exact_grid_index(now,initial,dt,tolerance=1e-8)
-                if tick>=next_capture_tick and tick%capture_ticks==0:
-                    skip_captures+=max(0,(tick-next_capture_tick)//capture_ticks)
-                    if pending is None and completed_capture is None:
-                        pending=camera.begin(session.env,now)
-                        render_wall=time.perf_counter()-pending.capture_wall_perf_s
-                        # formal703: render ~0.10s on top of ~0.14s lag → backlog 0.254>0.25
-                        # smoke43: must also advance wall0 or wait()-driven catch-up races
-                        # phys ahead of the credited bridge (negative lag ~-0.005).
-                        credit_wall_while_phys_frozen(bridge,now=now,frozen_wall_seconds=render_wall)
-                        wall0+=render_wall
-                        after,lag=checked_now();max_lag=max(max_lag,lag)
-                        if after!=now or pending.physics_time_s!=now:
-                            raise TimingError('capture advanced scene time or relabelled exposure')
-                        emit(dict(event='capture_submitted',capture_id=pending.capture_id,exposure=now,
-                            exposure_tick=tick,owner_submit_wall_seconds=render_wall))
-                        next_capture_tick=next_grid_capture_tick(tick,capture_ticks,dt,render_wall)
-                    else:
-                        skip_captures+=1;next_capture_tick=tick+capture_ticks
-            now,lag=checked_now();max_lag=max(max_lag,lag)
+            now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
+            # Neither route is gated on the other or on caught-up-only dispatch.
+            # Freshness and the bounded lease decide whether a due query can start.
+            dispatch_due_queries(runtime,builder,history,queue,now=now,initial=initial,vae=vae,
+                emit=emit,deferred=deferred,seen_references=seen_references,
+                exposure_walls=exposure_walls,wall_clock=time.perf_counter)
+            now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
+            tick=exact_grid_index(now,initial,dt,tolerance=1e-8)
+            if tick>=next_capture_tick and tick%capture_ticks==0:
+                skip_captures+=max(0,(tick-next_capture_tick)//capture_ticks)
+                if pending is None and completed_capture is None:
+                    pending=camera.begin(session.env,now)
+                    owner_submit_wall=time.perf_counter()-pending.capture_wall_perf_s
+                    after,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
+                    if after!=now or pending.physics_time_s!=now:
+                        raise TimingError('capture advanced scene time or relabelled exposure')
+                    emit(dict(event='capture_enqueued',capture_id=pending.capture_id,exposure=now,
+                        exposure_tick=tick,owner_submit_wall_seconds=owner_submit_wall))
+                    # The real render duration is available only when the background
+                    # capture finishes; adjust cadence there, never from enqueue time.
+                    next_capture_tick=tick+capture_ticks
+                else:
+                    skip_captures+=1;next_capture_tick=tick+capture_ticks
+            now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             # Only advance when the corresponding real-time tick is due.
             wait=(now-initial)+dt-(time.perf_counter()-wall0)
             if wait>0:
                 time.sleep(min(wait,.001));continue
-            # Commit finished fast work before any hold decision so replace can
-            # refill the soft horizon (smoke40: hold-before-poll left a done job
-            # uncommitted, then wall backlog blew past 0.25s).
+            # Poll once more before this actual tick consumes committed coverage.
+            # A job becoming ready during owner work must meet the same deadline.
             runtime.poll()
-            now,lag=checked_now();max_lag=max(max_lag,lag)
-            # Training wall≈phys: no Isaac backlog burn during a leased fast query.
-            # Eval catch-up otherwise advances phys faster than wall and exhausts
-            # protected_until while the worker is still running (smoke35 ~26ms
-            # over_hard clearing backlog mid-query). Hold phys (poll only) until
-            # the fast worker finishes; resume catch-up after commit/reject.
-            # Wall may lead while held — TolerantWall + catch-up wall admit cover it.
-            if (runtime.fast_job is not None and not runtime.fast_job[0].done()):
-                # Phys freeze while worker runs: credit wall+wall0 so lag does not
-                # walk up to max_backlog (pairs with capture credit; smoke43 sync).
-                freeze_t0=time.perf_counter()
-                time.sleep(0.0005)
-                frozen=time.perf_counter()-freeze_t0
-                credit_wall_while_phys_frozen(bridge,now=now,frozen_wall_seconds=frozen)
-                wall0+=frozen
-                continue
-            # Soft-horizon reserve hold (formal700 BufferUnderrun): keep the last
-            # protect_need rows for the next begin_query. Hold when consuming one
-            # more row would leave fewer than protect_need (protect_need+1 probe).
-            # Only when no fast job is inflight/pending — otherwise poll/replace
-            # refills. Pause wall↔phys while held so multi-second camera wait does
-            # not trip max_backlog (smoke40). Do not invent/replay actions.
-            protect_need=int(runtime_config.max_protect_steps or runtime_config.protect_steps)
-            if (runtime.fast_job is None and
-                    not queue_can_commit_protect(queue,query_time=now,protect_steps=protect_need+1)):
-                if soft_horizon_hold_wall is None:
-                    soft_horizon_hold_wall=time.perf_counter()
-                    emit(dict(event='soft_horizon_hold',physical_time=now,
-                              protect_steps=protect_need,reserve_probe_steps=protect_need+1,
-                              reason='insufficient_future_rows_for_protect',
-                              deferred_routes=sorted(deferred)))
-                elif time.perf_counter()-soft_horizon_hold_wall>soft_horizon_starve_seconds:
-                    raise BufferUnderrun(
-                        f'soft-horizon reserve hold starved after '
-                        f'{soft_horizon_starve_seconds:.3f}s waiting for new plan')
-                # Re-anchor wall correspondence to the frozen phys pose.
-                bridge.wall_origin=bridge.wall_now()-(now-bridge.physics_origin)
-                wall0=time.perf_counter()-(now-initial)
-                # Phys is frozen, so the normal capture grid cannot advance. If no
-                # camera work is in flight, force a fresh capture at the held pose
-                # (smoke41 hold#4: stuck off-grid with a stale in-flight frame and
-                # starved). Age-0 exposure at `now` lets deferred routes resume.
-                if pending is None and completed_capture is None:
-                    pending=camera.begin(session.env,now)
-                    render_wall=time.perf_counter()-pending.capture_wall_perf_s
-                    credit_wall_while_phys_frozen(bridge,now=now,frozen_wall_seconds=render_wall)
-                    wall0+=render_wall
-                    after,lag=checked_now();max_lag=max(max_lag,lag)
-                    if after!=now or pending.physics_time_s!=now:
-                        raise TimingError('hold capture advanced scene time or relabelled exposure')
-                    emit(dict(event='capture_submitted',capture_id=pending.capture_id,exposure=now,
-                              exposure_tick=tick,owner_submit_wall_seconds=render_wall,
-                              reason='soft_horizon_hold_refresh'))
-                    next_capture_tick=next_grid_capture_tick(tick,capture_ticks,dt,render_wall)
-                time.sleep(0.0005)
-                continue
-            soft_horizon_hold_wall=None
-            now,lag=checked_now();max_lag=max(max_lag,lag)
+            now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
+            # While a query or camera runs, execute the immutable queue prefix and
+            # keep stepping the scene. Exhausted coverage or missed deadlines fail
+            # explicitly; they never pause/rebase the benchmark clock.
             tick=exact_grid_index(now,initial,dt,tolerance=1e-8)
             row=tick//action_ticks
             if row>=action_limit:
@@ -754,7 +485,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 previous=target.copy();target=action.copy();last_row=row
                 session.env.take_action_cnt=int(getattr(session.env,'take_action_cnt',0))+1
                 emit(dict(event='execute',row=row,start_time=initial+row*queue.dt,end_time=initial+(row+1)*queue.dt,
-                          actual_start=now,physical_tick=tick,target=target.tolist(),controller='endpoint_linear_arm_native_gripper'))
+                          actual_start=now,physical_tick=tick,execution_wall_time=time.perf_counter(),target=target.tolist(),controller='endpoint_linear_arm_native_gripper'))
             elif not np.array_equal(action,target):
                 raise TimingError('active committed endpoint changed')
             fraction=(tick%action_ticks+1)/action_ticks
@@ -766,13 +497,17 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             robot.set_arm_joints(position[7:13],velocity[7:13],'right')
             robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
             session.env._update_kinematic_tasks()
+            if runtime.fast_job is not None and not runtime.fast_job[0].done():
+                fast_inflight_steps+=1
+            if pending is not None and not camera.ready(pending):
+                camera_inflight_steps+=1
             session.env.scene.step()
             if abs(clock()-(now+dt))>1e-8:
                 raise TimingError('scene step skipped or rewrote physical time')
             physics_steps+=1
             step_wall=time.perf_counter();max_step_wall_gap=max(max_step_wall_gap,step_wall-last_step_wall)
             last_step_wall=step_wall
-            _,lag=checked_now();max_lag=max(max_lag,lag)
+            _,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             session.env._update_transient_checks();session._consume_events()
             terminal=session.stop_reason()
             row_complete=(tick+1)%action_ticks==0
@@ -789,13 +524,23 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             elif event['event']=='slow_started':inflight=True
             elif event['event']=='slow_completed':inflight=False
             elif event['event']=='fast_started' and inflight:fast_during_slow+=1
+        end_wall=time.perf_counter();end_physics=clock()
+        final_lag=bridge.check_backlog(end_physics,max_backlog,wall_time=end_wall)
+        max_lag=max(max_lag,final_lag);min_lag=min(min_lag,final_lag)
+        clock_evidence=continuous_clock_evidence(bridge,activation_wall=wall0,activation_physics=initial,
+            end_wall=end_wall,end_physics=end_physics,physics_steps=physics_steps,
+            max_lag=max_lag,min_lag=min_lag,max_backlog=max_backlog)
+        emit(dict(event='terminal_clock',**clock_evidence))
         report=dict(protocol=PROTOCOL,time_contract=builder.manifest['time_contract'],
-            realtime_valid=True,continuous_valid=True,simulation_rate=1.,
+            realtime_valid=clock_evidence['passed'],continuous_valid=clock_evidence['passed'],simulation_rate=1.,
             success=terminal=='success',stop_reason=terminal,bootstrap_wall_seconds=bootstrap_seconds,
             bootstrap_latency_excluded_from_active_episode=True,action_interval_s=queue.dt,
-            physical_duration=clock()-initial,active_wall_seconds=time.perf_counter()-wall0,max_backlog_s=max_lag,
+            physical_duration=clock_evidence['physical_duration'],active_wall_seconds=clock_evidence['active_wall_seconds'],max_backlog_s=max_lag,
+            raw_clock_acceptance=clock_evidence,
             physics_steps=physics_steps,physics_step_seconds=dt,max_physics_step_wall_gap_s=max_step_wall_gap,
-            no_skipped_physics_steps=True,wall_release_gating=True,wall_and_physics_deadlines=True,
+            physics_steps_during_fast_inflight=fast_inflight_steps,
+            physics_steps_during_camera=camera_inflight_steps,
+            no_skipped_physics_steps=clock_evidence['checks']['physics_steps_match'],wall_release_gating=True,wall_and_physics_deadlines=True,
             fast_queries_during_slow=fast_during_slow,source_exposures_on_action_grid=True,
             action_limit=action_limit,started_targets=last_row+1,completed_targets=completed_rows,
             captures=accepted_captures,skipped_capture_requests=skip_captures,
@@ -804,7 +549,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             executable_action_source='fast_only',on_policy_training_distribution=False,
             fast_graph_acceptance=runtime.fast_graph_receipt(),
             contact_cache=contact_cache.statistics(),
-            **model_overlap_statistics(events))
+            **model_overlap_statistics(events),**action_response_statistics(events))
         return report
     except BaseException as exc:
         main_error=exc

@@ -409,3 +409,11 @@ or continuous patrol. Bounded initial acceptance checks at least300 seconds,
 8 live workers and first8 valid reports/videos, then exits; the necessary
 evaluation supervisor and final cleanup remain. Never modify .50 training
 source or .92 Route2. Store all artifacts under the verified SSD user tree.
+
+## 2026-10-28 .92 continuous executor repair
+
+The current user's authorization supersedes older host restrictions for this isolated .92 worktree only: stop formal705 through its owned controller, preserve its artifacts, repair deployment, and smoke-test the existing final V4 cross_time_joint checkpoint. No retraining, formal700 restart, or cross-host deployment is authorized by this repair step. .50/.100 remain unchanged.
+
+Follow docs/continuous_executor_repair_20261028.md. Fixed original wall/physics mapping and actual continuous stepping are mandatory. No clock credits, scene pauses during inference/rendering, deadline tolerance, old-action replay, or fabricated timestamps. Require genuine asynchronous camera/physics overlap, real fast/slow overlap, every active query's valid published M, exact trained model/runtime contract, hard prefix and wall/physical deadline consistency, full native video decode and clean guarded GPU exit. Same Full09 benchmark: 45 ticks, 1x, original budgets, 240ms observation ceiling, 250ms backlog plus the existing Full09 5ms scheduling allowance only. Do not broaden action deadlines with this allowance.
+
+Final checkpoint SHA256 8be3d67d3962d264e1883debec536888d71b7cb13e031d5463d17ec543522894 is unchanged. Prior broad CPU suite had 457 passing tests and one outdated camera-receipt fixture; after updating the fixture and independent timing/reference validation, all 61 targeted tests passed. Actual final-checkpoint GPU smoke is the next gate; launch alone is not acceptance. Preserve failures; no automatic retry/recovery.
