@@ -222,6 +222,8 @@ class TolerantDualRateRuntime(DualRateRuntime):
       * inflight (still-running) uses hard+phys_tol; protect headroom bump
         and deferred-during-catchup dispatch stay as prior measured fixes.
 
+    Catch-up skew (smoke31): wall DeadlineMiss admitted on commit/inflight when physical now < hard+phys_tol (backlog makes wall lead phys; wall_tol alone capped at 0.02 cannot cover ~0.1s backlog). Never rewind.
+
     runtime.py / timing.py / physical_clock.py remain protected (训推一致).
     """
     def __init__(self, *args, physical_scheduling_tolerance=0.016, **kwargs):
@@ -322,8 +324,19 @@ class TolerantDualRateRuntime(DualRateRuntime):
                     metrics=dict(wall_seconds=metrics)
                 now=float(self.clock())
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(
-                        lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
+                    try:
+                        self.clock_bridge.check_deadline(
+                            lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
+                    except DeadlineMiss:
+                        # Owner catch-up / backlog: wall can lead physics so ready_wall
+                        # trips TolerantWall while physical now is still inside
+                        # hard+phys_tol (smoke31 q26: over_hard_wall~0.12s with
+                        # backlog~0.11s but over_hard_phys=10ms). Admit for commit;
+                        # never rewind. Truly late phys still raises below / via replace.
+                        hard = lease.protected_until - lease.submit_margin
+                        if not (self.clock_bridge.active
+                                and now < hard + self.physical_scheduling_tolerance):
+                            raise
                     if not self.clock_bridge.ready(ready_wall, now):
                         return None
                 # Training path: replace(now=true_clock). Eval only: if activated
@@ -371,8 +384,14 @@ class TolerantDualRateRuntime(DualRateRuntime):
                         _restore[0]._validate_lease = _restore[1]
                 submitted = True
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(
-                        lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
+                    try:
+                        self.clock_bridge.check_deadline(
+                            lease.protected_until, lease.submit_margin, ready_wall=ready_wall)
+                    except DeadlineMiss:
+                        hard = lease.protected_until - lease.submit_margin
+                        if not (self.clock_bridge.active
+                                and float(self.clock()) < hard + self.physical_scheduling_tolerance):
+                            raise
                 self.fast_job = None
             except BaseException as exc:
                 self.fast_job = None
@@ -405,7 +424,13 @@ class TolerantDualRateRuntime(DualRateRuntime):
                                            + self.physical_scheduling_tolerance):
                     raise DeadlineMiss('in-flight query exceeded physical submission deadline')
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(lease.protected_until, lease.submit_margin)
+                    try:
+                        self.clock_bridge.check_deadline(lease.protected_until, lease.submit_margin)
+                    except DeadlineMiss:
+                        hard = lease.protected_until - lease.submit_margin
+                        # Same catch-up skew as commit: wall ahead of phys under backlog.
+                        if not (float(self.clock()) < hard + self.physical_scheduling_tolerance):
+                            raise
             except BaseException as exc:
                 self._cancel_fast(lease)
                 self._failure = exc
