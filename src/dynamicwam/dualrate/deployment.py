@@ -315,6 +315,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
         if self.fast_job is not None and self.fast_job[0].done():
             job,lease=self.fast_job
             submitted=False
+            discarded=0
             try:
                 plan,output,ready_wall,metrics=job.result()
                 if not isinstance(metrics,dict):
