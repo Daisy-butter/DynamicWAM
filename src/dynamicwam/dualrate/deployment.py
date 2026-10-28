@@ -339,46 +339,59 @@ class TolerantDualRateRuntime(DualRateRuntime):
                             raise
                     if not self.clock_bridge.ready(ready_wall, now):
                         return None
-                # Training path: replace(now=true_clock). Eval only: if activated
-                # and now past hard within phys_tol, wrap _validate_lease; never
-                # rewrite `now` (no hard-eps / no rewind).
+                # Commit clock policy (t111u, smoke20/34):
+                # - Never pass replace a now < _last_time (smoke20 rewind TimingError).
+                # - If hard <= now <= hard+phys_tol and hard-eps >= _last_time: safe
+                #   non-rewind clamp replace(now=hard-eps) so mutability window matches
+                #   training deadline (avoids smoke34 TimingError changing executing row).
+                # - If hard-eps < _last_time: keep true now + temporary tolerant validate;
+                #   if replace still hits executing-row TimingError, treat as DeadlineMiss.
+                replace_now = now
                 _restore = None
                 if self.clock_bridge is not None and self.clock_bridge.active:
                     hard = lease.protected_until - lease.submit_margin
                     slack = self.physical_scheduling_tolerance
+                    last = float(getattr(self.queue, '_last_time', now))
                     if now >= hard:
                         if (now - hard) > slack:
                             raise DeadlineMiss(
                                 "query exceeded protected prefix submission deadline")
-                        _q = self.queue
-                        _orig = _q._validate_lease
-                        _hard = hard
-                        _tol = slack
-                        def _tolerant_validate(plan, now_, *, _orig=_orig, _q=_q,
-                                               _hard=_hard, _tol=_tol):
-                            # Same lease/stale checks as timing.ExecutionQueue._validate_lease,
-                            # but deadline line uses hard+phys_tol. Prefix immutability still
-                            # goes through orig; pass just-below-hard so orig's strict
-                            # deadline does not fire — replace() still received unrewoound now.
-                            from .timing import DeadlineMiss, StalePlan, TimingError
-                            lease = plan.lease
-                            if lease is None:
-                                if getattr(_q, '_test_fixture', False):
-                                    return
-                                raise TimingError("production plan requires its query lease")
-                            if (lease != _q._inflight or lease.episode_id != _q.episode_id or
-                                    lease.clock_id != _q.clock_id or
-                                    plan.query_time != lease.query_time):
-                                raise StalePlan(
-                                    "query/episode/clock lease is stale or mismatched")
-                            if now_ >= _hard + _tol:
-                                raise DeadlineMiss(
-                                    "query exceeded protected prefix submission deadline")
-                            return _orig(plan, min(now_, _hard - 1e-9))
-                        _q._validate_lease = _tolerant_validate
-                        _restore = (_q, _orig)
+                        candidate = hard - 1e-9
+                        if candidate + 1e-9 >= last:
+                            replace_now = candidate
+                        else:
+                            _q = self.queue
+                            _orig = _q._validate_lease
+                            _hard = hard
+                            _tol = slack
+                            def _tolerant_validate(plan, now_, *, _orig=_orig, _q=_q,
+                                                   _hard=_hard, _tol=_tol):
+                                from .timing import DeadlineMiss, StalePlan, TimingError
+                                lease = plan.lease
+                                if lease is None:
+                                    if getattr(_q, '_test_fixture', False):
+                                        return
+                                    raise TimingError("production plan requires its query lease")
+                                if (lease != _q._inflight or lease.episode_id != _q.episode_id or
+                                        lease.clock_id != _q.clock_id or
+                                        plan.query_time != lease.query_time):
+                                    raise StalePlan(
+                                        "query/episode/clock lease is stale or mismatched")
+                                if now_ >= _hard + _tol:
+                                    raise DeadlineMiss(
+                                        "query exceeded protected prefix submission deadline")
+                                return _orig(plan, min(now_, _hard - 1e-9))
+                            _q._validate_lease = _tolerant_validate
+                            _restore = (_q, _orig)
                 try:
-                    discarded = self.queue.replace(plan, now=now)
+                    try:
+                        discarded = self.queue.replace(plan, now=replace_now)
+                    except TimingError as exc:
+                        if (replace_now == now and now >= (lease.protected_until - lease.submit_margin)
+                                and "currently executing or committed action" in str(exc)):
+                            raise DeadlineMiss(
+                                "query exceeded protected prefix submission deadline") from exc
+                        raise
                 finally:
                     if _restore is not None:
                         _restore[0]._validate_lease = _restore[1]
