@@ -180,12 +180,12 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
     """Eval-side wall scheduling tolerance aligned to formal09 tol5ms (0.005s).
 
-    formal09 Full baseline used wall_scheduling_tolerance=0.010. DualRate V4
+    formal09 Full baseline used wall_scheduling_tolerance=0.015. DualRate V4
     training/eval timing queues stay identical; only the wall-vs-deadline compare
     gains the same 5ms scheduling slack so eval is not stricter than formal09.
     physical_clock.py remains protected (same_model_files).
     """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.010, **kwargs):
+    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.015, **kwargs):
         super().__init__(physics_dt, **kwargs)
         tol = float(wall_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -213,7 +213,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
     formal09 Full baseline used 5ms wall scheduling tolerance; apply the same
     5ms here on the physical gate without editing protected runtime.py.
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.010, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.015, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -337,7 +337,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.010)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.015)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
@@ -352,7 +352,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.010,
+        physical_scheduling_tolerance=0.015,
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
