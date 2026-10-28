@@ -178,14 +178,14 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 
 
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
-    """Eval-side wall scheduling tolerance (sim slack; default 15ms, cap 20ms).
+    """Eval-side wall scheduling tolerance (measured DualRate continuous-sim slack).
 
-    formal09 Full baseline used wall_scheduling_tolerance=0.015. DualRate V4
+    formal09 Full baseline used wall_scheduling_tolerance=0.006. DualRate V4
     training/eval timing queues stay identical; only the wall-vs-deadline compare
-    may use 15ms slack (looser than formal09 5ms; never stricter). Training queues unchanged.
+    default 6ms from smoke09/10 over_hard_wall≈5.65ms (+ε); phys stays formal09 5ms. Training queues unchanged.
     physical_clock.py remains protected (same_model_files).
     """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.015, **kwargs):
+    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.006, **kwargs):
         super().__init__(physics_dt, **kwargs)
         tol = float(wall_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -217,9 +217,9 @@ class TolerantDualRateRuntime(DualRateRuntime):
     worker_done=True, wall_seconds≈0.326 inside a 0.318s prefix budget).
 
     physical_clock.py / runtime.py stay protected (训推一致). Only this executor
-    override changes eval-side poll ordering + eval scheduling slack (default 15ms).
+    override changes eval-side poll ordering + measured eval slack (wall 6ms / phys 5ms).
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.015, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.005, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -245,10 +245,12 @@ class TolerantDualRateRuntime(DualRateRuntime):
         if cfg.max_protect_steps is None:
             return count, details
         dt = self.queue.dt
-        wall_tol = 0.015
+        wall_tol = 0.006
         if self.clock_bridge is not None and hasattr(self.clock_bridge, 'wall_scheduling_tolerance'):
             wall_tol = float(self.clock_bridge.wall_scheduling_tolerance)
-        need = cfg.min_query_budget_seconds + 2 * cfg.submit_margin + wall_tol  # ~0.335 @15ms; razor-thin leases bump to protect=3
+        phys_dt = float(self.clock_bridge.physics_dt)
+        # smoke10: remaining=0.326 elapsed_wall≈0.328; include one physics_dt so razor leases bump to protect=3
+        need = cfg.min_query_budget_seconds + 2 * cfg.submit_margin + wall_tol + phys_dt
         while count < cfg.max_protect_steps:
             until = self.queue.origin + (math.floor((query - self.queue.origin) / dt + 1e-9) + count) * dt
             remaining = until - cfg.submit_margin - query
@@ -396,7 +398,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.015)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.006)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
@@ -411,7 +413,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.015,
+        physical_scheduling_tolerance=0.005,
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
