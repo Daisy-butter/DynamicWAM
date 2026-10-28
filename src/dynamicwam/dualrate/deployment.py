@@ -266,16 +266,18 @@ class TolerantDualRateRuntime(DualRateRuntime):
                     self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
                     if not self.clock_bridge.ready(ready_wall,now):
                         return None
-                    # Wall release instant is authoritative for "was the query on time?".
-                    # Owner catch-up after ready_wall can push physical now a few ms past
-                    # protected_until-submit_margin (smoke07: 3.772 >= 3.770) even though
-                    # availability_time(ready_wall) was still legal. Align replace() to the
-                    # last legal physical instant within formal09 scheduling slack.
-                    hard=lease.protected_until-lease.submit_margin
-                    avail=self.clock_bridge.availability_time(ready_wall)
-                    slack=self.physical_scheduling_tolerance+self.clock_bridge.physics_dt
-                    if avail<hard<=now and (now-hard)<=slack:
-                        now=hard-1e-9
+                    # Only after activation: bootstrap has no wall/physics correspondence.
+                    if self.clock_bridge.active:
+                        # Wall release instant is authoritative for "was the query on time?".
+                        # Owner catch-up after ready_wall can push physical now a few ms past
+                        # protected_until-submit_margin (smoke07: 3.772 >= 3.770) even though
+                        # availability_time(ready_wall) was still legal. Align replace() to the
+                        # last legal physical instant within formal09 scheduling slack.
+                        hard=lease.protected_until-lease.submit_margin
+                        avail=self.clock_bridge.availability_time(ready_wall)
+                        slack=self.physical_scheduling_tolerance+self.clock_bridge.physics_dt
+                        if avail<hard<=now and (now-hard)<=slack:
+                            now=hard-1e-9
                 discarded=self.queue.replace(plan,now=now)
                 submitted=True
                 if self.clock_bridge is not None:
