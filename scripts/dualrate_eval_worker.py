@@ -481,6 +481,7 @@ def main():
     torch.cuda.set_device(0)
     from dynamicwam.dualrate.producer import episode_prompt
     from dualrate_deployment_inputs import build_cached_online_batch_builder
+    from dualrate_physics_optimization import passive_force_scope
     from dynamicwam.dualrate.runtime import RuntimeConfig
     from dynamicwam.dualrate.deployment import run_episode, PROTOCOL
     runtime_config = RuntimeConfig(**effective_runtime_settings(config))
@@ -570,6 +571,7 @@ def main():
                 backlog_scheduling_tolerance=float(config['backlog_scheduling_tolerance']),
                 on_ready=lambda: cohort.wait(episode, 'ready'),
                 on_armed=lambda: cohort.wait(episode, 'armed'),
+                control_scope=lambda: passive_force_scope(env.robot, enabled=config.get('passive_force_dedup', False)),
                 on_failure=lambda exc: publish_runtime_failure(output, cohort, args.task, episode, exc))
             report.update(task=args.task, episode_index=episode, seed=descriptor['seed'],
                 requested_seed=descriptor['requested_seed'], checkpoint_sha256=config['checkpoint_sha256'],

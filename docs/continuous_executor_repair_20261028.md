@@ -37,3 +37,9 @@ Use an explicit deployment_min_query_budget_seconds=0.40 instead of the training
 smoke02 preserved continuous low-lag physics for about50s but failed a strict action deadline. More seriously,117 of132 fast starts had no valid M; slow model latency grew to2.3–3.6s and expired its references. Therefore smoke02 is rejected even independently of its final deadline. All owned processes/guard closed and kernel unchanged.
 
 The next deployment candidate sets this worker process's Python switch interval to0.5ms (default5ms), reducing GIL scheduling delay among the250Hz owner and model-dispatch threads. It also caches byte-identical language tensors separately on fast/slow GPUs before activation, removing repeated cross-device language copies. Both are execution-only changes; no clocks, prefixes, deadlines, cache TTL, model arithmetic, or checkpoint change. The0.40s pre-query admission reserve remains bounded to trained2/3-row prefixes. Actual GPU smoke must establish effectiveness; this diagnosis is not itself a pass.
+
+## Owner control CPU work, smoke04
+
+smoke03 produced one successful hanging_mug trajectory but the peer failed at29.69s; slow reference production still stretched to3.87s while active and0.92s after stopping physics. That is evidence of contention, not proof of model execution cost. Reject the suite. Workers/guard closed and kernel unchanged.
+
+Wire the exact .50 Full09 passive_force_scope implementation around each tick's original qf/arm/gripper calls. Its binding ends before kinematic updates/scene.step, preserving physics inputs (the reference implementation has prior bitwise GPU replay acceptance). Previously the .92 config flag existed without a call site. Explicit time.sleep(0) after each real tick lets queued model threads run even during catch-up; it adds no requested sleep, changes no clock, and skips no tick. Keep the same0.40 reserve/TTL2/cap3/strict deadlines. Require actual GPU evidence again.

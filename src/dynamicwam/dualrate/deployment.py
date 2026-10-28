@@ -5,6 +5,7 @@ import threading
 import time
 import numpy as np
 import torch
+from contextlib import nullcontext
 from .timing import ExecutionQueue, TimedPlan, TimingError, DeadlineMiss, BufferUnderrun, prefix_digest
 from .runtime import DualRateRuntime
 from .online import ObservationHistory
@@ -298,7 +299,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 frame_period=None, max_backlog=.25, record=None, seed=0, video=None,
                 camera_warmup_captures=3, on_ready=None, on_armed=None, on_failure=None,
                 wall_scheduling_tolerance=0., physical_scheduling_tolerance=0.,
-                backlog_scheduling_tolerance=.005):
+                backlog_scheduling_tolerance=.005, control_scope=None):
     """One owner thread steps 250 Hz physics; two workers preprocess and infer.
 
     Initial reference and fast plan are established before activation, explicitly
@@ -492,10 +493,13 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             position=previous+(target-previous)*fraction;velocity=(target-previous)/queue.dt
             position[[6,13]]=target[[6,13]];velocity[[6,13]]=0
             robot=session.env.robot
-            robot._entity_qf(robot.left_entity);robot._entity_qf(robot.right_entity)
-            robot.set_arm_joints(position[:6],velocity[:6],'left')
-            robot.set_arm_joints(position[7:13],velocity[7:13],'right')
-            robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
+            # Same single-state passive-force reuse as the paired Full baseline.
+            # The scope ends before kinematic updates and the real physics step.
+            with control_scope() if control_scope is not None else nullcontext():
+                robot._entity_qf(robot.left_entity);robot._entity_qf(robot.right_entity)
+                robot.set_arm_joints(position[:6],velocity[:6],'left')
+                robot.set_arm_joints(position[7:13],velocity[7:13],'right')
+                robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
             session.env._update_kinematic_tasks()
             if runtime.fast_job is not None and not runtime.fast_job[0].done():
                 fast_inflight_steps+=1
@@ -518,6 +522,9 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             if contact_cache.error is not None:
                 # Native best-effort metrics must not swallow infrastructure failures.
                 raise contact_cache.error
+            # Release the GIL after every real tick, including catch-up loops.
+            # No positive delay, scene pause, clock rebase, or skipped tick.
+            time.sleep(0)
         inflight=False;fast_during_slow=0
         for event in events:
             if event['event']=='activation':inflight=False
