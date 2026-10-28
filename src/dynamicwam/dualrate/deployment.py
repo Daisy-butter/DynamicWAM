@@ -472,7 +472,13 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                     availability_lower_bound=bridge.availability_time(c.finished_wall_perf_s),
                     timing=capture_timing(c,owner_processed_wall=time.perf_counter())))
             now,lag=checked_now();max_lag=max(max_lag,lag)
-            if bridge.caught_up(now):
+            # smoke14 BufferUnderrun: dispatch was gated on caught_up only. With backlog
+            # (0.04–0.13s) a deferred fast route waiting on fresh pixels never resumed —
+            # capture completed (age would be fresh) but catch-up skipped dispatch until
+            # exposure aged past max_observation_age (0.24s). Training deferral contract
+            # ("physics/queue continue while waiting for fresh pixels") requires dispatch
+            # while deferred even mid-catch-up; caught_up still gates new non-deferred dues.
+            if bridge.caught_up(now) or deferred:
                 dispatch_due_queries(runtime,builder,history,queue,now=now,initial=initial,vae=vae,
                                      emit=emit,deferred=deferred,seen_references=seen_references)
                 now,lag=checked_now();max_lag=max(max_lag,lag)
