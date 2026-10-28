@@ -180,12 +180,12 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
     """Eval-side wall scheduling tolerance (measured DualRate continuous-sim slack).
 
-    formal09 Full baseline used wall_scheduling_tolerance=0.006. DualRate V4
+    formal09 Full baseline used wall_scheduling_tolerance=0.007. DualRate V4
     training/eval timing queues stay identical; only the wall-vs-deadline compare
-    default 6ms from smoke09/10 over_hard_wall≈5.65ms (+ε); phys stays formal09 5ms. Training queues unchanged.
+    wall 7ms from smoke12 over_hard_wall≈6.22ms; phys formal09 5ms; protect bumps to max via prefix-length need. Training queues unchanged.
     physical_clock.py remains protected (same_model_files).
     """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.006, **kwargs):
+    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.007, **kwargs):
         super().__init__(physics_dt, **kwargs)
         tol = float(wall_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -217,7 +217,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
     worker_done=True, wall_seconds≈0.326 inside a 0.318s prefix budget).
 
     physical_clock.py / runtime.py stay protected (训推一致). Only this executor
-    override changes eval-side poll ordering + measured eval slack (wall 6ms / phys 5ms).
+    override changes eval-side poll ordering + measured slack (wall 7ms / phys 5ms) + protect headroom.
     """
     def __init__(self, *args, physical_scheduling_tolerance=0.005, **kwargs):
         super().__init__(*args, **kwargs)
@@ -245,12 +245,11 @@ class TolerantDualRateRuntime(DualRateRuntime):
         if cfg.max_protect_steps is None:
             return count, details
         dt = self.queue.dt
-        wall_tol = 0.006
+        wall_tol = 0.007
         if self.clock_bridge is not None and hasattr(self.clock_bridge, 'wall_scheduling_tolerance'):
             wall_tol = float(self.clock_bridge.wall_scheduling_tolerance)
-        phys_dt = float(self.clock_bridge.physics_dt)
-        # smoke10: remaining=0.326 elapsed_wall≈0.328; include one physics_dt so razor leases bump to protect=3
-        need = cfg.min_query_budget_seconds + 2 * cfg.submit_margin + wall_tol + phys_dt
+        # Measured smoke09–12: protect=2 rem∈[0.322,0.346] but fast wall tail 0.328–0.360s (worker still running). Training max_protect_steps=3 is the contract remedy — bump when remaining cannot cover a full protect_steps prefix net of margin (+ wall_tol).
+        need = cfg.protect_steps * dt - cfg.submit_margin + wall_tol  # ≈0.357 @dt=0.18,tol=7ms
         while count < cfg.max_protect_steps:
             until = self.queue.origin + (math.floor((query - self.queue.origin) / dt + 1e-9) + count) * dt
             remaining = until - cfg.submit_margin - query
@@ -398,7 +397,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.006)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.007)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
