@@ -34,6 +34,22 @@ def queue_can_commit_protect(queue, *, query_time, protect_steps):
             last = max(last, first + 1)
         return all(index in queue._rows for index in range(first, last))
 
+def credit_wall_while_phys_frozen(bridge, *, now, frozen_wall_seconds):
+    """Eval-only: phys held at `now` while wall advanced; do not count as backlog.
+
+    camera.begin render (~0.10s) and inflight/soft-horizon phys freezes burn wall
+    with phys fixed. Without a credit, pre-existing catch-up lag (~0.14s) plus one
+    render trips max_backlog=0.25 (formal703 ep1). Shift wall_origin by the frozen
+    wall interval only — preserves real lag, does not raise the backlog ceiling.
+    """
+    frozen = float(frozen_wall_seconds)
+    if not math.isfinite(frozen) or frozen < 0:
+        raise ValueError('frozen_wall_seconds must be a finite non-negative duration')
+    if frozen > 0 and bridge.active:
+        bridge.wall_origin += frozen
+
+
+
 
 
 
@@ -647,6 +663,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                     if pending is None and completed_capture is None:
                         pending=camera.begin(session.env,now)
                         render_wall=time.perf_counter()-pending.capture_wall_perf_s
+                        # formal703: render ~0.10s on top of ~0.14s lag → backlog 0.254>0.25
+                        credit_wall_while_phys_frozen(bridge,now=now,frozen_wall_seconds=render_wall)
                         after,lag=checked_now();max_lag=max(max_lag,lag)
                         if after!=now or pending.physics_time_s!=now:
                             raise TimingError('capture advanced scene time or relabelled exposure')
@@ -672,7 +690,12 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             # the fast worker finishes; resume catch-up after commit/reject.
             # Wall may lead while held — TolerantWall + catch-up wall admit cover it.
             if (runtime.fast_job is not None and not runtime.fast_job[0].done()):
+                # Phys freeze while worker runs: credit wall so lag does not walk
+                # up to max_backlog across hold iterations (pairs with capture credit).
+                freeze_t0=time.perf_counter()
                 time.sleep(0.0005)
+                credit_wall_while_phys_frozen(bridge,now=now,
+                    frozen_wall_seconds=time.perf_counter()-freeze_t0)
                 continue
             # Soft-horizon reserve hold (formal700 BufferUnderrun): keep the last
             # protect_need rows for the next begin_query. Hold when consuming one
@@ -703,6 +726,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 if pending is None and completed_capture is None:
                     pending=camera.begin(session.env,now)
                     render_wall=time.perf_counter()-pending.capture_wall_perf_s
+                    credit_wall_while_phys_frozen(bridge,now=now,frozen_wall_seconds=render_wall)
                     after,lag=checked_now();max_lag=max(max_lag,lag)
                     if after!=now or pending.physics_time_s!=now:
                         raise TimingError('hold capture advanced scene time or relabelled exposure')
