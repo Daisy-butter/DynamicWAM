@@ -129,6 +129,11 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 
     Deferral never advances the route's last-query tick. A later lease uses its
     actual physical time and the original floor-grid/protect_steps deadline.
+
+    Eval-only: when catch-up-hold leaves residual wall/phys lag, a deferred
+    fresh-capture resume can hit training's bounded-budget ceil at protect=4
+    while max_protect_steps=3 (smoke38). Training lag≈0 so it never trips;
+    keep the same formula/cap — defer until phase+lag fits instead of abort.
     """
     fast_due,slow_due=runtime.due(now)
     if not (fast_due or slow_due):return
@@ -145,6 +150,7 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                     observation_age=age,max_observation_age=builder.max_observation_age,
                     reason='no_fresh_completed_capture'))
             continue
+        began=None
         if route in deferred:
             began=deferred.pop(route)
             emit(dict(event='query_resumed',route=route,physical_time=now,
@@ -154,9 +160,21 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
             ref=runtime.store.snapshot(now)
             if ref:seen_references.add(ref.version)
             trace=queue.completed_execution_trace(initial,now)
-            runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
-                builder.current(snapshot,query_time=lease.query_time,action_start=lease.prefix.start_time,
-                                executed=trace),observation_time=snapshot[-1].exposure)
+            try:
+                runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
+                    builder.current(snapshot,query_time=lease.query_time,action_start=lease.prefix.start_time,
+                                    executed=trace),observation_time=snapshot[-1].exposure)
+            except DeadlineMiss as exc:
+                # Raised before begin_query when ceil((phase+lag+budget+margin)/dt)
+                # exceeds max_protect_steps. Re-defer; catch-up shrinks lag.
+                if 'bounded protected prefix' not in str(exc):
+                    raise
+                deferred[route]=began if began is not None else now
+                emit(dict(event='query_deferred',route=route,physical_time=now,
+                    observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
+                    observation_age=age,max_observation_age=builder.max_observation_age,
+                    reason='insufficient_prefix_budget'))
+                continue
         else:
             if getattr(builder,'hardtime',False):
                 exposure=snapshot[-1].exposure
