@@ -177,8 +177,12 @@ def validate_config(config):
         raise ValueError('distinct safe task names required')
     environment_groups(config)
     effective_runtime_settings(config)
+    switch_interval = float(config.get('python_thread_switch_interval_seconds', .005))
+    if not math.isfinite(switch_interval) or not .0001 <= switch_interval <= .005:
+        raise ValueError('invalid finite per-worker Python thread switching interval')
     if (config.get('executor_contract') != 'immutable_wall_continuous_v1'
             or config.get('camera_async_submit') is not True
+            or config.get('deployment_language_cache') != 'exact_per_device_v1'
             or float(config.get('wall_scheduling_tolerance', -1)) != 0.
             or float(config.get('physical_scheduling_tolerance', -1)) != 0.
             or float(config.get('backlog_scheduling_tolerance', -1)) != .005):
@@ -423,6 +427,8 @@ def main():
     args = parser.parse_args()
     config = read(args.config)
     output = validate_config(config)
+    previous_switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(float(config.get('python_thread_switch_interval_seconds', .005)))
     receipt = validate_authorization(config, args.authorization, task=args.task, gpu_index=args.gpu_index)
     references = load_frozen_task(config, args.task)
     verify_artifacts(config)
@@ -474,7 +480,7 @@ def main():
     del payload
     torch.cuda.set_device(0)
     from dynamicwam.dualrate.producer import episode_prompt
-    from dynamicwam.dualrate.online import OnlineBatchBuilder
+    from dualrate_deployment_inputs import build_cached_online_batch_builder
     from dynamicwam.dualrate.runtime import RuntimeConfig
     from dynamicwam.dualrate.deployment import run_episode, PROTOCOL
     runtime_config = RuntimeConfig(**effective_runtime_settings(config))
@@ -503,6 +509,8 @@ def main():
         training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config['source_compatibility_sha256'],
         inference_device_map=placement, renderer=renderer, gpu_uuids=uuids, gpu_count=3,
         trained_runtime=config['runtime'], effective_runtime=effective_runtime_settings(config),
+        python_thread_switch_interval_seconds=sys.getswitchinterval(),
+        original_python_thread_switch_interval_seconds=previous_switch_interval,
         admission_policy='prequery_reserve_within_trained_prefix_support_strict_deadlines'))
     metrics = []
     for episode, (descriptor, motion, motion_bytes) in enumerate(references):
@@ -536,8 +544,9 @@ def main():
             env.set_instruction(instruction=prompt)
             language = episode_language(config, manifest, prompt, slow_device,
                 output/'episode_language'/args.task/f'episode_{episode:04d}')
-            builder = OnlineBatchBuilder(manifest, action_mean=manifest['action_statistics']['mean'],
+            builder = build_cached_online_batch_builder(manifest, action_mean=manifest['action_statistics']['mean'],
                 action_scale=manifest['action_statistics']['std'], language=language, device=fast_device, slow_device=slow_device)
+            save(directory/'language_cache_receipt.json', builder.deployment_language_receipt)
             if len(builder.entity_roles) != system.fast.config.future_entities:
                 raise ValueError('online entity roles differ from trained fast head')
             torch.manual_seed(descriptor['seed'])
