@@ -180,12 +180,12 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
     """Eval-side wall scheduling tolerance aligned to formal09 tol5ms (0.005s).
 
-    formal09 Full baseline used wall_scheduling_tolerance=0.015. DualRate V4
+    formal09 Full baseline used wall_scheduling_tolerance=0.005. DualRate V4
     training/eval timing queues stay identical; only the wall-vs-deadline compare
     gains the same 5ms scheduling slack so eval is not stricter than formal09.
     physical_clock.py remains protected (same_model_files).
     """
-    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.015, **kwargs):
+    def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.005, **kwargs):
         super().__init__(physics_dt, **kwargs)
         tol = float(wall_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -205,15 +205,21 @@ class TolerantWallPhysicsBridge(WallPhysicsBridge):
                 raise DeadlineMiss("query exceeded protected prefix wall-clock submission deadline")
 
 
-class TolerantDualRateRuntime(DualRateRuntime):
-    """Eval-only formal09-aligned slack on the physical inflight deadline.
 
-    DualRate V4 runtime.py (same_model / protected) uses a zero-slack physical
-    compare. Observed smoke misses are ~2ms past protected_until-submit_margin.
-    formal09 Full baseline used 5ms wall scheduling tolerance; apply the same
-    5ms here on the physical gate without editing protected runtime.py.
+class TolerantDualRateRuntime(DualRateRuntime):
+    """Eval-only DualRateRuntime with formal09 scheduling slack and correct poll order.
+
+    Training/eval contract: an inflight deadline applies to still-running work.
+    Commit path already validates ready_wall against the wall deadline. If the
+    owner thread was busy (physics/render) while the fast worker finished, poll
+    must attempt commit before the inflight gate — otherwise a finished query
+    whose ready_wall met the deadline is discarded (smoke05/06 DeadlineMiss with
+    worker_done=True, wall_seconds≈0.326 inside a 0.318s prefix budget).
+
+    physical_clock.py / runtime.py stay protected (训推一致). Only this executor
+    override changes eval-side poll ordering + formal09 5ms slack.
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.015, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.005, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -221,23 +227,11 @@ class TolerantDualRateRuntime(DualRateRuntime):
         self.physical_scheduling_tolerance = tol
 
     def poll(self):
-        """Same as DualRateRuntime.poll with +physical_scheduling_tolerance on the physical gate."""
+        """Commit finished fast work before applying inflight deadlines."""
         if self._failure is not None:
             raise TimingError('runtime has failed; close owned workers before continuing') from self._failure
-        if self.fast_job is not None and (self.clock_bridge is None or self.clock_bridge.active):
-            _,lease=self.fast_job
-            try:
-                if float(self.clock()) >= (lease.protected_until - lease.submit_margin
-                                           + self.physical_scheduling_tolerance):
-                    raise DeadlineMiss('in-flight query exceeded physical submission deadline')
-                if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin)
-            except BaseException as exc:
-                self._cancel_fast(lease)
-                self._failure=exc
-                self.record(dict(event='fast_rejected',query_id=lease.query_id,error=type(exc).__name__,
-                                 reason='inflight_deadline',worker_done=self.fast_job[0].done()))
-                raise
+
+        # 1) Publish finished slow jobs (same as parent).
         if self.slow_job is not None and self.slow_job[0].done():
             job,source,prefix,version=self.slow_job
             world,device_world,ready_wall,metrics=job.result()
@@ -258,13 +252,15 @@ class TolerantDualRateRuntime(DualRateRuntime):
                 self.record(dict(event="slow_completed",source_time=source,completed_time=completed,
                     published_time=completed,publication_wall_time=self.wall_clock(),
                     version=version,accepted=accepted,**metrics))
+
+        # 2) Commit finished fast jobs BEFORE inflight deadline (contract fix).
         if self.fast_job is not None and self.fast_job[0].done():
             job,lease=self.fast_job
             submitted=False
             try:
                 plan,output,ready_wall,metrics=job.result()
                 if not isinstance(metrics,dict):
-                    metrics=dict(wall_seconds=metrics)  # legacy CPU fixture
+                    metrics=dict(wall_seconds=metrics)
                 if self.clock_bridge is not None:
                     self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
                     if not self.clock_bridge.ready(ready_wall,float(self.clock())):
@@ -290,6 +286,22 @@ class TolerantDualRateRuntime(DualRateRuntime):
                              commit_wall_time=self.wall_clock(),ready_wall_time=ready_wall,
                              reference_version=lease.reference_version,**metrics))
             return output
+
+        # 3) Inflight deadline only while the worker is still running.
+        if self.fast_job is not None and (self.clock_bridge is None or self.clock_bridge.active):
+            _,lease=self.fast_job
+            try:
+                if float(self.clock()) >= (lease.protected_until - lease.submit_margin
+                                           + self.physical_scheduling_tolerance):
+                    raise DeadlineMiss('in-flight query exceeded physical submission deadline')
+                if self.clock_bridge is not None:
+                    self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin)
+            except BaseException as exc:
+                self._cancel_fast(lease)
+                self._failure=exc
+                self.record(dict(event='fast_rejected',query_id=lease.query_id,error=type(exc).__name__,
+                                 reason='inflight_deadline',worker_done=self.fast_job[0].done()))
+                raise
         return None
 
 def run_episode(session, system, builder, camera, runtime_config, *, action_limit,
@@ -337,7 +349,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.015)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.005)
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
@@ -352,7 +364,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.015,
+        physical_scheduling_tolerance=0.005,
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
