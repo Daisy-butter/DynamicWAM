@@ -304,14 +304,14 @@ class TolerantDualRateRuntime(DualRateRuntime):
                     # Only after activation: bootstrap has no wall/physics correspondence.
                     if self.clock_bridge.active:
                         # Wall release instant is authoritative for "was the query on time?".
-                        # Owner catch-up after ready_wall can push physical now a few ms past
-                        # protected_until-submit_margin (smoke07: 3.772 >= 3.770) even though
-                        # availability_time(ready_wall) was still legal. Align replace() to the
-                        # last legal physical instant within formal09 scheduling slack.
+                        # check_deadline(ready_wall) already applied wall_tol. Owner catch-up
+                        # (smoke07) OR a wall-tol-admitted ready_wall (smoke13 q285: now-hard
+                        # =2.000ms with avail>=hard) can leave physical now slightly past
+                        # protected_until-submit_margin. Clamp replace() to the last legal
+                        # physical instant within physical_scheduling_tolerance (+1 physics_dt).
                         hard=lease.protected_until-lease.submit_margin
-                        avail=self.clock_bridge.availability_time(ready_wall)
                         slack=self.physical_scheduling_tolerance+self.clock_bridge.physics_dt
-                        if avail<hard<=now and (now-hard)<=slack:
+                        if now>=hard and (now-hard)<=slack:
                             now=hard-1e-9
                 discarded=self.queue.replace(plan,now=now)
                 submitted=True
