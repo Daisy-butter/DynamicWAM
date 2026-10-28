@@ -524,6 +524,8 @@ def main():
                 frame_period=float(config['frame_period']), max_backlog=float(config['max_backlog']),
                 seed=descriptor['seed'], video=video,
                 camera_warmup_captures=int(config.get('camera_warmup_captures', 3)),
+                wall_scheduling_tolerance=float(config.get('wall_scheduling_tolerance', 0.017)),
+                physical_scheduling_tolerance=float(config.get('physical_scheduling_tolerance', 0.011)),
                 on_ready=lambda: cohort.wait(episode, 'ready'),
                 on_failure=lambda exc: publish_runtime_failure(output, cohort, args.task, episode, exc))
             report.update(task=args.task, episode_index=episode, seed=descriptor['seed'],

@@ -180,11 +180,11 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
 class TolerantWallPhysicsBridge(WallPhysicsBridge):
     """Eval-only wall scheduling tolerance (measured continuous-sim slack).
 
-    Training WallPhysicsBridge.check_deadline is strict. Eval admits ready_wall
-    / wall_now up to wall_scheduling_tolerance past the mapped hard wall
-    deadline (measured ~0.013s). Does not touch physical_clock.py / timing
-    queues. Paired with TolerantDualRateRuntime: phys_tol on commit validate +
-    inflight; never rewind replace clock.
+    Training WallPhysicsBridge.check_deadline is strict (wall≈phys). Eval admits
+    ready_wall / wall_now up to wall_scheduling_tolerance past the mapped hard
+    wall deadline (config-wired; default 0.017, cap 0.02). Does not touch
+    physical_clock.py / timing queues. Paired with TolerantDualRateRuntime and
+    run_episode inflight catch-up hold.
     """
     def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.017, **kwargs):
         super().__init__(physics_dt, **kwargs)
@@ -208,29 +208,33 @@ class TolerantWallPhysicsBridge(WallPhysicsBridge):
 
 
 class TolerantDualRateRuntime(DualRateRuntime):
-    """Eval-only DualRateRuntime: commit-before-inflight + measured phys slack.
+    """Eval-only DualRateRuntime: commit-before-inflight + small measured phys slack.
 
-    Training DualRateRuntime polls inflight before commit (no Isaac backlog).
-    Eval continuous-sim: owner catch-up can leave a finished fast job whose
-    ready_wall already met TolerantWall, while physical now is slightly past
-    hard. Scheme (t111u, one coherent path — no fighting clamps):
+    Training DualRateRuntime polls inflight before commit with STRICT deadlines
+    (no phys/wall tol) because wall≈phys — training has no Isaac render backlog.
+    Eval continuous-sim previously catch-up-stepped while a leased fast worker
+    ran, so phys advanced faster than wall and burned protected_until (smoke35:
+    ~26ms over_hard while clearing ~36ms backlog in one ~0.41s query). Raising
+    phys_tol then let commits land past the mutability frontier → TimingError
+    (smoke34); converting that to DeadlineMiss only renamed the failure.
 
-      * always replace(now=true monotonic clock); never hard-eps rewind
-        (smoke20 TimingError: execution clock moved backwards);
-      * if hard <= now <= hard+phys_tol after wall admit: temporary
-        _validate_lease wrap with the same phys_tol, then restore;
-      * inflight (still-running) uses hard+phys_tol; protect headroom bump
-        and deferred-during-catchup dispatch stay as prior measured fixes.
+    Primary fix is in run_episode: hold catch-up while fast_job is inflight so
+    the lease window restores training's wall≈phys invariant. Remaining eval
+    slack is measurement jitter only (wall_tol≤0.02, phys_tol≤0.02):
 
-    Catch-up skew (smoke31): wall DeadlineMiss admitted on commit/inflight when physical now < hard+phys_tol (backlog makes wall lead phys; wall_tol alone capped at 0.02 cannot cover ~0.1s backlog). Never rewind.
+      * TolerantWall admits ready_wall within wall_tol of mapped hard;
+      * catch-up wall admit on commit/inflight when phys still < hard+phys_tol
+        (wall can lead while phys is held);
+      * never rewind replace clock (smoke20); safe hard-eps clamp only when
+        hard-eps >= _last_time; else true now + tolerant validate.
 
     runtime.py / timing.py / physical_clock.py remain protected (训推一致).
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.023, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.011, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
-        if not (0 <= tol <= 0.025):
-            raise ValueError('physical_scheduling_tolerance must be in [0, 0.025]')
+        if not (0 <= tol <= 0.02):
+            raise ValueError('physical_scheduling_tolerance must be in [0, 0.02]')
         self.physical_scheduling_tolerance = tol
 
     def _fast_query_protection(self, query, requested_wall):
@@ -455,7 +459,8 @@ class TolerantDualRateRuntime(DualRateRuntime):
 
 def run_episode(session, system, builder, camera, runtime_config, *, action_limit,
                 frame_period=None, max_backlog=.25, record=None, seed=0, video=None,
-                camera_warmup_captures=3, on_ready=None, on_failure=None):
+                camera_warmup_captures=3, on_ready=None, on_failure=None,
+                wall_scheduling_tolerance=0.017, physical_scheduling_tolerance=0.011):
     """One owner thread steps 250 Hz physics; two workers preprocess and infer.
 
     Initial reference and fast plan are established before activation, explicitly
@@ -498,7 +503,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise TimingError('source exposure schedule must use whole action intervals')
     capture_ticks=capture_rows*action_ticks
     clock=lambda:float(session.physics_time())
-    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=0.017)
+    bridge=TolerantWallPhysicsBridge(dt,wall_clock=time.perf_counter,wall_scheduling_tolerance=float(wall_scheduling_tolerance))
     def checked_now():
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
@@ -513,7 +518,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.023,
+        physical_scheduling_tolerance=float(physical_scheduling_tolerance),
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
@@ -544,7 +549,10 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         emit(dict(event='activation',physics_time=initial,wall_time=wall0,bootstrap_wall_seconds=bootstrap_seconds,
                   bootstrap_policy='initial_reference_then_fast_plan_before_activation',
                   held_prefix_seconds=runtime_config.protect_steps*queue.dt,
-                  physics_step_seconds=dt,action_ticks=action_ticks))
+                  physics_step_seconds=dt,action_ticks=action_ticks,
+                  wall_scheduling_tolerance=float(bridge.wall_scheduling_tolerance),
+                  physical_scheduling_tolerance=float(runtime.physical_scheduling_tolerance),
+                  inflight_catchup_hold=True))
         max_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture_tick=capture_ticks
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
@@ -602,6 +610,16 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             wait=(now-initial)+dt-(time.perf_counter()-wall0)
             if wait>0:
                 time.sleep(min(wait,.001));continue
+            # Training wall≈phys: no Isaac backlog burn during a leased fast query.
+            # Eval catch-up otherwise advances phys faster than wall and exhausts
+            # protected_until while the worker is still running (smoke35 ~26ms
+            # over_hard clearing backlog mid-query). Hold phys (poll only) until
+            # the fast worker finishes; resume catch-up after commit/reject.
+            # Wall may lead while held — TolerantWall + catch-up wall admit cover it.
+            if (runtime.fast_job is not None and not runtime.fast_job[0].done()):
+                runtime.poll()
+                time.sleep(0.0005)
+                continue
             # A plan can become ready during the blocking capture above. Commit
             # it before this tick consumes the last covered action.
             runtime.poll()
