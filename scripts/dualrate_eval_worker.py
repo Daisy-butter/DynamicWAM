@@ -154,6 +154,20 @@ def validate_checkpoint_payload(config, payload, manifest):
     return contract
 
 
+def effective_runtime_settings(config):
+    """Increase pre-lease admission reserve within the trained 2/3-row support.
+
+    This is not extra inference time after a lease: both original deadlines
+    remain strict. Model inputs use the actual selected prefix and timestamps.
+    """
+    trained = dict(config['runtime'])
+    reserve = float(config.get('deployment_min_query_budget_seconds', trained['min_query_budget_seconds']))
+    if (not math.isfinite(reserve) or reserve < trained['min_query_budget_seconds']
+            or reserve > .40 or trained['protect_steps'] != 2 or trained['max_protect_steps'] != 3):
+        raise ValueError('admission reserve must retain trained two/three-row prefix support')
+    return dict(trained, min_query_budget_seconds=reserve)
+
+
 def validate_config(config):
     if config.get('run_kind') != MODE or config.get('stage') not in ('smoke', 'formal'):
         raise ValueError('explicit DualRate V4 smoke/formal configuration required')
@@ -162,6 +176,7 @@ def validate_config(config):
             any(not re.fullmatch(r'[a-z][a-z0-9_]*', task) for task in tasks)):
         raise ValueError('distinct safe task names required')
     environment_groups(config)
+    effective_runtime_settings(config)
     if (config.get('executor_contract') != 'immutable_wall_continuous_v1'
             or config.get('camera_async_submit') is not True
             or float(config.get('wall_scheduling_tolerance', -1)) != 0.
@@ -462,7 +477,7 @@ def main():
     from dynamicwam.dualrate.online import OnlineBatchBuilder
     from dynamicwam.dualrate.runtime import RuntimeConfig
     from dynamicwam.dualrate.deployment import run_episode, PROTOCOL
-    runtime_config = RuntimeConfig(**config['runtime'])
+    runtime_config = RuntimeConfig(**effective_runtime_settings(config))
     if abs(runtime_config.action_dt - config['action_dt']) > 1e-10 or not runtime_config.fast_cuda_graph:
         raise ValueError('runtime grid/CUDA Graph differs from accepted V4 configuration')
     if config['protocol'] != PROTOCOL:
@@ -486,7 +501,9 @@ def main():
     native = output / 'eval_result' / args.task / 'dualrate_dynamicwam' / config['task_config'] / Path(config['checkpoint']).stem / config['result_stamp']
     save(output/args.task/'deployment_identity.json', dict(checkpoint=checkpoint_meta, checkpoint_sha256=config['checkpoint_sha256'],
         training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config['source_compatibility_sha256'],
-        inference_device_map=placement, renderer=renderer, gpu_uuids=uuids, gpu_count=3))
+        inference_device_map=placement, renderer=renderer, gpu_uuids=uuids, gpu_count=3,
+        trained_runtime=config['runtime'], effective_runtime=effective_runtime_settings(config),
+        admission_policy='prequery_reserve_within_trained_prefix_support_strict_deadlines'))
     metrics = []
     for episode, (descriptor, motion, motion_bytes) in enumerate(references):
         env = camera = session = None
