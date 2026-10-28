@@ -182,7 +182,7 @@ class TolerantWallPhysicsBridge(WallPhysicsBridge):
 
     formal09 Full baseline used wall_scheduling_tolerance=0.007. DualRate V4
     training/eval timing queues stay identical; only the wall-vs-deadline compare
-    wall 7ms from smoke12 over_hard_wall≈6.22ms; phys formal09 5ms; protect bumps to max via prefix-length need. Training queues unchanged.
+    wall/phys 7ms from measured over_hard (wall≈6.22ms smoke12, phys≈6.0ms smoke16); protect prefix-need + deferred catch-up dispatch. Training queues unchanged.
     physical_clock.py remains protected (same_model_files).
     """
     def __init__(self, physics_dt, *, wall_scheduling_tolerance=0.007, **kwargs):
@@ -219,7 +219,7 @@ class TolerantDualRateRuntime(DualRateRuntime):
     physical_clock.py / runtime.py stay protected (训推一致). Only this executor
     override changes eval-side poll ordering + measured slack (wall 7ms / phys 5ms) + protect headroom.
     """
-    def __init__(self, *args, physical_scheduling_tolerance=0.005, **kwargs):
+    def __init__(self, *args, physical_scheduling_tolerance=0.007, **kwargs):
         super().__init__(*args, **kwargs)
         tol = float(physical_scheduling_tolerance)
         if not (0 <= tol <= 0.02):
@@ -412,7 +412,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     runtime=TolerantDualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        physical_scheduling_tolerance=0.005,
+        physical_scheduling_tolerance=0.007,
         action_projection=ActuatorProjection.from_robot(session.env.robot))
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
