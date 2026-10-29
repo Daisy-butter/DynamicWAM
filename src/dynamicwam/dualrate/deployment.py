@@ -18,6 +18,12 @@ from .producer import NUMERIC_TIME_EPSILON
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
 
+def protocol_for_backlog(max_backlog):
+    if max_backlog not in (.25,.5):
+        raise ValueError('explicit nominal250ms or500ms evaluation backlog required')
+    return PROTOCOL if max_backlog==.25 else PROTOCOL+'_backlog500ms_v1'
+
+
 class BoundedArmSmoothing:
     """Optional deployment-only projection; authoritative queue feedback is kept.
 
@@ -395,6 +401,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     Target rows are endpoints over [.18i,.18(i+1)); arms interpolate linearly from
     the preceding committed endpoint, grippers keep native command semantics.
     """
+    protocol=protocol_for_backlog(float(max_backlog))
     if not getattr(builder,'hardtime',False):
         raise ValueError('deployment requires exposure_anchor_wall_release_v4 data contract')
     frame_period=runtime_config.action_dt if frame_period is None else float(frame_period)
@@ -641,7 +648,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             end_wall=end_wall,end_physics=end_physics,physics_steps=physics_steps,
             max_lag=max_lag,min_lag=min_lag,max_backlog=max_backlog)
         emit(dict(event='terminal_clock',**clock_evidence))
-        report=dict(protocol=PROTOCOL,time_contract=builder.manifest['time_contract'],
+        report=dict(protocol=protocol,time_contract=builder.manifest['time_contract'],
             realtime_valid=clock_evidence['passed'],continuous_valid=clock_evidence['passed'],simulation_rate=1.,
             success=terminal=='success',stop_reason=terminal,bootstrap_wall_seconds=bootstrap_seconds,
             bootstrap_latency_excluded_from_active_episode=True,action_interval_s=queue.dt,
@@ -666,7 +673,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         if bridge is not None and bridge.active:
             diagnostics.finish_tick(clock(),bridge.expected_physics()-clock(),complete=False)
         exc.dualrate_events=events
-        exc.dualrate_report=dict(protocol=PROTOCOL,time_contract=builder.manifest['time_contract'],
+        exc.dualrate_report=dict(protocol=protocol,time_contract=builder.manifest['time_contract'],
             realtime_valid=False,continuous_valid=False,success=False,
             error=f'{type(exc).__name__}: {exc}',events=events,
             owner_loop_diagnostics=diagnostics.snapshot(include_ticks=True))

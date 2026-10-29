@@ -187,6 +187,8 @@ def validated_arm_smoothing(config):
 def validate_config(config):
     if config.get('run_kind') != MODE or config.get('stage') not in ('smoke', 'formal'):
         raise ValueError('explicit DualRate V4 smoke/formal configuration required')
+    from dualrate_eval_protocol import validate_backlog_contract
+    validate_backlog_contract(config)
     tasks, uuids = config['tasks'], config['gpu_uuids']
     if (not tasks or len(tasks) != len(set(tasks)) or
             any(not re.fullmatch(r'[a-z][a-z0-9_]*', task) for task in tasks)):
@@ -505,11 +507,11 @@ def _run_worker(resources):
     from dualrate_deployment_inputs import build_cached_online_batch_builder
     from dualrate_physics_optimization import passive_force_scope
     from dynamicwam.dualrate.runtime import RuntimeConfig
-    from dynamicwam.dualrate.deployment import run_episode, PROTOCOL
+    from dynamicwam.dualrate.deployment import run_episode, protocol_for_backlog
     runtime_config = RuntimeConfig(**effective_runtime_settings(config))
     if abs(runtime_config.action_dt - config['action_dt']) > 1e-10 or not runtime_config.fast_cuda_graph:
         raise ValueError('runtime grid/CUDA Graph differs from accepted V4 configuration')
-    if config['protocol'] != PROTOCOL:
+    if config['protocol'] != protocol_for_backlog(float(config['max_backlog'])):
         raise ValueError('runtime protocol differs from configuration')
     from dynamicwam.runtime.domino_rt.domino_session import DominoLevel1Session, prepare_level1_env
     from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture, validate_native_rgb_conversion
