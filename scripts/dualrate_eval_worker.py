@@ -168,6 +168,22 @@ def effective_runtime_settings(config):
     return dict(trained, min_query_budget_seconds=reserve)
 
 
+def validated_arm_smoothing(config):
+    """Optional deployment experiment, distinct from the checkpoint contract."""
+    spec = config.get('deployment_arm_smoothing')
+    if spec is None:
+        return None
+    if (not isinstance(spec, dict)
+            or set(spec) != {'kind', 'alpha', 'max_offset_rad'}
+            or spec['kind'] != 'bounded_causal_ema_v1'
+            or type(spec['alpha']) not in (int, float)
+            or type(spec['max_offset_rad']) not in (int, float)
+            or not math.isfinite(spec['alpha']) or not .85 <= spec['alpha'] <= 1.
+            or not math.isfinite(spec['max_offset_rad']) or not 0. <= spec['max_offset_rad'] <= .03):
+        raise ValueError('unsupported bounded arm smoothing contract')
+    return dict(spec)
+
+
 def validate_config(config):
     if config.get('run_kind') != MODE or config.get('stage') not in ('smoke', 'formal'):
         raise ValueError('explicit DualRate V4 smoke/formal configuration required')
@@ -177,6 +193,7 @@ def validate_config(config):
         raise ValueError('distinct safe task names required')
     environment_groups(config)
     effective_runtime_settings(config)
+    validated_arm_smoothing(config)
     switch_interval = float(config.get('python_thread_switch_interval_seconds', .005))
     if not math.isfinite(switch_interval) or not .0001 <= switch_interval <= .005:
         raise ValueError('invalid finite per-worker Python thread switching interval')
@@ -515,6 +532,7 @@ def _run_worker(resources):
         training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config['source_compatibility_sha256'],
         inference_device_map=placement, renderer=renderer, gpu_uuids=uuids, gpu_count=3,
         trained_runtime=config['runtime'], effective_runtime=effective_runtime_settings(config),
+        deployment_arm_smoothing=validated_arm_smoothing(config),
         python_thread_switch_interval_seconds=sys.getswitchinterval(),
         original_python_thread_switch_interval_seconds=previous_switch_interval,
         admission_policy='prequery_reserve_within_trained_prefix_support_strict_deadlines'))
@@ -574,6 +592,7 @@ def _run_worker(resources):
                 wall_scheduling_tolerance=float(config['wall_scheduling_tolerance']),
                 physical_scheduling_tolerance=float(config['physical_scheduling_tolerance']),
                 backlog_scheduling_tolerance=float(config['backlog_scheduling_tolerance']),
+                arm_smoothing=validated_arm_smoothing(config),
                 on_ready=lambda: cohort.wait(episode, 'ready'),
                 on_armed=lambda: cohort.wait(episode, 'armed'),
                 control_scope=lambda: passive_force_scope(env.robot, enabled=config.get('passive_force_dedup', False)),

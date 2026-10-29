@@ -17,6 +17,56 @@ from .producer import NUMERIC_TIME_EPSILON
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
 
+class BoundedArmSmoothing:
+    """Optional deployment-only projection; authoritative queue feedback is kept.
+
+    Called by the existing runtime action_projection hook before TimedPlan is
+    constructed. Changed predictions invalidate Z via that hook's normal receipt.
+    """
+    def __init__(self, native, spec):
+        if (not isinstance(spec, dict)
+                or set(spec) != {'kind', 'alpha', 'max_offset_rad'}
+                or spec['kind'] != 'bounded_causal_ema_v1'
+                or type(spec['alpha']) not in (float, int)
+                or type(spec['max_offset_rad']) not in (float, int)
+                or not math.isfinite(spec['alpha']) or not .85 <= spec['alpha'] <= 1.
+                or not math.isfinite(spec['max_offset_rad']) or not 0. <= spec['max_offset_rad'] <= .03):
+            raise ValueError('unsupported bounded arm smoothing contract')
+        self.native = native
+        self.spec = dict(spec)
+        self.serialized_bounds = native.serialized_bounds
+        self.provenance = native.provenance
+
+    def __call__(self, raw, known_mask):
+        base, original = self.native(raw, known_mask)
+        count = int(known_mask.sum())
+        expected = torch.arange(len(raw), device=known_mask.device) < count
+        if count < 1 or not torch.equal(known_mask, expected):
+            raise ValueError('smoothing requires a nonempty contiguous committed prefix')
+        result = base.clone()
+        arm = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
+        alpha, cap = float(self.spec['alpha']), float(self.spec['max_offset_rad'])
+        for row in range(count, len(result)):
+            correction = ((1. - alpha) * (result[row - 1, arm] - base[row, arm])).clamp(-cap, cap)
+            result[row, arm] = torch.maximum(torch.minimum(base[row, arm] + correction,
+                self.native.bounds[arm, 1]), self.native.bounds[arm, 0])
+        change = result - raw
+        changed = change != 0
+        rows = changed.any(-1).nonzero().flatten()
+        smooth_delta = result - base
+        smooth_changed = bool((smooth_delta != 0).any())
+        receipt = dict(original, changed_coordinates=int(changed.sum()),
+            changed_rows=rows.tolist(), max_absolute_change=float(change.abs().max()),
+            hard_prefix_preserved=torch.equal(result[known_mask], raw[known_mask]),
+            before=raw[rows].tolist(), after=result[rows].tolist(),
+            forecast_invalidated=bool(changed.any()),
+            reason='native_projection_and_bounded_arm_smoothing' if smooth_changed else original['reason'],
+            smoothing=dict(self.spec, applied=smooth_changed,
+                max_absolute_change=float(smooth_delta.abs().max()),
+                grippers_preserved=torch.equal(result[:, [6, 13]], base[:, [6, 13]])))
+        return result, receipt
+
+
 class ContinuousWallPhysicsBridge(WallPhysicsBridge):
     """Fixed activation mapping; Full formal09's 5ms backlog tolerance only.
 
@@ -326,7 +376,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 frame_period=None, max_backlog=.25, record=None, seed=0, video=None,
                 camera_warmup_captures=3, on_ready=None, on_armed=None, on_failure=None,
                 wall_scheduling_tolerance=0., physical_scheduling_tolerance=0.,
-                backlog_scheduling_tolerance=.005, control_scope=None):
+                backlog_scheduling_tolerance=.005, control_scope=None, arm_smoothing=None):
     """One owner thread steps 250 Hz physics; two workers preprocess and infer.
 
     Initial reference and fast plan are established before activation, explicitly
@@ -395,11 +445,15 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     queue=ExecutionQueue(TimedPlan(initial,runtime_config.action_dt,(held,)*16,0,initial),
         episode_id=f'domino-{seed}',clock_id='sapien-scene-step-clock')
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
+    projection=ActuatorProjection.from_robot(session.env.robot)
+    if arm_smoothing is not None:
+        projection=BoundedArmSmoothing(projection,arm_smoothing)
     runtime=DualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
-        action_projection=ActuatorProjection.from_robot(session.env.robot))
+        action_projection=projection)
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
-              provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only'))
+              provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only',
+              arm_smoothing=arm_smoothing))
     vae=system.slow.native.compact_wan.video_model.vae
     frames=history.snapshot(initial)
     try:
