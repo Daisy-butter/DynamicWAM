@@ -21,11 +21,12 @@ class RealtimeCameraReplay:
         if (self.initial!=0. or abs(self.dt-.004)>1e-8 or self.capture_ticks<1
                 or abs(frame_period-self.capture_ticks*self.dt)>1e-10
                 or self.capture_ticks%45 or abs(action_dt-45*self.dt)>1e-10
-                or max_backlog!=.25 or backlog_scheduling_tolerance!=.005):
-            raise ValueError('diagnostic camera requires exact production grid/backlog')
+                or type(max_backlog) not in (int,float) or max_backlog not in (.25,.5,1.)
+                or backlog_scheduling_tolerance!=.005):
+            raise ValueError('diagnostic camera requires exact grid and explicit .25/.5/1. backlog with .005 tolerance')
         self.bridge=Bridge(self.dt,wall_clock=self.wall,
             backlog_scheduling_tolerance=backlog_scheduling_tolerance)
-        self.max_backlog=max_backlog;self.max_lag=0.;self.min_lag=0.
+        self.max_backlog=float(max_backlog);self.max_lag=0.;self.min_lag=0.
         self.history=History();self.video=Video();self.pending=self.completed=None
         self.captures=[];self.skipped=0;self.next_capture_tick=self.capture_ticks
         self.steps=0;self.finished=False;self.closed=False;self.end_wall=self.end_physical=None;self.submissions=0
@@ -98,7 +99,12 @@ class RealtimeCameraReplay:
             active_wall_seconds=None if not self.bridge.active else wall-self.bridge.wall_origin,
             physical_seconds=physical-self.initial,max_backlog_s=self.max_lag,min_backlog_s=self.min_lag,
             raw_end_lag_s=None if not self.bridge.active else self.bridge.expected_physics(wall)-physical,
-            backlog_limit_s=self.max_backlog+.005,captures=self.captures,camera_submissions=self.submissions,
+            backlog_limit_s=self.max_backlog+self.bridge.backlog_scheduling_tolerance,
+            configured_max_backlog_s=self.max_backlog,
+            backlog_scheduling_tolerance_s=self.bridge.backlog_scheduling_tolerance,
+            backlog_protocol='diagnostic_explicit_backlog_v2',original_max_backlog_s=.25,
+            backlog_limit_changed_from_original=self.max_backlog!=.25,
+            captures=self.captures,camera_submissions=self.submissions,
             skipped_capture_requests=self.skipped,
             video_frames=self.video.frames,all_native_steps_and_state_snapshot_costs_included=True,
             time_deducted_seconds=0.,camera_closed=self.closed,

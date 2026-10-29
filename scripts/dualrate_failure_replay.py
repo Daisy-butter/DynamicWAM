@@ -146,9 +146,10 @@ def validate_config(config):
     if type(realtime) is not bool or realtime and workers!=0:
         raise ValueError('explicit bool realtime camera diagnosis requires original workers0')
     if realtime and (config.get('camera_async_submit') is not True
-            or config.get('max_backlog')!=.25 or config.get('backlog_scheduling_tolerance')!=.005
+            or type(config.get('max_backlog')) not in (int,float)
+            or config['max_backlog'] not in (.25,.5,1.) or config.get('backlog_scheduling_tolerance')!=.005
             or not config.get('reference_state_trace')):
-        raise ValueError('realtime camera requires native async/.25+.005 and workers0 reference states')
+        raise ValueError('realtime camera requires async, explicit .25/.5/1.+.005 and workers0 reference states')
     if workers or config.get('reference_state_trace') is not None:
         if (not config.get('reference_state_trace') or
                 sha(config['reference_state_trace'])!=config.get('reference_state_trace_sha256')):

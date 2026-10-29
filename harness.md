@@ -1,3 +1,7 @@
+## 2026-10-29 authorized relaxed backlog benchmark
+
+The user explicitly authorizes raising the backlog bound and requests evaluating only the final DualRate checkpoint now; do not launch Full baseline. Start with .5 seconds plus original .005 scheduling tolerance, validate recorded failure controls and full policy smoke before formal. Preserve 1x wall/physics clocks, original .24 camera ages, 45 ticks/action, task budgets, all deadlines/leases/response gates and CPU PhysX0. New full700 only; no old80 retention or merged score. Label the changed benchmark and do not claim strict comparison with original25.43percent. GPU hygiene/no retries unchanged.
+
 ## 2026-10-29 cohort backlog investigation and conditional continuation
 
 Final checkpoint and active policy/clock/camera/queue/physics/GPU settings remain unchanged. Exact recorded cup1 controls show a native CPU PhysX contact-cost burst; 2/4 CPU workers are byte-identical but slower and rejected. Eight diagnostic episodes passed; a recorded-control paced camera check and final-source policy smoke are required before continuation. Old80 complete episodes passed original evidence/video audit; use explicit dual-source retention only after frozen-source proof and fresh smoke. Do not reuse partial tasks or claim completed700. No retries, driver recovery, clock rebasing, timestep/solver changes, or relaxed backlog. Observation diagnostics split physical-release waiting from actual copy time. Replay-only modes are unscored and never formal acceptance alone.

@@ -23,7 +23,7 @@ for file,names in ((physical,{'WallPhysicsBridge'}),(source/'deployment.py',{
 
 
 class Fixture:
-    def __init__(self,delay=.1):
+    def __init__(self,delay=.1,max_backlog=.25):
         self.wall=100.;self.ticks=0;self.dt=.004000000189989805;self.delay=delay
         self.session=SimpleNamespace(physics_time=lambda:self.ticks*self.dt,
             timestep=lambda:self.dt,env=object())
@@ -39,7 +39,8 @@ class Fixture:
         deps=(namespace['ContinuousWallPhysicsBridge'],namespace['warm_camera'],
               namespace['next_grid_capture_tick'],namespace['exact_grid_index'],History,Video)
         self.adapter=module.RealtimeCameraReplay(self.session,self.camera,action_dt=45*self.dt,
-            frame_period=45*self.dt,dependencies=deps,wall_clock=lambda:self.wall,sleep=self.sleep)
+            frame_period=45*self.dt,max_backlog=max_backlog,dependencies=deps,
+            wall_clock=lambda:self.wall,sleep=self.sleep)
     def sleep(self,seconds):self.wall+=seconds
     def begin(self,env,now):
         assert self.active is None
@@ -90,6 +91,27 @@ class CameraClockTests(unittest.TestCase):
         self.assertTrue(all(abs(t/(45*fixture.dt)-round(t/(45*fixture.dt)))<1e-8 for t in active))
         self.assertTrue(all(b-a>=2*45*fixture.dt-1e-8 for a,b in zip(active,active[1:])))
         self.assertEqual(fixture.ticks,270)
+
+    def test_explicit_half_second_bound_keeps_five_ms_tolerance(self):
+        fixture=Fixture(max_backlog=.5);fixture.adapter.before_tick(0)
+        origin=fixture.adapter.bridge.wall_origin
+        fixture.wall+=.5049;fixture.ticks=1
+        fixture.adapter.after_tick(1)
+        report=fixture.adapter.report()
+        self.assertEqual(report['configured_max_backlog_s'],.5)
+        self.assertEqual(report['backlog_limit_s'],.505)
+        self.assertEqual(report['backlog_scheduling_tolerance_s'],.005)
+        self.assertTrue(report['backlog_limit_changed_from_original'])
+        fixture.wall+=.0002
+        with self.assertRaisesRegex(ValueError,'backlog'):fixture.adapter.after_tick(1)
+        self.assertEqual(origin,fixture.adapter.bridge.wall_origin)
+        self.assertEqual(fixture.ticks,1)
+        fixture.adapter.close()
+
+    def test_only_explicit_allowed_backlog_values_are_accepted(self):
+        fixture=Fixture(max_backlog=1.);fixture.adapter.close()
+        for value in (True,.3,.75,0.,float('inf'),'0.5'):
+            with self.assertRaises(ValueError):Fixture(max_backlog=value)
 
 
 if __name__=='__main__':unittest.main()
