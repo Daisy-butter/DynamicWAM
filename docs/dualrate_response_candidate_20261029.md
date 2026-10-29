@@ -1,0 +1,9 @@
+# DualRate response candidate, 2026-10-29
+
+Base: c1df306ee8eca9618b47c423e9cb96ef2e24e8ae, final cross_time_joint checkpoint unchanged. The new smoke overlay restores the trained 0.30 s pre-query admission reserve, so the existing scheduler can choose two or three action rows based on actual phase, backlog and existing commitments. Existing immutable leases, actual physical grid and wall/physics deadlines remain in force. There is no automatic retry, stale result acceptance, changed benchmark budget, or time scaling.
+
+This is a candidate, not accepted deployment. A recorded-schedule analysis of the earlier repaired deployment found 12 two-row deadline violations among about 26,000 queries; another older deployment had substantially worse tails. Recorded counterfactuals do not guarantee a changed schedule. Do not launch formal 700 until new-source full GPU smoke has independently passed timing, reference, native video, exit and kernel checks, and latency tail/response measurements show the candidate is viable. Preserve all prior outputs. The recorded admission audit is diagnostic only.
+
+The 350-demo terminal audit found limited training coverage near last gripper threshold events; this checkpoint cannot recover missing training examples simply by changing scheduling. No claims of learned recovery, improved success rate or true physical-release ground truth are made.
+
+The smoothing script is an offline reference only. It is not integrated into the executor or enabled by the smoke overlay. It preserves committed rows and gripper coordinates, but any runtime integration must preserve the actual action queue seen by subsequent fast and slow queries and invalidate future Z where action projection changes its assumptions. Calibrate with recorded trajectories and then validate against unmodified same-seed continuous closed-loop runs; the example coefficient is not a deployment recommendation.
