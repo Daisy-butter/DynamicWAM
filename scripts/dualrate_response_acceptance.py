@@ -50,7 +50,7 @@ def episode_response(report):
     act = activations[0]; aw = act['wall_time']; ap = act['physics_time']
     dt = report['action_interval_s']
     require(dt > 0 and math.isfinite(dt), 'invalid action grid')
-    require(report['complete'] is True and report['error'] is None, 'incomplete/error episode')
+    require(report['complete'] is True and report.get('error') is None, 'incomplete/error episode')
     require(report['executable_action_source'] == 'fast_only', 'action source changed')
     require(report['no_skipped_physics_steps'] is True, 'skipped physics steps')
     require(report['raw_clock_acceptance']['passed'] is True, 'raw clock acceptance failed')

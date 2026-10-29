@@ -40,6 +40,14 @@ def reports(prefix=2):
 
 
 class ResponseGateTest(unittest.TestCase):
+    def test_success_report_may_omit_optional_error(self):
+        rows=reports()
+        for row in rows:row.pop('error',None)
+        self.assertTrue(evaluate_reports(rows)['passed'])
+        rows[0]['error']='actual failure'
+        with self.assertRaisesRegex(ValueError,'incomplete/error'):
+            evaluate_reports(rows)
+
     def test_real_executed_response_recomputed(self):
         result=evaluate_reports(reports())
         self.assertTrue(result['passed'])
