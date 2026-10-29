@@ -223,6 +223,30 @@ def warm_camera(camera, session, *, count, emit):
     return captured
 
 
+def reference_trace_since(reference, initial, query_time):
+    """Trim only history that cannot match any current soft-action reference.
+
+    The store snapshot is CPU-owned; never introduce a device synchronization
+    on the physics owner. Unknown/legacy layouts retain the original full trace.
+    The matching epsilon is the one used by DualRateSystem._action_deviation.
+    This changes no executed command, timestamp, prefix, or model condition.
+    """
+    if reference is None:
+        return initial
+    payload = getattr(reference, 'payload', None)
+    if not hasattr(payload, 'get'):
+        return initial
+    intervals = payload.get('reference_action_intervals')
+    if (not isinstance(intervals, torch.Tensor) or intervals.device.type != 'cpu'
+            or intervals.dtype != torch.float64 or intervals.ndim != 3
+            or intervals.shape[0] != 1 or intervals.shape[2] != 2
+            or intervals.shape[1] == 0 or not torch.isfinite(intervals).all()
+            or (intervals[..., 1] <= intervals[..., 0]).any()):
+        return initial
+    earliest = float(intervals[..., 0].min()) - 1e-7
+    return max(initial, min(query_time, earliest))
+
+
 def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,deferred,seen_references,
                          exposure_walls=None,wall_clock=time.perf_counter):
     """Wait for genuinely fresh available pixels while physics/queue continue.
@@ -258,7 +282,10 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                 observation_age=age))
         if route=='fast':
             ref=runtime.store.snapshot(now)
-            trace=queue.completed_execution_trace(initial,now)
+            # Reference publication and physical advancement are owner-only, so
+            # start_fast below sees this same reference at this same query time.
+            # Old actions before its support cannot affect action-deviation M.
+            trace=queue.completed_execution_trace(reference_trace_since(ref,initial,now),now)
             try:
                 runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
                     builder.current(snapshot,query_time=lease.query_time,action_start=lease.prefix.start_time,
