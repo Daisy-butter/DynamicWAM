@@ -99,7 +99,7 @@ def validate_source_compatibility(config, checkpoint_contract=None):
                  for p in (ROOT/'src/dynamicwam').rglob('*.py')
                  if p.relative_to(ROOT/'src/dynamicwam').as_posix() not in
                  {'dualrate/deployment.py', 'runtime/domino_rt/domino_session.py',
-                  'dualrate/contact_cache.py', 'dualrate/online.py',
+                  'dualrate/contact_cache.py', 'dualrate/loop_diagnostics.py', 'dualrate/online.py',
                   'runtime/domino_rt/camera_capture.py'}}
     if set(files) != set(protected):
         raise ValueError('compatibility receipt must cover every non-executor Python source')

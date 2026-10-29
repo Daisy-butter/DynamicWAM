@@ -12,6 +12,7 @@ from .online import ObservationHistory
 from .actuators import ActuatorProjection
 from .physical_clock import WallPhysicsBridge
 from .contact_cache import StepContactCache
+from .loop_diagnostics import LoopDiagnostics
 from .producer import NUMERIC_TIME_EPSILON
 
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
@@ -393,6 +394,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         raise ValueError('invalid bounded deployment limits')
     events=[];bridge=None;owner_thread=threading.get_ident();post_terminal=False
     contact_cache=None;main_error=None;exposure_walls={};query_requests={}
+    diagnostics=LoopDiagnostics(wall_clock=time.perf_counter, cpu_clock=time.thread_time)
     def emit(event):
         if event.get('event')=='fast_started':
             exposure=event['observation_time']
@@ -483,6 +485,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 emit=lambda event:emit(dict(event,phase='post_ready_rewarm')))
         if on_armed is not None:on_armed()
         bootstrap_seconds=time.perf_counter()-bootstrap_started
+        diagnostics.install()
         wall0=time.perf_counter();bridge.activate(initial,wall0)
         emit(dict(event='activation',physics_time=initial,wall_time=wall0,bootstrap_wall_seconds=bootstrap_seconds,
                   bootstrap_policy='initial_reference_then_fast_plan_before_activation',
@@ -514,11 +517,13 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             if completed_capture is not None and bridge.ready(completed_capture.finished_wall_perf_s,now):
                 c=completed_capture;completed_capture=None
                 exact_grid_index(c.physics_time_s,initial,queue.dt)
-                history.append(c.observation,exposure=c.physics_time_s,available=now)
+                with diagnostics.span('capture_history',physical_time=now):
+                    history.append(c.observation,exposure=c.physics_time_s,available=now)
                 exposure_walls[c.physics_time_s]=c.capture_wall_perf_s
                 accepted_captures+=1
-                if video:video.append(c.observation['observation']['head_camera']['rgb'],
-                    physics_time_s=c.physics_time_s,capture_wall_perf_s=c.capture_wall_perf_s)
+                with diagnostics.span('capture_video',physical_time=now):
+                    if video:video.append(c.observation['observation']['head_camera']['rgb'],
+                        physics_time_s=c.physics_time_s,capture_wall_perf_s=c.capture_wall_perf_s)
                 emit(dict(event='capture',exposure=c.physics_time_s,available=now,
                     readback_ready_wall=c.readback_finished_wall_perf_s,owner_ready_wall=c.finished_wall_perf_s,
                     availability_lower_bound=bridge.availability_time(c.finished_wall_perf_s),
@@ -562,6 +567,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             row=tick//action_ticks
             if row>=action_limit:
                 terminal='action_budget_exhausted';break
+            diagnostics.begin_tick(tick,now,lag)
             action=np.asarray(queue.action_at(now),np.float64)
             if row!=last_row:
                 previous=target.copy();target=action.copy();last_row=row
@@ -576,36 +582,42 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             robot=session.env.robot
             # Same single-state passive-force reuse as the paired Full baseline.
             # The scope ends before kinematic updates and the real physics step.
-            with control_scope() if control_scope is not None else nullcontext():
-                robot._entity_qf(robot.left_entity);robot._entity_qf(robot.right_entity)
-                robot.set_arm_joints(position[:6],velocity[:6],'left')
-                robot.set_arm_joints(position[7:13],velocity[7:13],'right')
-                robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
-            session.env._update_kinematic_tasks()
+            with diagnostics.span('control',physical_time=now):
+                with control_scope() if control_scope is not None else nullcontext():
+                    robot._entity_qf(robot.left_entity);robot._entity_qf(robot.right_entity)
+                    robot.set_arm_joints(position[:6],velocity[:6],'left')
+                    robot.set_arm_joints(position[7:13],velocity[7:13],'right')
+                    robot.set_gripper(position[6],'left');robot.set_gripper(position[13],'right')
+            with diagnostics.span('kinematics',physical_time=now):
+                session.env._update_kinematic_tasks()
             if runtime.fast_job is not None and not runtime.fast_job[0].done():
                 fast_inflight_steps+=1
             if pending is not None and not camera.ready(pending):
                 camera_inflight_steps+=1
-            session.env.scene.step()
+            with diagnostics.span('physx',physical_time=now):
+                session.env.scene.step()
             if abs(clock()-(now+dt))>1e-8:
                 raise TimingError('scene step skipped or rewrote physical time')
             physics_steps+=1
             step_wall=time.perf_counter();max_step_wall_gap=max(max_step_wall_gap,step_wall-last_step_wall)
             last_step_wall=step_wall
             _,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
-            session.env._update_transient_checks();session._consume_events()
-            terminal=session.stop_reason()
-            row_complete=(tick+1)%action_ticks==0
-            if row_complete:completed_rows+=1
-            if (row_complete or terminal is not None) and metrics_row<row:
-                if session.metrics_tracker is not None:session.metrics_tracker.on_step()
-                metrics_row=row
-            if contact_cache.error is not None:
-                # Native best-effort metrics must not swallow infrastructure failures.
-                raise contact_cache.error
+            with diagnostics.span('postchecks_metrics',physical_time=clock()):
+                session.env._update_transient_checks();session._consume_events()
+                terminal=session.stop_reason()
+                row_complete=(tick+1)%action_ticks==0
+                if row_complete:completed_rows+=1
+                if (row_complete or terminal is not None) and metrics_row<row:
+                    if session.metrics_tracker is not None:session.metrics_tracker.on_step()
+                    metrics_row=row
+                if contact_cache.error is not None:
+                    # Native best-effort metrics must not swallow infrastructure failures.
+                    raise contact_cache.error
             # Release the GIL after every real tick, including catch-up loops.
             # No positive delay, scene pause, clock rebase, or skipped tick.
-            time.sleep(0)
+            with diagnostics.span('yield',physical_time=clock()):
+                time.sleep(0)
+            diagnostics.finish_tick(clock(),bridge.expected_physics()-clock())
         inflight=False;fast_during_slow=0
         for event in events:
             if event['event']=='activation':inflight=False
@@ -636,21 +648,25 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             reference_versions_consumed=sorted(seen_references),events=events,
             executable_action_source='fast_only',on_policy_training_distribution=False,
             fast_graph_acceptance=runtime.fast_graph_receipt(),
-            contact_cache=contact_cache.statistics(),
+            contact_cache=contact_cache.statistics(),owner_loop_diagnostics=diagnostics.snapshot(),
             **model_overlap_statistics(events),**action_response_statistics(events))
         return report
     except BaseException as exc:
         main_error=exc
+        if bridge is not None and bridge.active:
+            diagnostics.finish_tick(clock(),bridge.expected_physics()-clock(),complete=False)
         exc.dualrate_events=events
         exc.dualrate_report=dict(protocol=PROTOCOL,time_contract=builder.manifest['time_contract'],
             realtime_valid=False,continuous_valid=False,success=False,
-            error=f'{type(exc).__name__}: {exc}',events=events)
+            error=f'{type(exc).__name__}: {exc}',events=events,
+            owner_loop_diagnostics=diagnostics.snapshot(include_ticks=True))
         if on_failure is not None:
             try:on_failure(exc)
             except BaseException as callback_exc:
                 emit(dict(event='failure_callback_error',error=f'{type(callback_exc).__name__}: {callback_exc}'))
         raise
     finally:
+        diagnostics.close()
         # Stop the episode clock before draining unfinished CPU/GPU/readback work.
         post_terminal=True;cleanup_errors=[]
         try:

@@ -1,3 +1,8 @@
+# Current authorized .50 cohort-stall investigation, 2026-10-29
+
+User authorizes repair, fresh GPU smoke and formal35x20 with unchanged final checkpoint. Prior response formal50_01 failed cup episode1 seed100001 at wall/physics backlog0.255829838s. All owned workers exited, all8guardFD closed, kernel unchanged. Preserve old82complete reports (13success; four complete tasks80) as separate evidence. Initial candidate adds bounded observational wall/thread-CPU/GC timing only; no thresholds, clocks, physics, model, queues or smoothing changes. Do not claim root cause or formal readiness before real failure-case evidence. Source/config frozen during each GPU run. GPU recovery/reset/unbind prohibited; no retry. Only .50 isolated worktree writable this turn; .92/.100 processes untouched.
+
+---
 # Consistency audit revision02, 2026-10-27
 
 The prior CPU-only waiter2764016 was intentionally stopped before evaluation
