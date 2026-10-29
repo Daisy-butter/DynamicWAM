@@ -121,7 +121,7 @@ def timed(phases,name):
 def replay_controls(session,trace,state_reader,*,tail,deadline):
     """Same 45-tick native endpoint interpolation as the actual DualRate loop."""
     import numpy as np
-    from dynamicwam.dualrate.passive_force import passive_force_scope
+    from dualrate_physics_optimization import passive_force_scope
     env=session.env;robot=env.robot;dt=trace['dt'];targets=trace['targets']+[trace['targets'][-1]]*tail
     names,initial=state_reader();states=[initial];times=[session.physics_time()];timings=[]
     if abs(times[0])>1e-12:raise ValueError('scene clock must start at zero')
