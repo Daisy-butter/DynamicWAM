@@ -22,6 +22,68 @@ from dualrate_eval_worker import (canonical_hash,load_frozen_task,proc_identity,
                                  read,save,sha,source_hash,verify_artifacts)
 MODE='dualrate_failure_replay'
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
+SCENE_FIELDS=('gravity','bounce_threshold','enable_pcm','enable_tgs',
+              'enable_ccd','enable_enhanced_determinism','enable_friction_every_iteration')
+
+
+def scene_fields(config):
+    fields={name:getattr(config,name) for name in SCENE_FIELDS}
+    fields['gravity']=[float(x) for x in fields['gravity']]
+    fields['bounce_threshold']=float(fields['bounce_threshold'])
+    return fields
+
+
+@contextmanager
+def diagnostic_dispatcher(physx,workers):
+    """Replay-local override; never edit protected production GPU binding.
+
+    Preserve all seven native scene fields on each call. The produced scene's
+    original binding metadata remains workers0; this receipt identifies the
+    explicit diagnostic override instead of mislabelling it as the baseline.
+    """
+    if type(workers) is not int or workers not in (0,2,4):
+        raise ValueError('diagnostic dispatcher workers must be 0, 2 or 4')
+    original=physx.set_scene_config
+    receipt=dict(baseline_physx_cpu_workers=0,diagnostic_physx_cpu_workers=workers,
+                 counterfactual=bool(workers),calls=[],restored=False)
+    def setter(*args,**kwargs):
+        result=original(*args,**kwargs)
+        expected=scene_fields(physx.get_scene_config())
+        if workers:
+            original(**expected,cpu_workers=workers)
+        if scene_fields(physx.get_scene_config())!=expected:
+            raise ValueError('diagnostic dispatcher changed native scene fields')
+        receipt['calls'].append(dict(native_scene_fields=expected,native_scene_fields_verified=True))
+        return result
+    physx.set_scene_config=setter
+    try:
+        yield receipt
+        if not receipt['calls']:
+            raise ValueError('diagnostic dispatcher did not observe native scene creation')
+    finally:
+        changed=physx.set_scene_config is not setter
+        physx.set_scene_config=original
+        receipt['restored']=True
+        if changed:raise RuntimeError('diagnostic scene setter ownership changed')
+
+
+def compare_reference_states(path,names,states,times):
+    """Require byte identity for actual states and physical timestamps."""
+    import numpy as np
+    with np.load(path,allow_pickle=False) as reference:
+        if set(reference.files)!={'names','states','physics_times'}:
+            raise ValueError('reference state file layout differs')
+        if (not np.array_equal(reference['names'],np.asarray(names))
+                or reference['states'].dtype!=states.dtype or reference['states'].shape!=states.shape
+                or reference['physics_times'].dtype!=times.dtype or reference['physics_times'].shape!=times.shape
+                or not np.isfinite(reference['states']).all() or not np.isfinite(states).all()):
+            raise ValueError('reference actual-state names, shape, dtype or finite values differ')
+        equal=(reference['states'].tobytes()==states.tobytes()
+               and reference['physics_times'].tobytes()==times.tobytes())
+        delta=np.abs(reference['states']-states)
+        worst=np.unravel_index(int(delta.argmax()),delta.shape)
+        return dict(passed=equal,bitwise_equal=equal,atol=0.,state_count=len(states),
+            max_absolute_difference=float(delta[worst]),worst_tick=int(worst[0]),worst_field=names[worst[1]])
 
 
 def validate_trace(report):
@@ -55,6 +117,13 @@ def validate_config(config):
             or config.get('seed')!=100000 or config.get('episodes')!=20
             or config.get('physx_cpu_workers')!=0 or config.get('passive_force_dedup') is not True):
         raise ValueError('exact failed cup1/seed100001/native workers0/passive-force contract required')
+    workers=config.get('diagnostic_physx_cpu_workers',0)
+    if type(workers) is not int or workers not in (0,2,4):
+        raise ValueError('diagnostic_physx_cpu_workers must be 0, 2 or 4')
+    if workers or config.get('reference_state_trace') is not None:
+        if (not config.get('reference_state_trace') or
+                sha(config['reference_state_trace'])!=config.get('reference_state_trace_sha256')):
+            raise ValueError('hash-bound workers0 reference state trace required')
     tail=config.get('tail_hold_rows',0);limit=config.get('timeout_seconds',0)
     if type(tail) is not int or not 0<=tail<=10 or not math.isfinite(limit) or not 0<limit<=1800:
         raise ValueError('bounded tail0..10/timeout<=1800 required')
@@ -212,9 +281,11 @@ def run(config,authorization):
     env=cache=None;deadline=time.monotonic()+config['timeout_seconds'];report=None
     try:
         with SapienInitLock():
-            env,prepared=prepare_level1_env(domino,task_name=config['task'],task_config=config['task_config'],
-                start_seed=descriptor['seed'],instruction_type=config.get('instruction_type','seen'),
-                replay=dict(seed=descriptor['seed'],instruction=descriptor['instruction'],saved_motion=motion['saved_motion']))
+            with diagnostic_dispatcher(sapien.physx,config.get('diagnostic_physx_cpu_workers',0)) as dispatcher:
+                env,prepared=prepare_level1_env(domino,task_name=config['task'],task_config=config['task_config'],
+                    start_seed=descriptor['seed'],instruction_type=config.get('instruction_type','seen'),
+                    replay=dict(seed=descriptor['seed'],instruction=descriptor['instruction'],saved_motion=motion['saved_motion']))
+        save(output/'diagnostic_dispatcher.json',dispatcher)
         env._rt_episode_info=motion['episode_info']
         if descriptor['arm_tag']:
             from envs.utils.action import ArmTag
@@ -242,6 +313,15 @@ def run(config,authorization):
         if cache.error is not None:raise cache.error
         np.savez_compressed(output/'state_trace.npz',names=np.asarray(names),states=states,physics_times=times)
         save(output/'step_timings.json',timings)
+        parity=None
+        if config.get('reference_state_trace'):
+            if sha(config['reference_state_trace'])!=config['reference_state_trace_sha256']:
+                raise ValueError('reference state trace changed during replay')
+            parity=compare_reference_states(config['reference_state_trace'],names,states,times)
+            parity.update(reference_path=config['reference_state_trace'],reference_sha256=config['reference_state_trace_sha256'])
+            save(output/'state_parity.json',parity)
+            if not parity['passed']:
+                raise ValueError('diagnostic dispatcher state trajectory differs; candidate rejected')
         report=dict(schema='dualrate_failed_endpoint_replay_v1',complete=True,diagnostic_only=True,no_score=True,
             benchmark_acceptance=False,realtime_valid=False,recorded_state_parity_tested=False,
             task=config['task'],episode_index=1,seed=100001,model_calls=0,camera_submissions=0,no_wall_pacing=True,
@@ -249,7 +329,9 @@ def run(config,authorization):
             incomplete_last_row_completed_diagnostically=True,tail_hold_rows=config['tail_hold_rows'],
             tail_ignores_task_terminal_for_diagnostic=True,physics_steps=len(timings),state_count=len(states),
             renderer=renderer,physx_scene_binding=getattr(env.scene,'_dynamicwam_physx_binding',None),
-            physics_configuration_overridden=False,source=receipt['source'],config_sha256=canonical_hash(config),
+            physics_configuration_overridden=bool(config.get('diagnostic_physx_cpu_workers',0)),
+            diagnostic_dispatcher=dispatcher,workers0_reference_state_parity=parity,
+            candidate_accepted=False,source=receipt['source'],config_sha256=canonical_hash(config),
             states_sha256=hashlib.sha256(states.tobytes()).hexdigest(),state_trace_sha256=sha(output/'state_trace.npz'),
             step_timings_sha256=sha(output/'step_timings.json'),evidence=[dict(path=config[k],sha256=config[k+'_sha256'])
                 for k in ('trace_report','trace_manifest','failed_config')])
