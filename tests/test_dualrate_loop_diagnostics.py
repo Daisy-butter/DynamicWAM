@@ -68,7 +68,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertAlmostEqual(result['phase_totals']['capture_video']['wall_seconds'], .002)
         self.assertEqual(result['long_spans'][0]['physical_time'], 4.984)
 
-    def test_gc_owner_only_and_callback_restoration_preserves_others(self):
+    def test_gc_owner_separate_and_callback_restoration_preserves_others(self):
         diagnostics, clock = self.make()
         original = list(gc.callbacks)
         enabled = gc.isenabled()
@@ -82,10 +82,16 @@ class DiagnosticsTests(unittest.TestCase):
             worker = threading.Thread(target=foreign)
             worker.start(); worker.join()
             self.assertEqual(diagnostics.gc_totals['count'], 0)
+            self.assertEqual(diagnostics.process_gc_totals['count'], 1)
+            foreign_event = diagnostics.process_gc_events[-1]
+            self.assertFalse(foreign_event['owner_collector'])
+            self.assertNotEqual(foreign_event['collector_thread_id'], diagnostics.owner)
+            self.assertGreater(foreign_event['collector_native_id'], 0)
             diagnostics._callback('start', {'generation': 2})
             clock.advance(.12, .115)
             diagnostics._callback('stop', {'generation': 2, 'collected': 2, 'uncollectable': 0})
             self.assertEqual(diagnostics.gc_totals['count'], 1)
+            self.assertEqual(diagnostics.process_gc_totals['count'], 2)
             self.assertAlmostEqual(diagnostics.gc_totals['wall_seconds'], .12)
             diagnostics.close()
             diagnostics.close()
@@ -94,6 +100,35 @@ class DiagnosticsTests(unittest.TestCase):
         finally:
             diagnostics.close()
             gc.callbacks[:] = original
+
+    def test_real_foreign_collector_is_recorded_and_bounded(self):
+        diagnostics = LoopDiagnostics()
+        original = list(gc.callbacks)
+        done = {}
+        try:
+            diagnostics.install()
+            def foreign():
+                done['thread_id'] = threading.get_ident()
+                done['native_id'] = threading.get_native_id()
+                for _ in range(40):
+                    cycle = []
+                    cycle.append(cycle)
+                    del cycle
+                    gc.collect(0)
+            worker = threading.Thread(target=foreign)
+            worker.start(); worker.join()
+            events = diagnostics.snapshot()['process_gc_events']
+            self.assertLessEqual(len(events), 32)
+            foreign_events = [e for e in events if e['collector_thread_id'] == done['thread_id']]
+            self.assertTrue(foreign_events)
+            self.assertTrue(all(not e['owner_collector'] for e in foreign_events))
+            self.assertTrue(all(e['collector_native_id'] == done['native_id'] for e in foreign_events))
+            self.assertTrue(all(e['wall_seconds'] >= 0 and e['thread_cpu_seconds'] >= 0 for e in foreign_events))
+            self.assertGreaterEqual(diagnostics.process_gc_totals['count'], 40)
+            self.assertGreater(diagnostics.process_gc_totals['count'], diagnostics.gc_totals['count'])
+        finally:
+            diagnostics.close()
+            self.assertEqual(gc.callbacks, original)
 
 
 if __name__ == '__main__':

@@ -19,11 +19,13 @@ class LoopDiagnostics:
         self.ticks = deque(maxlen=tick_capacity)
         self.long_spans = deque(maxlen=64)
         self.gc_events = deque(maxlen=32)
+        self.process_gc_events = deque(maxlen=32)
         self.threshold = float(long_span_seconds)
         self.aggregates = {}
         self.tick = None
         self.tick_count = 0
         self.gc_totals = dict(count=0, wall_seconds=0., thread_cpu_seconds=0., max_wall_seconds=0.)
+        self.process_gc_totals = dict(self.gc_totals)
         self._gc_start = None
         self._callback = self._gc_callback
         self.installed = False
@@ -43,22 +45,32 @@ class LoopDiagnostics:
             self.installed = False
 
     def _gc_callback(self, phase, info):
-        if threading.get_ident() != self.owner:
-            return
         if phase == 'start':
-            self._gc_start = (self.wall(), self.cpu(), info.get('generation'))
+            # CPython serializes GC collections. Capture the collector's clocks:
+            # another Python thread may collect while the scene owner waits on GIL.
+            self._gc_start = (self.wall(), self.cpu(), info.get('generation'),
+                              threading.get_ident(), threading.get_native_id())
         elif phase == 'stop' and self._gc_start is not None:
-            started, cpu_started, generation = self._gc_start
+            started, cpu_started, generation, collector, native_id = self._gc_start
             self._gc_start = None
             wall, cpu = self.wall() - started, self.cpu() - cpu_started
             event = dict(started_wall=started, generation=generation,
                          wall_seconds=wall, thread_cpu_seconds=cpu,
+                         collector_thread_id=collector, collector_native_id=native_id,
+                         owner_collector=collector == self.owner,
                          collected=info.get('collected'), uncollectable=info.get('uncollectable'))
-            self.gc_events.append(event)
-            self.gc_totals['count'] += 1
-            self.gc_totals['wall_seconds'] += wall
-            self.gc_totals['thread_cpu_seconds'] += cpu
-            self.gc_totals['max_wall_seconds'] = max(self.gc_totals['max_wall_seconds'], wall)
+            self.process_gc_events.append(event)
+            self._add_gc_total(self.process_gc_totals, wall, cpu)
+            if collector == self.owner:
+                self.gc_events.append(event)
+                self._add_gc_total(self.gc_totals, wall, cpu)
+
+    @staticmethod
+    def _add_gc_total(totals, wall, cpu):
+        totals['count'] += 1
+        totals['wall_seconds'] += wall
+        totals['thread_cpu_seconds'] += cpu
+        totals['max_wall_seconds'] = max(totals['max_wall_seconds'], wall)
 
     @contextmanager
     def span(self, name, *, physical_time=None):
@@ -68,8 +80,10 @@ class LoopDiagnostics:
         finally:
             wall, cpu = self.wall() - started, self.cpu() - cpu_started
             item = dict(wall_seconds=wall, thread_cpu_seconds=cpu)
-            aggregate = self.aggregates.setdefault(name, dict(
-                count=0, wall_seconds=0., thread_cpu_seconds=0., max_wall_seconds=0.))
+            aggregate = self.aggregates.get(name)
+            if aggregate is None:
+                aggregate = dict(count=0, wall_seconds=0., thread_cpu_seconds=0., max_wall_seconds=0.)
+                self.aggregates[name] = aggregate
             aggregate['count'] += 1
             aggregate['wall_seconds'] += wall
             aggregate['thread_cpu_seconds'] += cpu
@@ -103,7 +117,10 @@ class LoopDiagnostics:
             long_span_threshold_seconds=self.threshold,
             phase_totals={name: dict(value) for name, value in self.aggregates.items()},
             long_spans=list(self.long_spans), owner_gc_totals=dict(self.gc_totals),
-            owner_gc_events=list(self.gc_events))
+            owner_gc_events=list(self.gc_events),
+            process_gc_totals=dict(self.process_gc_totals),
+            process_gc_events=list(self.process_gc_events),
+            gc_thread_cpu_scope='collector thread; other-thread collections can stall owner via GIL')
         if include_ticks:
             result['recent_ticks'] = list(self.ticks)
         return result
