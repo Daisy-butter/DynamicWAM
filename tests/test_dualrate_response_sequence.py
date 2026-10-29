@@ -1,15 +1,34 @@
 import argparse
+import ast
+import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-from dualrate_response_acceptance import sha
 import run_dualrate_response_sequence as sequence
 
+# Execute the production stdlib helpers, not a permissive string-coercing mock.
+# This retains Path.open/with_suffix semantics without importing GPU dependencies.
+helper_path=Path(__file__).resolve().parents[1]/'scripts/guarded_dualrate_smoke.py'
+helper_ast=ast.parse(helper_path.read_text(encoding='utf-8'))
+helper_nodes=[n for n in helper_ast.body if isinstance(n,ast.FunctionDef) and n.name in ('file_sha256','atomic')]
+assert len(helper_nodes)==2
+helper_namespace=dict(Path=Path,hashlib=hashlib,json=json,os=os)
+exec(compile(ast.Module(body=helper_nodes,type_ignores=[]),str(helper_path),'exec'),helper_namespace)
+file_sha256=helper_namespace['file_sha256']
+atomic=helper_namespace['atomic']
+
 class SequenceTest(unittest.TestCase):
+    def test_actual_production_hash_requires_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'fixture';path.write_bytes(b'actual Path contract')
+            self.assertEqual(file_sha256(path),hashlib.sha256(path.read_bytes()).hexdigest())
+            with self.assertRaises(AttributeError):file_sha256(str(path))
+
     def test_formal_construction_preserves_policy(self):
         tasks=[f'task_{i}' for i in range(35)]
         smoke=dict(tasks=tasks[:2],episodes=2,stage='smoke',runtime={'reserve':.3},checkpoint_sha256='ckpt')
@@ -27,8 +46,7 @@ class SequenceTest(unittest.TestCase):
             tp=root/'tasks.json';tp.write_text('[]')
             smoke=dict(storage_root=str(root),gpu_uuids=['gpu'],output=str(root/'smoke'),checkpoint_sha256='ckpt')
             formal=dict(smoke,output=str(root/'formal'))
-            atomic=lambda p,v:Path(p).write_text(json.dumps(v))
-            post=SimpleNamespace(file_sha256=sha,proc_identity=lambda p:dict(pid=p,start_ticks=1),atomic=atomic,
+            post=SimpleNamespace(file_sha256=file_sha256,proc_identity=lambda p:dict(pid=p,start_ticks=1),atomic=atomic,
                 require_clean_guard=lambda *a:None,validate_pair=lambda *a:None,
                 audit_suite=lambda *a:({},[],[]))
             guard=SimpleNamespace(frozen_source=lambda r:{'source':'same'},source_contract=lambda s:s,

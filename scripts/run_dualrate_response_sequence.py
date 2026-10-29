@@ -87,7 +87,7 @@ def run(args):
     def frozen():
         if guard.frozen_source(repo)!=source:raise RuntimeError('source changed during sequence')
         for path,digest in input_hashes.items():
-            if post.file_sha256(path)!=digest:raise RuntimeError('sequence input changed: '+path)
+            if post.file_sha256(Path(path))!=digest:raise RuntimeError('sequence input changed: '+path)
     def interrupted(sig,_frame):raise InterruptedError('sequence signal '+str(sig))
     def launch(config,path,guard_dir,limit,label):
         nonlocal child,identity
