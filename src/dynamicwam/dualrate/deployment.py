@@ -244,17 +244,25 @@ def next_capture_deadline(initial, now, frame_period, render_wall) -> float:
     return float(initial) + steps * float(frame_period)
 
 
-def capture_timing(captured, *, owner_processed_wall):
-    """Partition real wall latency; do not relabel exposure or availability."""
+def capture_timing(captured, *, owner_processed_wall, owner_release_wall=None):
+    """Separate release waiting from owner copying; preserve real timestamps.
+
+    finished_wall is camera.finish(), not world publication. The scene may
+    still need physical ticks before bridge.ready permits publication.
+    """
+    release=(float(captured.finished_wall_perf_s) if owner_release_wall is None
+             else float(owner_release_wall))
     points=[float(captured.capture_wall_perf_s),float(captured.render_submitted_wall_perf_s),
         float(captured.readback_started_wall_perf_s),float(captured.readback_finished_wall_perf_s),
-        float(captured.finished_wall_perf_s),float(owner_processed_wall)]
+        float(captured.finished_wall_perf_s),release,float(owner_processed_wall)]
     if any(not math.isfinite(x) for x in points) or any(b<a for a,b in zip(points,points[1:])):
         raise TimingError('capture wall timestamps are invalid')
     names=('render_submit','metadata_and_reader_dispatch','readback_and_conversion',
-           'readback_complete_to_owner_finish','owner_history_and_video')
+           'readback_complete_to_owner_finish','owner_finish_to_release',
+           'owner_processing_after_release')
     parts={name+'_wall_seconds':b-a for name,a,b in zip(names,points,points[1:])}
-    return dict(parts,total_wall_seconds=points[-1]-points[0],
+    return dict(parts,timing_schema='camera_wall_partition_release_v2',
+        total_wall_seconds=points[-1]-points[0],
         camera_readback_seconds=dict(captured.camera_readback_seconds),
         wall_timestamps=points,clock='process_monotonic_perf_counter')
 
@@ -515,6 +523,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 next_capture_tick=max(next_capture_tick,next_grid_capture_tick(source_tick,capture_ticks,dt,render_wall))
                 now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             if completed_capture is not None and bridge.ready(completed_capture.finished_wall_perf_s,now):
+                owner_release_wall=time.perf_counter()
                 c=completed_capture;completed_capture=None
                 exact_grid_index(c.physics_time_s,initial,queue.dt)
                 with diagnostics.span('capture_history',physical_time=now):
@@ -527,7 +536,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 emit(dict(event='capture',exposure=c.physics_time_s,available=now,
                     readback_ready_wall=c.readback_finished_wall_perf_s,owner_ready_wall=c.finished_wall_perf_s,
                     availability_lower_bound=bridge.availability_time(c.finished_wall_perf_s),
-                    timing=capture_timing(c,owner_processed_wall=time.perf_counter())))
+                    timing=capture_timing(c,owner_processed_wall=time.perf_counter(),
+                                          owner_release_wall=owner_release_wall)))
             now,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
             # Neither route is gated on the other or on caught-up-only dispatch.
             # Freshness and the bounded lease decide whether a due query can start.

@@ -120,6 +120,13 @@ def validate_config(config):
     workers=config.get('diagnostic_physx_cpu_workers',0)
     if type(workers) is not int or workers not in (0,2,4):
         raise ValueError('diagnostic_physx_cpu_workers must be 0, 2 or 4')
+    realtime=config.get('diagnostic_realtime_camera',False)
+    if type(realtime) is not bool or realtime and workers!=0:
+        raise ValueError('explicit bool realtime camera diagnosis requires original workers0')
+    if realtime and (config.get('camera_async_submit') is not True
+            or config.get('max_backlog')!=.25 or config.get('backlog_scheduling_tolerance')!=.005
+            or not config.get('reference_state_trace')):
+        raise ValueError('realtime camera requires native async/.25+.005 and workers0 reference states')
     if workers or config.get('reference_state_trace') is not None:
         if (not config.get('reference_state_trace') or
                 sha(config['reference_state_trace'])!=config.get('reference_state_trace_sha256')):
@@ -187,16 +194,23 @@ def timed(phases,name):
         process_cpu_seconds=(time.process_time_ns()-process)*1e-9)
 
 
-def replay_controls(session,trace,state_reader,*,tail,deadline):
+def replay_controls(session,trace,state_reader,*,tail,deadline,before_tick=None,after_tick=None):
     """Same 45-tick native endpoint interpolation as the actual DualRate loop."""
     import numpy as np
     from dualrate_physics_optimization import passive_force_scope
     env=session.env;robot=env.robot;dt=trace['dt'];targets=trace['targets']+[trace['targets'][-1]]*tail
     names,initial=state_reader();states=[initial];times=[session.physics_time()];timings=[]
+    def invoke_hook(hook,tick):
+        if hook is None:return
+        try:hook(tick)
+        except BaseException as exc:
+            exc.replay_timing_prefix=timings
+            raise
     if abs(times[0])>1e-12:raise ValueError('scene clock must start at zero')
     previous=np.asarray(targets[0],np.float64);target=previous.copy();terminal=None
     for tick in range(len(targets)*45):
         if time.monotonic()>=deadline:raise TimeoutError('bounded failed-control replay expired')
+        invoke_hook(before_tick,tick)
         row=tick//45;phases={}
         if tick%45==0:
             previous=target.copy();target=np.asarray(targets[row],np.float64)
@@ -224,6 +238,7 @@ def replay_controls(session,trace,state_reader,*,tail,deadline):
         states.append(values);times.append(now)
         timings.append(dict(tick=tick+1,row=row,physics_time=now,phases=phases,terminal=terminal,
             region='recorded_complete' if row<28 else 'incomplete_row_completion' if row==28 else 'diagnostic_tail'))
+        invoke_hook(after_tick,tick+1)
     return names,np.stack(states),np.asarray(times,np.float64),timings
 
 
@@ -278,7 +293,7 @@ def run(config,authorization):
     from dynamicwam.dualrate.producer import episode_prompt
     import sapien
     domino=Path(config['domino_root']);limits=yaml.safe_load((domino/'task_config/_eval_step_limit.yml').read_text())
-    env=cache=None;deadline=time.monotonic()+config['timeout_seconds'];report=None
+    env=cache=camera=realtime=None;deadline=time.monotonic()+config['timeout_seconds'];report=None
     try:
         with SapienInitLock():
             with diagnostic_dispatcher(sapien.physx,config.get('diagnostic_physx_cpu_workers',0)) as dispatcher:
@@ -308,8 +323,20 @@ def run(config,authorization):
             instruction=prompt,control_interval_s=trace['action_dt'])
         cache=StepContactCache(env.scene,session.physics_time).install()
         bind_gil_releasing_physx_step(env,_sapien_color_reader.step_cpu_physx)
+        if config.get('diagnostic_realtime_camera',False):
+            from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture
+            from replay_camera_clock import RealtimeCameraReplay
+            camera=AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch,
+                async_submit=True,worker_initializer=lambda:torch.cuda.set_device(0))
+            realtime=RealtimeCameraReplay(session,camera,action_dt=config['action_dt'],
+                frame_period=config['frame_period'],max_backlog=config['max_backlog'],
+                backlog_scheduling_tolerance=config['backlog_scheduling_tolerance'],
+                warmups=config.get('camera_warmup_captures',3))
         names,states,times,timings=replay_controls(session,trace,
-            lambda:snapshot_state(env,sapien.physx.PhysxRigidDynamicComponent),tail=config['tail_hold_rows'],deadline=deadline)
+            lambda:snapshot_state(env,sapien.physx.PhysxRigidDynamicComponent),tail=config['tail_hold_rows'],deadline=deadline,
+            before_tick=None if realtime is None else realtime.before_tick,
+            after_tick=None if realtime is None else realtime.after_tick)
+        if realtime is not None:realtime.finish()
         if cache.error is not None:raise cache.error
         np.savez_compressed(output/'state_trace.npz',names=np.asarray(names),states=states,physics_times=times)
         save(output/'step_timings.json',timings)
@@ -324,7 +351,9 @@ def run(config,authorization):
                 raise ValueError('diagnostic dispatcher state trajectory differs; candidate rejected')
         report=dict(schema='dualrate_failed_endpoint_replay_v1',complete=True,diagnostic_only=True,no_score=True,
             benchmark_acceptance=False,realtime_valid=False,recorded_state_parity_tested=False,
-            task=config['task'],episode_index=1,seed=100001,model_calls=0,camera_submissions=0,no_wall_pacing=True,
+            task=config['task'],episode_index=1,seed=100001,model_calls=0,
+            camera_submissions=0 if realtime is None else realtime.submissions,no_wall_pacing=realtime is None,
+            diagnostic_realtime_camera=realtime is not None,
             known_completed_ticks=1260,last_recorded_row_ticks_unknown=True,recorded_endpoint_rows=29,
             incomplete_last_row_completed_diagnostically=True,tail_hold_rows=config['tail_hold_rows'],
             tail_ignores_task_terminal_for_diagnostic=True,physics_steps=len(timings),state_count=len(states),
@@ -336,15 +365,25 @@ def run(config,authorization):
             step_timings_sha256=sha(output/'step_timings.json'),evidence=[dict(path=config[k],sha256=config[k+'_sha256'])
                 for k in ('trace_report','trace_manifest','failed_config')])
     except BaseException as exc:
-        save(output/'failure.json',dict(complete=False,error=repr(exc),traceback=traceback.format_exc()));raise
+        if realtime is not None and realtime.end_wall is None:
+            realtime.end_wall=time.perf_counter();realtime.end_physical=float(session.physics_time())
+        if hasattr(exc,'replay_timing_prefix'):
+            save(output/'partial_step_timings.json',exc.replay_timing_prefix)
+        save(output/'failure.json',dict(complete=False,error=repr(exc),traceback=traceback.format_exc(),
+            realtime_camera=None if realtime is None else realtime.report()));raise
     finally:
         try:
-            if cache is not None:cache.close()
+            try:
+                if realtime is not None:realtime.close()
+                elif camera is not None:camera.close()
+            finally:
+                if cache is not None:cache.close()
         finally:
             if env is not None:
                 try:env.close_env()
                 finally:env.release_episode_resources()
     report['environment_closed']=True
+    if realtime is not None:report['realtime_camera']=realtime.report()
     save(output/'report.json',report)
     return 0
 

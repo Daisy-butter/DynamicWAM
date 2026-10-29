@@ -51,6 +51,8 @@ def validate_acceptance(config, source):
         validate_config(config)
         return None
     if config['run_kind'] == 'dualrate_eval_suite':
+        from dualrate_retention import validate as validate_retention
+        validate_retention(config, source)
         if config.get('stage') == 'smoke':
             return None
         if config.get('stage') != 'formal':

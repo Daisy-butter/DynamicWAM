@@ -36,6 +36,10 @@ def worker_environment(config, gpu_index, output):
 
 
 def audit_task(config, task):
+    from dualrate_retention import retained_owner
+    owner = retained_owner(config, task)
+    if owner is not None:
+        return audit_task(owner, task)
     output = Path(config['output'])
     completed = read(output / task / 'completed.json')
     if (completed.get('complete') is not True or completed.get('task') != task
@@ -162,8 +166,13 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, interrupted)
     try:
+        from dualrate_retention import initialize_view, provenance as retention_provenance
+        retained_tasks, all_reports, all_metrics = initialize_view(config, receipt['source'])
+        finished.extend(retained_tasks)
         for cohort_index, start in enumerate(range(0, len(config['tasks']), 2)):
             members = config['tasks'][start:start + 2]
+            if set(members) <= set(retained_tasks):
+                continue  # Whole original cohort already audited and linked.
             cohort = output / 'cohorts' / f'cohort_{cohort_index:03d}'
             save(cohort / 'manifest.json', dict(tasks=members, episodes=config['episodes'],
                 timeout_seconds=float(config.get('cohort_timeout_seconds', 3600.)),
@@ -221,6 +230,7 @@ def main():
         summary = {k: None if isinstance(v, float) and not math.isfinite(v) else v for k, v in summary.items()}
         verify_artifacts(config)
         completed = dict(complete=True, protocol=config['protocol'], stage=config['stage'],
+            retention=retention_provenance(config, receipt['source']),
             valid_completed=expected, expected_episodes=expected, tasks=len(config['tasks']),
             episodes_per_task=config['episodes'], successes=sum(bool(r['success']) for r in all_reports),
             success_rate_percent=100.*sum(bool(r['success']) for r in all_reports)/expected,

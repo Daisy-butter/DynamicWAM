@@ -161,11 +161,12 @@ def training_ready(spec):
 
 
 def validate_pair(smoke,formal):
+    from dualrate_retention import expected_smoke_tasks
     if (smoke.get('run_kind')!='dualrate_eval_suite' or formal.get('run_kind')!='dualrate_eval_suite'
             or smoke.get('stage')!='smoke' or formal.get('stage')!='formal'
             or len(smoke.get('tasks',[]))!=2 or smoke.get('episodes')!=2
             or len(formal.get('tasks',[]))!=35 or formal.get('episodes')!=20
-            or smoke['tasks']!=formal['tasks'][:2] or smoke.get('action_limit') is not None
+            or smoke['tasks']!=expected_smoke_tasks(formal) or smoke.get('action_limit') is not None
             or formal.get('action_limit') is not None):
         raise ValueError('full-budget 2x2 smoke then35x20 required')
     for key in set(smoke)|set(formal):
@@ -201,7 +202,8 @@ def audit_suite(config,source,expected):
             or summary.get('source')!=source or summary.get('checkpoint_sha256')!=config['checkpoint_sha256']
             or summary.get('config_sha256')!=canonical_hash(config)):
         raise ValueError('evaluation suite completion/binding failed')
-    evidence=[output/'suite_completed.json'];decoded=[]
+    from dualrate_retention import validate_completion
+    evidence=[output/'suite_completed.json',*validate_completion(config,source,summary)];decoded=[]
     for task in config['tasks']:
         reports,_=audit_task(config,task)
         for report in reports:

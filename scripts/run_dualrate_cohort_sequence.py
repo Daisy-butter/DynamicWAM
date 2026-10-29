@@ -33,9 +33,13 @@ def make_formal(smoke,tasks,root):
         raise ValueError('exactly35 distinct task strings required')
     if not set(smoke['tasks']).issubset(tasks):raise ValueError('smoke tasks absent from formal task set')
     if smoke['tasks']!=SMOKE_TASKS:raise ValueError('failure-case smoke must be place_empty_cup then place_fan')
-    # Full rerun: keep all 35 identities but put the reproduced cohort first.
-    # This preserves the existing strict smoke == formal[:2] acceptance check.
-    tasks=list(SMOKE_TASKS)+[task for task in tasks if task not in SMOKE_TASKS]
+    if smoke.get('retained_task_receipt'):
+        retained=json.loads(Path(smoke['retained_task_receipt']).read_text())
+        if tasks!=retained['formal_tasks']:
+            raise ValueError('retention requires the original frozen35-task order')
+    else:
+        # A fresh full rerun keeps the reproduced smoke cohort first.
+        tasks=list(SMOKE_TASKS)+[task for task in tasks if task not in SMOKE_TASKS]
     return dict(smoke,stage='formal',tasks=tasks,episodes=20,
         output=str(root/'formal01'),result_stamp='dualrate_cohort_stall_formal01',
         acceptance_receipt=str(root/'response01_acceptance.json'),

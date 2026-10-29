@@ -3,6 +3,9 @@ import importlib.util
 from pathlib import Path
 import threading
 import unittest
+import ast
+import math
+from types import SimpleNamespace
 
 
 path = Path(__file__).parents[1] / 'src/dynamicwam/dualrate/loop_diagnostics.py'
@@ -67,6 +70,22 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertAlmostEqual(result['phase_totals']['capture_history']['wall_seconds'], .15)
         self.assertAlmostEqual(result['phase_totals']['capture_video']['wall_seconds'], .002)
         self.assertEqual(result['long_spans'][0]['physical_time'], 4.984)
+
+    def test_camera_release_hold_is_not_attributed_to_history_video(self):
+        deployment = path.with_name('deployment.py')
+        node = next(node for node in ast.parse(deployment.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == 'capture_timing')
+        namespace = dict(math=math, TimingError=ValueError)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(deployment), 'exec'), namespace)
+        captured = SimpleNamespace(capture_wall_perf_s=1., render_submitted_wall_perf_s=1.1,
+            readback_started_wall_perf_s=1.1, readback_finished_wall_perf_s=1.11,
+            finished_wall_perf_s=1.12, camera_readback_seconds={})
+        timing = namespace['capture_timing'](captured, owner_release_wall=1.27, owner_processed_wall=1.276)
+        self.assertAlmostEqual(timing['owner_finish_to_release_wall_seconds'], .15)
+        self.assertAlmostEqual(timing['owner_processing_after_release_wall_seconds'], .006)
+        self.assertNotIn('owner_history_and_video_wall_seconds', timing)
+        self.assertAlmostEqual(sum(value for name, value in timing.items()
+            if name.endswith('_wall_seconds') and name != 'total_wall_seconds'), .276)
 
     def test_gc_owner_separate_and_callback_restoration_preserves_others(self):
         diagnostics, clock = self.make()
