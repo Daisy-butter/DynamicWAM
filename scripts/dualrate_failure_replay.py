@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 import traceback
 
@@ -24,6 +25,25 @@ MODE='dualrate_failure_replay'
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 SCENE_FIELDS=('gravity','bounce_threshold','enable_pcm','enable_tgs',
               'enable_ccd','enable_enhanced_determinism','enable_friction_every_iteration')
+
+
+@contextmanager
+def diagnostic_owner_affinity(cpu):
+    receipt=dict(enabled=cpu is not None,requested_cpu=cpu,other_threads_changed=False)
+    if cpu is None:
+        yield receipt;return
+    if (type(cpu) is not int or cpu<0 or threading.current_thread() is not threading.main_thread()):
+        raise ValueError('diagnostic owner CPU requires nonnegative integer on main thread')
+    before=os.sched_getaffinity(0)
+    if cpu not in before:raise ValueError('diagnostic owner CPU outside current allowed affinity')
+    receipt.update(native_thread_id=threading.get_native_id(),before=sorted(before))
+    try:
+        os.sched_setaffinity(0,{cpu});receipt['after']=sorted(os.sched_getaffinity(0))
+        if receipt['after']!=[cpu]:raise RuntimeError('owner affinity did not bind requested CPU')
+        yield receipt
+    finally:
+        os.sched_setaffinity(0,before);receipt['restored']=sorted(os.sched_getaffinity(0))
+        if receipt['restored']!=sorted(before):raise RuntimeError('owner affinity restoration failed')
 
 
 def scene_fields(config):
@@ -121,6 +141,8 @@ def validate_config(config):
     if type(workers) is not int or workers not in (0,2,4):
         raise ValueError('diagnostic_physx_cpu_workers must be 0, 2 or 4')
     realtime=config.get('diagnostic_realtime_camera',False)
+    cpu=config.get('diagnostic_owner_cpu')
+    if cpu is not None and (type(cpu) is not int or cpu<0):raise ValueError('invalid diagnostic_owner_cpu')
     if type(realtime) is not bool or realtime and workers!=0:
         raise ValueError('explicit bool realtime camera diagnosis requires original workers0')
     if realtime and (config.get('camera_async_submit') is not True
@@ -293,7 +315,7 @@ def run(config,authorization):
     from dynamicwam.dualrate.producer import episode_prompt
     import sapien
     domino=Path(config['domino_root']);limits=yaml.safe_load((domino/'task_config/_eval_step_limit.yml').read_text())
-    env=cache=camera=realtime=None;deadline=time.monotonic()+config['timeout_seconds'];report=None
+    env=cache=camera=realtime=owner_affinity=None;deadline=time.monotonic()+config['timeout_seconds'];report=None
     try:
         with SapienInitLock():
             with diagnostic_dispatcher(sapien.physx,config.get('diagnostic_physx_cpu_workers',0)) as dispatcher:
@@ -332,11 +354,12 @@ def run(config,authorization):
                 frame_period=config['frame_period'],max_backlog=config['max_backlog'],
                 backlog_scheduling_tolerance=config['backlog_scheduling_tolerance'],
                 warmups=config.get('camera_warmup_captures',3))
-        names,states,times,timings=replay_controls(session,trace,
-            lambda:snapshot_state(env,sapien.physx.PhysxRigidDynamicComponent),tail=config['tail_hold_rows'],deadline=deadline,
-            before_tick=None if realtime is None else realtime.before_tick,
-            after_tick=None if realtime is None else realtime.after_tick)
-        if realtime is not None:realtime.finish()
+        with diagnostic_owner_affinity(config.get('diagnostic_owner_cpu')) as owner_affinity:
+            names,states,times,timings=replay_controls(session,trace,
+                lambda:snapshot_state(env,sapien.physx.PhysxRigidDynamicComponent),tail=config['tail_hold_rows'],deadline=deadline,
+                before_tick=None if realtime is None else realtime.before_tick,
+                after_tick=None if realtime is None else realtime.after_tick)
+            if realtime is not None:realtime.finish()
         if cache.error is not None:raise cache.error
         np.savez_compressed(output/'state_trace.npz',names=np.asarray(names),states=states,physics_times=times)
         save(output/'step_timings.json',timings)
@@ -359,7 +382,7 @@ def run(config,authorization):
             tail_ignores_task_terminal_for_diagnostic=True,physics_steps=len(timings),state_count=len(states),
             renderer=renderer,physx_scene_binding=getattr(env.scene,'_dynamicwam_physx_binding',None),
             physics_configuration_overridden=bool(config.get('diagnostic_physx_cpu_workers',0)),
-            diagnostic_dispatcher=dispatcher,workers0_reference_state_parity=parity,
+            diagnostic_dispatcher=dispatcher,workers0_reference_state_parity=parity,diagnostic_owner_affinity=owner_affinity,
             candidate_accepted=False,source=receipt['source'],config_sha256=canonical_hash(config),
             states_sha256=hashlib.sha256(states.tobytes()).hexdigest(),state_trace_sha256=sha(output/'state_trace.npz'),
             step_timings_sha256=sha(output/'step_timings.json'),evidence=[dict(path=config[k],sha256=config[k+'_sha256'])
@@ -370,7 +393,8 @@ def run(config,authorization):
         if hasattr(exc,'replay_timing_prefix'):
             save(output/'partial_step_timings.json',exc.replay_timing_prefix)
         save(output/'failure.json',dict(complete=False,error=repr(exc),traceback=traceback.format_exc(),
-            realtime_camera=None if realtime is None else realtime.report()));raise
+            realtime_camera=None if realtime is None else realtime.report(),
+            diagnostic_owner_affinity=owner_affinity));raise
     finally:
         try:
             try:
