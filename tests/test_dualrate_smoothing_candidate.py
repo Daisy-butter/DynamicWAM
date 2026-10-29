@@ -21,12 +21,21 @@ class SmoothTest(unittest.TestCase):
         self.assertEqual(smooth_actions(a, [True, False, False, False], 1.), a)
         self.assertEqual(smooth_actions(a, [True] * 4, .85), a)
 
+    def test_offset_cap(self):
+        a = [[float(i)] * 14 for i in range(4)]
+        y = smooth_actions(a, [True, False, False, False], .85, .03)
+        for i in range(1, 4):
+            for j in (*range(6), *range(7, 13)):
+                self.assertLessEqual(abs(y[i][j] - a[i][j]), .0300000001)
+
     def test_invalid_masks_values_and_alpha(self):
         a = [[0.] * 14 for _ in range(3)]
         for known in ([False] * 3, [True, False, True], [True], [1, 0, 0]):
             with self.assertRaises(ValueError): smooth_actions(a, known)
         for alpha in (0., 1.1, math.nan):
             with self.assertRaises(ValueError): smooth_actions(a, [True, False, False], alpha)
+        for cap in (-.1, math.nan, math.inf):
+            with self.assertRaises(ValueError): smooth_actions(a, [True, False, False], max_offset=cap)
         a[1][3] = math.nan
         with self.assertRaises(ValueError): smooth_actions(a, [True, False, False])
 
