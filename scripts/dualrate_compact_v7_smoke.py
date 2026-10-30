@@ -34,14 +34,24 @@ def main():
     binding=install_gpu_binding()
     from dynamicwam.dualrate.factory import build_system
     system=build_system(c,'cuda:0').eval().requires_grad_(False)
+    diagnostic=Path(c['diagnostic_checkpoint']).resolve(strict=True)
+    if file_sha256(diagnostic)!=c['diagnostic_checkpoint_sha256']:raise ValueError('diagnostic state hash changed')
+    payload=torch.load(diagnostic,map_location='cpu',weights_only=True)
+    if payload.get('run_kind')!='distributed_training_smoke' or payload.get('phase')!='cross_time_joint' or not payload.get('phase_complete'):
+        raise ValueError('completed diagnostic-only phase state required')
+    for key in ('source_sha256','manifest_sha256','init_checkpoint_sha256'):
+        if payload['identity'][key]!=identity[key]:raise ValueError('diagnostic state identity differs: '+key)
+    for key in ('architecture','native_v6','native_v7','time_contract','codec_id'):
+        if payload['contract'][key]!=c[key]:raise ValueError('diagnostic model contract differs: '+key)
+    system.load_state_dict(payload['model'],strict=True);del payload
     from dynamicwam.dualrate.native_v7_acceptance import verify_compact as verify_native_motor
     from dynamicwam.dualrate.producer import DominoPhysicalDataset,materialize_native_latents
     from dynamicwam.dualrate.train import _device_batch
     fixture=materialize_native_latents(_device_batch(torch.utils.data.default_collate(
         [DominoPhysicalDataset(c['manifest'])[0]]),torch.device('cuda:0')),system.slow.native.compact_wan.video_model.vae)
     save(out/'compact_acceptance.json',verify_native_motor(system,fixture));del fixture
-    # This is an initial-architecture deployment fixture, never formal evaluation.
-    if not c.get('diagnostic_initial_weights'):raise ValueError('explicit initial-weight smoke provenance required')
+    # A briefly trained engineering state is NOT a formal initialization/evaluation.
+    if c.get('diagnostic_initial_weights') is not False:raise ValueError('explicit diagnostic training provenance required')
     from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language
     from dynamicwam.dualrate.native_v7_deployment import NativeDualRatePolicy,PROTOCOL
     from dynamicwam.dualrate.producer import episode_prompt,SCENE_PREFIX
@@ -99,7 +109,8 @@ def main():
             report=dict(protocol=PROTOCOL,task=task,episode_index=episode,seed=prepared['seed'],success=success,
                 stop_reason=reason,action_count=env.take_action_cnt,action_limit=env.step_lim,
                 physical_end=policy._time(env),wall_seconds=time.monotonic()-began,events=policy.records,
-                diagnostic_initial_weights=True,performance_accepted=False,native_motion_unmodified=True)
+                diagnostic_initial_weights=False,diagnostic_checkpoint_sha256=c['diagnostic_checkpoint_sha256'],
+                performance_accepted=False,native_motion_unmodified=True)
             report.update(video.finalize(native/f'episode{episode}.mp4',episode_end_physics_s=policy._time(env)))
             if not validate_video_artifacts(report):raise RuntimeError('native video validation failed')
             save(d/'report.json',report);reports.append(report)
@@ -138,7 +149,8 @@ def main():
     save(out/'deployment_acceptance.json',dict(passed=True,protocol=PROTOCOL,episodes=len(reports),
         native_motion_unmodified=True,all_video_passed=True,reference_refreshed_and_reused=True,
         inference_physics_frozen=True,integer_physical_prior_replay_passed=True,query_count=len(queries),binding=binding,source_sha256=identity['source_sha256'],
-        initial_weight_fixture=True,performance_accepted=False))
+        initial_weight_fixture=False,diagnostic_training_fixture=True,
+        diagnostic_checkpoint_sha256=c['diagnostic_checkpoint_sha256'],performance_accepted=False))
 
 if __name__=='__main__':main()
 
