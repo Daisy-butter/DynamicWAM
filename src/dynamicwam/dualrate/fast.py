@@ -239,6 +239,8 @@ class FastJointWAM(nn.Module):
         observed, predicted, action = (world_types == i for i in range(3))
         obs_allowed = observed[:, None] & (end[:, None] <= query_time[:, None, None])
         pred_allowed = predicted[:, None] & (end[:, None] >= query_time[:, None, None]) & (target_times[..., None] >= start[:, None]) & (target_times[..., None] <= end[:, None])
+        if getattr(self,'native_ordinal_actions',False):
+            pred_allowed[:,:c.chunk_size] = (predicted[:,None] & (end[:,None]>=query_time[:,None,None])).expand(-1,c.chunk_size,-1)
         # Keep the relevant source-to-target plan history. At an exact boundary
         # the ending command belongs to the target; the next row has not begun.
         action_allowed = action[:, None] & (end[:, None] >= source_time[:, None, None]) & (start[:, None] < target_times[..., None] - 1e-8)

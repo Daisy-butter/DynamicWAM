@@ -546,6 +546,13 @@ def run(config: dict, *, device: str = "cpu", resume: str | None = None,
     end=steps if stop_after is None else min(steps,int(stop_after))
     if end < start or end<=0:
         raise ValueError("stop_after precedes resume cursor")
+    if config.get("native_v5") and start==0:
+        from .native_v5 import verify_native_motor
+        from .producer import materialize_native_latents
+        fixture=materialize_native_latents(_device_batch(default_collate([dataset[0]]),target),
+            system.slow.native.compact_wan.video_model.vae)
+        _atomic_json(output/"native_motor_parity.json",verify_native_motor(system,fixture))
+        del fixture
     for step in range(start, end):
         started=time.monotonic()
         for parameter in slow_parameters:

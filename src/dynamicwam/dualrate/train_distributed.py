@@ -145,6 +145,7 @@ def phase_contract(config, identity):
     if config.get("time_contract") is not None:
         contract.update(time_contract=config["time_contract"],
                         action_interval_seconds=float(config["action_interval_seconds"]))
+    if config.get("native_v5"):contract["native_v5"]=config["native_v5"]
     return contract
 
 
@@ -153,6 +154,8 @@ def set_phase(system, phase):
         raise ValueError("unknown phase")
     system.train()
     system.slow.requires_grad_(phase != "warmup")
+    if getattr(system,"native_v5",None):
+        system.fast.motor.requires_grad_(phase != "warmup")
     if phase == "warmup":
         system.slow.eval()
 
@@ -167,7 +170,7 @@ def set_learning_rate(optimizer, config, step):
         floor = float(config["min_lr_ratio"])
         ratio = floor + (1-floor) * .5 * (1+math.cos(math.pi*progress))
     for group in optimizer.param_groups:
-        group["lr"] = float(config["slow_lr" if group["name"] == "slow" else "fast_lr"]) * ratio
+        group["lr"] = float(config["slow_lr" if group["name"] == "slow" else "motor_lr" if group["name"] == "motor" else "fast_lr"]) * ratio
     return ratio
 
 
@@ -387,8 +390,13 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
     slow_ids = {id(p) for p in slow}
     new = [p for p in system.parameters() if id(p) not in slow_ids and p.requires_grad]
     # Fixed optimizer groups across phases preserve fast moments and slow masters.
-    optimizer = FP32MasterAdamW([dict(params=slow, lr=config["slow_lr"], name="slow"),
-        dict(params=new, lr=config["fast_lr"], name="new")], weight_decay=float(config["weight_decay"]),
+    groups=[dict(params=slow,lr=config["slow_lr"],name="slow")]
+    if config.get("native_v5"):
+        motor=list(system.fast.motor.parameters());motor_ids={id(p) for p in motor}
+        new=[p for p in new if id(p) not in motor_ids]
+        groups.append(dict(params=motor,lr=config["motor_lr"],name="motor"))
+    groups.append(dict(params=new,lr=config["fast_lr"],name="new"))
+    optimizer = FP32MasterAdamW(groups, weight_decay=float(config["weight_decay"]),
         record_updates=bool(config.get("record_master_updates", True)))
     set_phase(system, config["phase"])
     ddp = DistributedDataParallel(system, device_ids=[target.index], output_device=target.index,

@@ -322,12 +322,17 @@ class DualRateSystem(nn.Module):
 
         # Supervised source pass has its own noisy GT and exposes no reusable cache.
         if any(parameter.requires_grad for parameter in self.slow.parameters()):
+            video_input=fm_input(source_video,sigmas[0],nv)
+            action_input=fm_input(source_action,sigmas[1],na)
+            if getattr(self,'native_v5',None):
+                video_input=torch.where(batch.get('source_video_loss_valid',torch.ones_like(video_input,dtype=torch.bool)),video_input,nv)
+                action_input=torch.where(batch['source_action_valid'][...,None],action_input,na)
             supervised = self.slow.supervised_forward(self.source(batch),
-                fm_input(source_video, sigmas[0], nv), fm_input(source_action, sigmas[1], na),
+                video_input, action_input,
                 sigmas[0], sigmas[1], batch["source_known_actions"], batch["source_known_mask"])
             losses = {
-                "slow_video": (supervised["video_pred"].float() - (nv - source_video).float()).square().mean(),
-                "slow_action": masked_mean((supervised["action_pred"].float() - (na - source_action).float()).square(), ~batch["source_known_mask"][..., None]),
+                "slow_video": masked_mean((supervised["video_pred"].float() - (nv - source_video).float()).square(), batch.get("source_video_loss_valid", torch.ones_like(source_video,dtype=torch.bool))),
+                "slow_action": masked_mean((supervised["action_pred"].float() - (na - source_action).float()).square(), (~batch["source_known_mask"] & batch.get("source_action_valid",torch.ones_like(batch["source_known_mask"])))[..., None]),
             }
         else:
             # Short interface warmup freezes the complete native slow model.
@@ -342,6 +347,9 @@ class DualRateSystem(nn.Module):
         if available.dtype!=torch.bool or available.shape!=(b,):
             raise ValueError('reference_available must be boolean [B] runtime state')
         keep = (torch.rand((b,), device=device, generator=generator) >= cfg.cache_dropout) & available
+        if getattr(self, 'native_v5', None):
+            world['native_available'] = keep
+            world['native_source_index'] = batch['native_source_index']
         world=self.mask_reference(world,batch,keep)
         conditions = self.conditions(batch, world)
         if action_conditioned is None:
@@ -357,9 +365,14 @@ class DualRateSystem(nn.Module):
         # pseudo-world variables. This STATIC capability is known at inference;
         # sample-specific missing GT above remains noise and never a condition.
         noisy_future=torch.where(self.future_field_support[None],noisy_future,torch.zeros_like(noisy_future))
-        result = self.fast(fm_input(action, sigmas[2], nf), noisy_future, sigmas[2],
+        center = self.action_center(batch, world) if hasattr(self, 'action_center') else torch.zeros_like(action)
+        nf = nf + center
+        fast_input=fm_input(action,sigmas[2],nf)
+        if getattr(self,'native_v5',None):
+            fast_input=torch.where(batch['fast_action_valid'][...,None],fast_input,nf)
+        result = self.fast(fast_input, noisy_future, sigmas[2],
             action_known_mask=known_mask, known_actions=known_actions, **conditions)
-        losses["fast_action"] = masked_mean((result["action_velocity"].float() - (nf - action).float()).square(), ~known_mask[..., None])
+        losses["fast_action"] = masked_mean((result["action_velocity"].float() - (nf - action).float()).square(), (~known_mask & batch.get("fast_action_valid",torch.ones_like(known_mask)))[..., None])
         ze = (result["future_velocity"].float() - (nz - future).float()).square()
         d = cfg.visual_dim
         losses["future_visual"] = masked_mean(ze[..., :d], future_mask[..., :d])
@@ -368,6 +381,16 @@ class DualRateSystem(nn.Module):
         ce = F.binary_cross_entropy_with_logits(result["contact_logits"].float(), contact.float(), reduction="none")
         losses["contact"] = masked_mean(ce, batch["contact_valid"])
         total = sum(getattr(cfg, name) * value for name, value in losses.items())
+        if getattr(self, 'native_v5', None):
+            estimate=fm_input(action,sigmas[2],nf)-sigmas[2][:,None,None]*result['action_velocity']
+            estimate=torch.where(known_mask[...,None],known_actions,estimate)
+            valid=batch.get('fast_action_valid',torch.ones_like(known_mask))
+            edge=valid[:,1:] & valid[:,:-1] & ~action_conditioned[:,None]
+            arm=torch.tensor([0,1,2,3,4,5,7,8,9,10,11,12],device=action.device)
+            delta=(estimate[:,1:]-estimate[:,:-1])-(action[:,1:]-action[:,:-1])
+            boundary=masked_mean(delta.index_select(-1,arm).float().square(),edge[...,None])
+            total=total+self.native_v5['boundary_weight']*boundary
+            losses['boundary']=boundary
         return {"loss": total, **losses}
 
     def forward(self,batch,generator=None):
@@ -385,7 +408,7 @@ class DualRateSystem(nn.Module):
         return engine
 
     @torch.no_grad()
-    def sample_fast(self, batch, world, *, steps=10, generator=None):
+    def sample_fast(self, batch, world, *, steps=10, generator=None, initial_action_noise=None):
         """Joint A/Z Euler flow with known prefix clamped at EVERY step.
 
         The caller supplies only timestamped observations, requested time grids,
@@ -398,9 +421,15 @@ class DualRateSystem(nn.Module):
         b = batch["state"].shape[0]
         like = batch["state"]
         a = self._noise((b, c.chunk_size, c.action_dim), like, generator)
+        if initial_action_noise is not None:
+            if initial_action_noise.shape!=a.shape or not torch.isfinite(initial_action_noise).all():
+                raise ValueError('invalid explicit action noise')
+            a=initial_action_noise.to(a).clone()
         z = self._noise((b, c.future_tokens, c.future_dim), like, generator)
         z = torch.where(self.future_field_support[None],z,torch.zeros_like(z))
         known, mask = batch["fast_known_actions"], batch["fast_known_mask"]
+        if hasattr(self, 'action_center'):
+            a = a + self.action_center(batch,world)
         a = _prefix(a, known, mask)
         conditions = self.conditions(batch, world)
         context=self.fast.prepare_context(**conditions)

@@ -758,7 +758,9 @@ class DominoPhysicalDataset(Dataset):
         self.exposure_anchored=m.get('time_contract')==TIME_CONTRACT
         self.dt=float(m['action_interval_seconds'])
         _require(math.isfinite(self.dt) and self.dt>0 and m['codec_id']==CODEC_ID,"unverified timing/codec contract")
-        if self.exposure_anchored:
+        if m.get('native_v5'):
+            _require(m.get('time_contract')=='native_sync_ordinal_v5','native clock contract required')
+        elif self.exposure_anchored:
             self.event_templates=load_templates(bound_metadata_path(m,self.path.parent,'event_templates_file'),
                                                 m['event_templates_file_sha256'])
             _require(self.event_templates['action_interval_seconds']==self.dt,'event/data action grids differ')
@@ -812,7 +814,14 @@ class DominoPhysicalDataset(Dataset):
         epi,grid,age_id=map(int,self.rows[index]);ep=self.episodes[epi]
         records,raw_actions,flow,visual_cache=self._episode(epi)
         t=records.timestamps.numpy();dt=self.dt;event=None
-        if self.exposure_anchored:
+        if self.manifest.get('native_v5'):
+            s=ep['first_time']+grid*self.manifest['source_stride_seconds']
+            q=s+self.manifest['query_ages_seconds'][age_id];completed=s
+            source_frame=select_frame(t,s,past_only=True,tolerance=RGB_TOLERANCE)
+            query_frame=select_frame(t,q,past_only=True,tolerance=RGB_TOLERANCE)
+            starts=s+np.arange(16)*dt;fast_starts=q+np.arange(16)*dt
+            source_known=torch.zeros(16,dtype=torch.bool);fast_known=source_known.clone()
+        elif self.exposure_anchored:
             # V4 rows bind a REAL source image index and a complete event template.
             source_frame=grid;s=float(t[source_frame])
             event=validate_template(self.event_templates['templates'][age_id],dt)
@@ -839,11 +848,19 @@ class DominoPhysicalDataset(Dataset):
             source_known=torch.arange(16)<2;fast_known=torch.arange(16)<2
         source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+dt)
         fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
-        _require(sv.all() and fv.all(),"index promised complete action support")
+        if not self.manifest.get('native_v5'):
+            _require(sv.all() and fv.all(),"index promised complete action support")
+        source_action=np.where(sv[:,None],source_action,0.)
+        fast_action=np.where(fv[:,None],fast_action,0.)
         source_action=(torch.from_numpy(source_action)-self.action_mean)/self.action_std
         fast_action=(torch.from_numpy(fast_action)-self.action_mean)/self.action_std
         future_requests=s+np.arange(1,9)*2*dt
-        video_frames=[select_frame(t,x,past_only=False,tolerance=RGB_TOLERANCE) for x in future_requests]
+        video_frames=[]; video_valid=[]
+        for target in future_requests:
+            try: video_frames.append(select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE));video_valid.append(True)
+            except ValueError:
+                if not self.manifest.get('native_v5'):raise
+                video_frames.append(source_frame);video_valid.append(False)
         visual_requests=q+np.array([.1,.2,.4,.8])
         visual_frames=[]
         for target in visual_requests:
@@ -923,6 +940,10 @@ class DominoPhysicalDataset(Dataset):
                 fast_prefix_end=torch.tensor(s+event['fast_prefix_end'],dtype=torch.float64),
                 query_rgb_template_time=torch.tensor(s+event['query_rgb_time'],dtype=torch.float64),
                 query_rgb_sampling_error=torch.tensor(t[query_frame]-(s+event['query_rgb_time']),dtype=torch.float64))
+        if self.manifest.get('native_v5'):
+            item['native_source_index']=torch.tensor(0,dtype=torch.long)
+            item['native_query_index']=torch.tensor(round((fast_starts[0]-s)/dt),dtype=torch.long)
+            item['native_video_valid']=torch.tensor(all(video_valid))
         return item
 
 
@@ -962,6 +983,8 @@ def materialize_native_latents(batch, vae, *, device=None):
     all_future=encode(future)
     _require(all_future.ndim==5 and all_future.shape[2]==3,'native 1+8 frame codec must produce three slices')
     result['source_future_latent']=all_future[:,:,1:].contiguous()
+    if 'native_video_valid' in batch:
+        result['source_video_loss_valid']=batch['native_video_valid'][:,None,None,None,None].expand_as(result['source_future_latent'])
     return result
 
 

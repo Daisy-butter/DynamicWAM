@@ -81,6 +81,10 @@ def build_system(config, device="cpu"):
         motion_mean=native.config.motion_feature_mean, motion_scale=native.config.motion_feature_scale,
         codec_id=config["codec_id"],future_field_support=config["future_field_support"],
         contact_field_support=config["contact_field_support"])
+    if config.get('native_v5'):
+        from .native_v5 import NativeFast, configure_v5
+        model.fast = NativeFast(model.fast, native)
+        configure_v5(model, config['native_v5'])
     # Preserve BF16 VideoDiT (FP32 time MLPs) + FP32 Action/motion/new modules. No global
     # model.bfloat16(): time arithmetic and normalization stay explicitly FP32/64.
     model = model.to(device)

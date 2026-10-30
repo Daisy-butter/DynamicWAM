@@ -318,7 +318,7 @@ class SlowReferenceAdapter(nn.Module):
         if feature_export is None or joint_action_estimate is None:
             raise RuntimeError("second native joint step did not export prediction features")
         return dict(**feature_export, condition_latent=source.condition_latent, predicted_video_latent=future,
-            reference_actions=actions, action_times=times, future_intervals=intervals,
+            native_video_cache=cache, reference_actions=actions, action_times=times, future_intervals=intervals,
             action_intervals=action_support, source_metadata=source_metadata,
             future_metadata=future_metadata, patch_size=patch_size,
             test_fixture=source_metadata["codec_id"].startswith("test_fixture"),
@@ -515,7 +515,7 @@ class StructuredWorldReadout(nn.Module):
                                 tokens.new_zeros(batch, actions.shape[1], 2)), dim=1)
         views = torch.cat((obs_meta["view_overlap"], future_meta["view_overlap"],
                             tokens.new_zeros(batch, actions.shape[1], 4)), dim=1)
-        return dict(world_tokens=tokens, world_intervals=intervals, world_valid=valid,
+        return dict(native_video_cache=reference.get("native_video_cache"), world_tokens=tokens, world_intervals=intervals, world_valid=valid,
                     world_types=types.expand(batch, -1), world_positions=positions,
                     world_view_overlap=views, world_spatial_valid=(types != 2).expand(batch, -1),
                     reference_actions=reference["reference_actions"],
