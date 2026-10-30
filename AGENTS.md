@@ -1,3 +1,16 @@
+# Current authorized revision: Compact A/Z V7, 2026-10-30
+User authorizes stopping V6, replacing ONLY fast architecture plus consistent
+slow-action conditioning, then smoke and fresh formal training from official Full.
+Only .92 isolated dualrate-compact-v7-20261030 is writable. .50/.100 protected.
+Read docs/compact_v7.md. Preserve native V6 data/physical-clock/event/TOPP semantics.
+Single 448/6 A/Z model; Full slow/teacher frozen; bounded aligned A10 prior.
+No direct output averaging, no fake time, no untrained fewer-step sampler.
+Source/config frozen during GPU runs, no retry or GPU recovery. Three-phase 8-rank
+and actual native deployment/Graph/latency/clean-exit acceptance gate formal.
+All large artifacts SSD. Initial formal stability >=300 seconds, then no extra watcher.
+
+---
+
 # Current authorized revision: Native Event Single V6, 2026-10-30
 Only .92 isolated dualrate-native-v6-20261030 is writable; .50/.100 protected.
 User authorized replacing V5 training. Archive V5 and stop only its verified controller.

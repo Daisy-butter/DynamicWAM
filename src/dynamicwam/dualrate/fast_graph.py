@@ -17,12 +17,17 @@ def eager_joint_sample(fast, a, z, known, mask, context, fields, contacts, *, st
     if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
         raise ValueError('positive integer sampling steps required')
     batch = a.shape[0]
+    grid=getattr(fast,'sampling_sigmas',None)
+    if grid is not None and len(grid)!=steps:raise ValueError('untrained compact sampling schedule')
     for step in range(steps):
-        sigma = a.new_full((batch,), 1 - step / steps)
+        sigma = a.new_full((batch,), 1 - step / steps) if grid is None else grid[step].expand(batch)
+        delta = -1/steps if grid is None else ((grid[step+1] if step+1<steps else 0.)-grid[step])
         result = fast.forward_cached(a, z, sigma, context,
                                      known_actions=known, action_known_mask=mask)
-        a = torch.where(mask[..., None], known, a - result['action_velocity'] / steps)
-        z = torch.where(fields, z - result['future_velocity'] / steps, z)
+        next_a=a-result['action_velocity']/steps if grid is None else a+result['action_velocity']*delta
+        next_z=z-result['future_velocity']/steps if grid is None else z+result['future_velocity']*delta
+        a = torch.where(mask[..., None], known, next_a)
+        z = torch.where(fields, next_z, z)
     final = fast.forward_cached(a, z, a.new_zeros(batch), context,
                                 known_actions=known, action_known_mask=mask)
     return dict(actions=a, future=torch.where(fields, z, torch.zeros_like(z)),

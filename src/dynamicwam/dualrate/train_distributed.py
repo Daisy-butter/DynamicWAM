@@ -125,7 +125,10 @@ def validate_phase_config(config):
         raise ValueError("invalid LR schedule")
     if not (float(config["fast_lr"]) > 0 and float(config["max_grad_norm"]) > 0):
         raise ValueError("positive fast LR and gradient norm required")
-    if config.get("native_v6"):
+    if config.get("native_v7"):
+        if float(config["slow_lr"]) != 0:
+            raise ValueError("compact V7 requires a frozen Full teacher")
+    elif config.get("native_v6"):
         if float(config["slow_lr"]) != 0 or not float(config["motor_lr"]) > 0:
             raise ValueError("V6 requires frozen Full teacher and positive motor LR")
     elif not float(config["slow_lr"]) > 0:
@@ -152,6 +155,7 @@ def phase_contract(config, identity):
                         action_interval_seconds=float(config["action_interval_seconds"]))
     if config.get("native_v5"):contract["native_v5"]=config["native_v5"]
     if config.get("native_v6"):contract["native_v6"]=config["native_v6"]
+    if config.get("native_v7"):contract["native_v7"]=config["native_v7"]
     return contract
 
 
@@ -160,7 +164,7 @@ def set_phase(system, phase):
         raise ValueError("unknown phase")
     system.train()
     system.slow.requires_grad_(phase != "warmup" and not getattr(system,"native_v6",None))
-    if getattr(system,"native_v5",None):
+    if getattr(system,"native_v5",None) and hasattr(system.fast,"motor"):
         system.fast.motor.requires_grad_(phase != "warmup")
     if phase == "warmup" or getattr(system,"native_v6",None):
         system.slow.eval()
@@ -402,7 +406,7 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
     new = [p for p in system.parameters() if id(p) not in slow_ids and p.requires_grad]
     # Fixed optimizer groups across phases preserve fast moments and slow masters.
     groups=[dict(params=slow,lr=config["slow_lr"],name="slow")]
-    if config.get("native_v5") or config.get("native_v6"):
+    if (config.get("native_v5") or config.get("native_v6")) and not config.get("native_v7"):
         motor=list(system.fast.motor.parameters());motor_ids={id(p) for p in motor}
         new=[p for p in new if id(p) not in motor_ids]
         groups.append(dict(params=motor,lr=config["motor_lr"],name="motor"))
