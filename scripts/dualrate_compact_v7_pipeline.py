@@ -46,7 +46,6 @@ def main():
             for key in ('warmup_steps','stage_init_checkpoint','stage_init_checkpoint_sha256','acceptance_receipt','acceptance_receipt_sha256'):
                 c.pop(key,None)
             configs.append(c)
-        sequence(configs,'distributed_training_smoke','smoke_sequence')
         deployment=dict(deployment,output=str(root/'native_deployment'))
         dp=root/'native_deploy.json';atomic(dp,deployment)
         run([sys.executable,str(repo/'scripts/guarded_dualrate_run.py'),'--config',str(dp),
@@ -56,6 +55,7 @@ def main():
         parity=runner.read_json(root/'native_deployment/compact_acceptance.json')
         if guard.get('state')!='completed' or not guard.get('guard_closed') or not accept.get('passed') or not parity.get('passed'):
             raise RuntimeError('native GPU acceptance not complete')
+        sequence(configs,'distributed_training_smoke','smoke_sequence')
         evidence=[]; accepted_identity=None
         for phase,c in zip(PHASES,configs):
             _,_,result,_=phase_completed(Path(c['output']),c)

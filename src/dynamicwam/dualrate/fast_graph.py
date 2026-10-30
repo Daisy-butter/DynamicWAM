@@ -75,10 +75,16 @@ class FastGraphSampler:
         self._slots = {}
         self._lock = threading.Lock()
         self.sealed = False
+        grid = getattr(fast, 'sampling_sigmas', None)
+        self._schedule_identity = None if grid is None else (id(grid), grid._version)
 
     def _validate(self, context):
         if self.fast.training or torch.is_grad_enabled():
             raise ValueError('CUDA sampler is inference-only; use eval and no_grad')
+        grid = getattr(self.fast, 'sampling_sigmas', None)
+        identity = None if grid is None else (id(grid), grid._version)
+        if identity != self._schedule_identity:
+            raise ValueError('sampling schedule changed after graph setup')
         # This includes actual model versions and all original query input
         # mutation guards. Never bypass it with the private capture context.
         self.fast._check_cache(context)
