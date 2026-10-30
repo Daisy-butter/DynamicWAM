@@ -56,15 +56,19 @@ def main():
         if guard.get('state')!='completed' or not guard.get('guard_closed') or not accept.get('passed') or not parity.get('passed'):
             raise RuntimeError('native GPU acceptance not complete')
         sequence(configs,'distributed_training_smoke','smoke_sequence')
-        evidence=[]
+        evidence=[]; accepted_identity=None
         for phase,c in zip(PHASES,configs):
-            phase_completed(Path(c['output']),c)
+            _,_,result,_=phase_completed(Path(c['output']),c)
+            identity={k:result['identity'][k] for k in ('source_sha256','manifest_sha256','init_checkpoint_sha256')}
+            if identity['source_sha256']!=source['source_sha256'] or (accepted_identity is not None and identity!=accepted_identity):
+                raise RuntimeError('smoke phases disagree on source, dataset or initial checkpoint')
+            accepted_identity=identity
             for f in [Path(c['output'])/'result.json',Path(c['output'])/'reload.json',root/'smoke_sequence'/phase/'status.json']:
                 evidence.append(dict(path=str(f),sha256=file_sha256(f)))
         for f in (root/'native_deployment').rglob('*'):
             if f.is_file() and f.suffix in ('.json','.mp4'):evidence.append(dict(path=str(f),sha256=file_sha256(f)))
         evidence.append(dict(path=str(root/'native_guard/status.json'),sha256=file_sha256(root/'native_guard/status.json')))
-        receipt=dict(passed=True,world_size=8,source_sha256=source['source_sha256'],
+        receipt=dict(passed=True,world_size=8,**accepted_identity,
             supervisor_sha256=source['distributed_supervisor_sha256'],source_contract=runner.source_contract(source),
             profiles={p:runner.profile_sha256(c) for p,c in zip(PHASES,configs)},evidence=evidence,
             native_deployment=accept,quality_accepted=False)
