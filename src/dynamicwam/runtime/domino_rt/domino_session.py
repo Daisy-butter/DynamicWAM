@@ -417,6 +417,7 @@ def prepare_level1_env(
     start_seed: int,
     instruction_type: str,
     replay: dict[str, Any] | None = None,
+    native_protocol: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     """Run DOMINO's expert filter and move the object at the training speed.
 
@@ -506,7 +507,10 @@ def prepare_level1_env(
         seed += 1
     # Native init stores one scaled step per action. Switch that task onto
     # the expert velocity so each physics second matches training.
-    velocity = adopt_level1_realtime_motion(env)
+    if native_protocol:
+        velocity=None  # retain native init_dynamic_motion_for_eval parameters
+    else:
+        velocity = adopt_level1_realtime_motion(env)
     env.take_action_cnt = 0
     clock = env._scene_step_clock
     # Homing and the expert rehearsal advance the same step counter. The

@@ -1,3 +1,18 @@
+# Current authorized revision: Native DualRate V5, 2026-10-30
+Only the independent .92 worktree dualrate-native-v5-20261030 is writable for this revision.
+The .50 formal evaluation and .100 remain protected. Existing V4 is archived as
+archive/dualrate-v4-before-native-v5-20261030. See docs/native_v5.md for current
+architecture, native synchronous simulator semantics, ordinal actions and physical-time Z.
+Native and continuous protocols must never be mixed or jointly scored.
+Large data, checkpoints, eval videos and diagnostics belong under .92 SSD wuruihan.
+Formal training must start from official DynamicWAM_full.pt after current-source
+three-phase eight-rank smoke and genuine native-DOMINO deployment acceptance.
+Smoke weights are diagnostic only. Freeze Git/source/config for every GPU run.
+Retain all guard, no-retry, owned-process cleanup and no GPU-reset/unbind rules below.
+Historical continuous-only runtime instructions apply only to their named versions.
+
+---
+
 # Consistency audit revision02, 2026-10-27
 
 The prior CPU-only waiter2764016 was intentionally stopped before evaluation

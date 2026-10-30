@@ -32,3 +32,48 @@ def test_flow_prior_correct_endpoint_has_no_hard_output_constraint():
     velocity=eps+center-gt
     torch.testing.assert_close(x-sigma*velocity,gt)
 
+
+def test_native_clock_replanning_and_cache_reuse(monkeypatch):
+    from types import SimpleNamespace as S
+    from dynamicwam.dualrate.native_deployment import NativeDualRatePolicy,ordinal_action_noise
+    from dynamicwam.dualrate.actuators import ActuatorProjection
+    class Builder:
+        device=slow_device=torch.device('cpu')
+        manifest={'time_contract':'native_sync_ordinal_v5'}
+        mean=torch.zeros(14);scale=torch.ones(14)
+        def source(self,frames,*,source_time,**kw):
+            return dict(source_initial_state=torch.zeros(1,14),source_time=torch.tensor([source_time],dtype=torch.float64))
+        def current(self,frames,*,query_time,**kw):
+            return dict(state=torch.zeros(1,14),query_time=torch.tensor([query_time],dtype=torch.float64))
+    class Model:
+        native_v5=True
+        slow=S(native=S(compact_wan=S(video_model=S(vae=None))))
+        def eval(self):return self
+        def predict_reference(self,batch,**kw):return dict(source_time=batch['source_time'])
+        def world_readout(self,r):return r
+        def sample_fast(self,*args,**kw):return {'actions':torch.zeros(1,16,14)}
+    bounds=ActuatorProjection([[-10,10]]*6+[[0,1]]+[[-10,10]]*6+[[0,1]],provenance='unit fixture')
+    monkeypatch.setattr(ActuatorProjection,'from_robot',classmethod(lambda cls,robot:bounds))
+    class Env:
+        robot=None;take_action_cnt=0;physical=0.
+        def __init__(self):self._scene_step_clock=S(snapshot=lambda:S(time_seconds=self.physical))
+        def take_action(self,a,action_type):
+            assert action_type=='qpos'
+            self.physical += [.08,.196,.052,.124,.216,.048][self.take_action_cnt]
+            self.take_action_cnt+=1
+    env=Env();policy=NativeDualRatePolicy(Model(),Builder())
+    obs={'observation':{c:{'rgb':np.zeros((4,4,3),np.uint8)} for c in ['head_camera','left_camera','right_camera']},
+         'joint_action':{'vector':np.zeros(14,np.float32)}}
+    # Use actual camera names from production schema.
+    from dynamicwam.dualrate.producer import CAMERAS
+    obs['observation']={c:{'rgb':np.zeros((4,4,3),np.uint8)} for c in CAMERAS}
+    for _ in range(6):policy.step(env,obs)
+    q=[x for x in policy.records if 'query_physical_time' in x]
+    assert [x['command_index'] for x in q]==[0,2,4]
+    assert [x['source_command_index'] for x in q]==[0,0,4]
+    assert [x['query_physical_time'] for x in q]==pytest.approx([0,.276,.452])
+    a=ordinal_action_noise(0,16,14,4,torch.zeros(1))
+    b=ordinal_action_noise(2,16,14,4,torch.zeros(1))
+    torch.testing.assert_close(a[:,2:],b[:,:14],rtol=0,atol=0)
+
+

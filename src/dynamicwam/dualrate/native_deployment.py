@@ -1,0 +1,94 @@
+"""Native DOMINO policy: synchronous physics, TOPP and ordinal action commands.
+
+Inference consumes wall time only. A's order is known; TOPP end times are not.
+Z and camera/history timestamps always use the observed scene physical clock.
+"""
+from collections import deque
+import time
+import numpy as np
+import torch
+from .online import ObservationHistory
+from .actuators import ActuatorProjection
+
+PROTOCOL="native_domino_sync_topp_dualrate_v5"
+
+class NativeDualRatePolicy:
+    def __init__(self,system,builder,*,replan_actions=2,refresh_actions=4,max_reference_age=1.44,seed=0):
+        if not getattr(system,'native_v5',None) or builder.manifest.get('time_contract')!='native_sync_ordinal_v5':
+            raise ValueError("native model and native timing data required")
+        if replan_actions!=2 or refresh_actions!=4 or max_reference_age!=1.44:
+            raise ValueError("untrained native refresh contract")
+        if builder.device!=builder.slow_device:
+            raise ValueError("this native synchronous implementation uses one policy device")
+        self.system=system.eval();self.builder=builder
+        self.replan_actions=replan_actions;self.refresh_actions=refresh_actions;self.ttl=max_reference_age
+        self.generator=torch.Generator(device=builder.device).manual_seed(seed)
+        self.noise_seed=seed
+        self.history=ObservationHistory();self.pending=deque()
+        self.command_index=0;self.source_index=None;self.world=None;self.records=[]
+        self.env=None;self.bounds=None
+
+    def _time(self,env):
+        clock=getattr(env,'_scene_step_clock',None)
+        if clock is None:raise ValueError("actual native scene-step clock required")
+        return float(clock.snapshot().time_seconds)
+
+    @torch.no_grad()
+    def step(self,env,observation):
+        if self.env is None:
+            self.env=env;self.bounds=ActuatorProjection.from_robot(env.robot)
+        if self.env is not env:raise ValueError("new episode requires a fresh policy/history")
+        now=self._time(env)
+        if self.history.frames and now==self.history.frames[-1].exposure:
+            self.history.frames.pop()  # new capture at the same real scene time
+        self.history.append(observation,exposure=now,available=now)
+        frames=self.history.snapshot(now)
+        if not self.pending:
+            begin=time.monotonic();slow_seconds=0.
+            if self.world is None or self.command_index-self.source_index>=self.refresh_actions or now-float(self.world['source_time'][0])>self.ttl:
+                t=time.monotonic()
+                source=self.builder.source(frames,source_time=now,action_start=now,
+                    vae=self.system.slow.native.compact_wan.video_model.vae)
+                source['source_known_actions']=source['source_initial_state'].new_zeros((1,16,14))
+                source['source_known_mask']=torch.zeros((1,16),device=self.builder.slow_device,dtype=torch.bool)
+                reference=self.system.predict_reference(source,generator=self.generator)
+                self.world=self.system.world_readout(reference)
+                self.source_index=self.command_index
+                self.world['native_source_index']=torch.tensor([self.source_index],device=self.builder.device)
+                self.world['native_available']=torch.ones(1,device=self.builder.device,dtype=torch.bool)
+                if self.builder.device.type=='cuda':torch.cuda.synchronize(self.builder.device)
+                slow_seconds=time.monotonic()-t
+            batch=self.builder.current(frames,query_time=now,action_start=now)
+            batch['fast_known_actions']=batch['state'].new_zeros((1,16,14))
+            batch['fast_known_mask']=torch.zeros((1,16),device=self.builder.device,dtype=torch.bool)
+            batch['native_query_index']=torch.tensor([self.command_index],device=self.builder.device)
+            t=time.monotonic()
+            noise=ordinal_action_noise(self.command_index,16,14,self.noise_seed,batch['state'])
+            sampled=self.system.sample_fast(batch,self.world,steps=10,generator=self.generator,initial_action_noise=noise)
+            # Actual native units and bounds. A changed actuator target invalidates Z.
+            raw=sampled['actions'][0].cpu()*self.builder.scale+self.builder.mean
+            raw,projection=self.bounds(raw,torch.zeros(16,dtype=torch.bool))
+            if self._time(env)!=now:raise RuntimeError("native physics advanced during inference")
+            self.pending.extend(raw[:self.replan_actions].numpy().copy())
+            self.records.append(dict(query_physical_time=now,command_index=self.command_index,
+                source_physical_time=float(self.world['source_time'][0]),source_command_index=self.source_index,
+                slow_seconds=slow_seconds,fast_seconds=time.monotonic()-t,query_seconds=time.monotonic()-begin,
+                reference_age=now-float(self.world['source_time'][0]),prefix_rows=0,
+                forecast_invalidated=projection['forecast_invalidated'],protocol=PROTOCOL))
+        before_count=env.take_action_cnt
+        env.take_action(self.pending.popleft(),action_type='qpos')
+        if env.take_action_cnt!=before_count+1:raise RuntimeError("native action budget counter changed")
+        self.command_index+=1
+        after=self._time(env)
+        if after<now:raise RuntimeError("native scene clock reversed")
+        self.records.append(dict(command_index=self.command_index-1,physical_start=now,physical_end=after,
+                                 actual_duration=after-now,kind='native_topp_execute'))
+
+def ordinal_action_noise(start,horizon,dim,seed,like):
+    """Overlap has identical base noise; each ordinal still has N(0,I) marginal."""
+    rows=[]
+    for i in range(start,start+horizon):
+        gen=torch.Generator(device='cpu').manual_seed((int(seed)+1000003*i)%((1<<63)-1))
+        rows.append(torch.randn(dim,generator=gen))
+    return torch.stack(rows)[None].to(like)
+

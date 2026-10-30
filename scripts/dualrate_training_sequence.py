@@ -47,6 +47,9 @@ def load_sequence(path):
         raise ValueError("exact warmup -> small_age_joint -> cross_time_joint order required")
     if not isinstance(spec.get("sequence_id"), str) or not spec["sequence_id"]:
         raise ValueError("explicit unique sequence_id required")
+    mode=spec.get("run_kind","formal_distributed_training")
+    if mode not in ("formal_distributed_training","distributed_training_smoke"):
+        raise ValueError("explicit training sequence mode required")
     configs = []
     for row in phases:
         config_path = Path(row["config"]).resolve(strict=True)
@@ -55,8 +58,8 @@ def load_sequence(path):
         config = runner.read_json(config_path)
         if config["phase"] != row["phase"] or config["world_size"] != 8:
             raise ValueError("sequence/template phase/world size mismatch")
-        if config["run_kind"] != "formal_distributed_training":
-            raise ValueError("automatic sequence accepts formal templates only")
+        if config["run_kind"] != mode:
+            raise ValueError("sequence and phase template modes differ")
         if any(key in config for key in ("resume", "stage_init_checkpoint", "stage_init_checkpoint_sha256")):
             raise ValueError("sequence must bind predecessors itself, not take arbitrary smoke/resume weights")
         if not 0 < row["max_runtime_seconds"] <= 30*86400:

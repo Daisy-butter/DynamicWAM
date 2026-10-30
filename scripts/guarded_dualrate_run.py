@@ -125,7 +125,8 @@ def worker_command(repo, config, frozen, authorization, resume=None):
         return [sys.executable, str(repo / "scripts/dualrate_rank_launcher.py"), *common,
                 *(["--resume", str(resume)] if resume is not None else [])]
     if mode == "domino_deployment_smoke":
-        return [sys.executable, str(repo / "scripts/dualrate_domino_smoke.py"), *common]
+        script="dualrate_native_v5_smoke.py" if config.get("native_v5") else "dualrate_domino_smoke.py"
+        return [sys.executable, str(repo / "scripts" / script), *common]
     raise ValueError("unsupported fixed worker")
 
 

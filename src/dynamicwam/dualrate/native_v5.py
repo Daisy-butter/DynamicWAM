@@ -79,7 +79,7 @@ def aligned_center(batch,world,maximum=.15):
     deviation=((value-batch['fast_known_actions']).abs()*known[...,None]).sum((1,2))/(known.sum(1)*ref.shape[-1]).clamp_min(1)
     weight=weight*torch.exp(-deviation)
     available=world.get('native_available',torch.ones(b,dtype=torch.bool,device=ref.device))
-    center=torch.where((valid & available[:,None] & ~batch['fast_known_mask'])[...,None],value*weight[:,None,None],center)
+    center=torch.where((valid & available[:,None] & ~batch['fast_known_mask'])[...,None],value.clamp(-3.,3.)*weight[:,None,None],center)
     center=center.clone();center[:,:,[6,13]]=0
     return center
 

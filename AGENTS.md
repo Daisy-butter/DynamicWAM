@@ -1,3 +1,13 @@
+# Current scope: 2026-10-30 Native DualRate V5 (.92 only)
+Read harness.md and docs/native_v5.md. Preserve .50 current formal evaluation.
+Current model adds a copied native motor, joint A/Z reactive residual, bounded
+ordinal action prior and partial terminal labels. This is a new native synchronous
+TOPP protocol; old continuous leases/deadlines are not valid in this mode.
+Only start formal training after same-source actual GPU, eight-rank and native
+DOMINO deployment acceptance. Do not report a diagnostic smoke as SR evidence.
+
+---
+
 # Consistency audit revision02, 2026-10-27
 
 The prior CPU-only waiter2764016 was intentionally stopped before evaluation

@@ -317,7 +317,12 @@ def run_distributed(config, *, device="cuda", resume=None, authorization=None, s
     activate_dependency_overlay(dependencies)
     manifest_path = Path(config["manifest"]).resolve(strict=True)
     manifest = json.loads(manifest_path.read_text())
-    if config.get('time_contract') is not None or manifest.get('time_contract')=='exposure_anchor_wall_release_v4':
+    if config.get('native_v5'):
+        if manifest.get('time_contract')!='native_sync_ordinal_v5' or config.get('time_contract')!=manifest['time_contract']:
+            raise ValueError('native training/data contract mismatch')
+        if config['runtime']['protect_steps']!=0 or config['runtime']['action_dt']!=manifest['action_interval_seconds']:
+            raise ValueError('native synchronous training must use zero inference prefix')
+    elif config.get('time_contract') is not None or manifest.get('time_contract')=='exposure_anchor_wall_release_v4':
         from .exposure_timing import TIME_CONTRACT, load_templates
         if config.get('time_contract')!=TIME_CONTRACT or manifest.get('time_contract')!=TIME_CONTRACT:
             raise ValueError('training and data physical-time contracts differ')
