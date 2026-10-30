@@ -1,4 +1,4 @@
-import json, pathlib, hashlib, sys
+import json, pathlib, hashlib, sys, shutil
 repo = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-reference-acceptance-20261030')
 old = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_backlog_budget_20261029/final050')
 root = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_reference_acceptance_20261030/attempt01')
@@ -22,6 +22,13 @@ smoke.update(output=str(root/'smoke50_01'), tasks=['hanging_mug','place_empty_cu
              result_stamp='dualrate_reference_smoke_20261030',
              profile=str(repo/'configs/dualrate_native_v2.yaml'),
              native_profile=str(repo/'configs/dualrate_native_v2.yaml'))
+for name, digest in list(smoke['deployment_artifact_sha256'].items()):
+    path = pathlib.Path(name)
+    if path.name.startswith('_sapien_color_reader') and path.suffix == '.so':
+        destination = repo/'src/dynamicwam/runtime/domino_rt'/path.name
+        if not destination.exists(): shutil.copy2(path, destination)
+        assert hashlib.sha256(destination.read_bytes()).hexdigest() == digest
+        smoke['deployment_artifact_sha256'][str(destination)] = digest
 (root/'smoke50_01.config.json').write_text(json.dumps(smoke, indent=2))
 tasks = json.loads((old/'tasks.json').read_text())
 ordered = smoke['tasks'] + [t for t in tasks if t not in smoke['tasks']]
