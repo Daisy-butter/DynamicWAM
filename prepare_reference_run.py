@@ -1,7 +1,11 @@
 import json, pathlib, hashlib, sys, shutil
 repo = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-reference-acceptance-20261030')
 old = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_backlog_budget_20261029/final050')
-root = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_reference_acceptance_20261030/attempt01')
+root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_reference_acceptance_20261030/attempt01')
+external_source = pathlib.Path('/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-backlog-budget-20261029/external').resolve(strict=True)
+external = repo/'external'
+if not external.exists(): external.symlink_to(external_source, target_is_directory=True)
+assert external.resolve(strict=True) == external_source
 root.mkdir(parents=True, exist_ok=False)
 sys.path[:0] = [str(repo/'scripts'), str(repo/'src')]
 from dualrate_continuous_acceptance import validate_continuous_report
@@ -50,5 +54,6 @@ supervision. Preserve old failed artifacts; no old-score merging. .92/.100 untou
 '''
 for name in ['harness.md','AGENTS.md']:
     path = repo/name
-    path.write_text(notes + path.read_text())
+    if not path.read_text().startswith('# Current repair 2026-10-30:'):
+        path.write_text(notes + path.read_text())
 print(json.dumps(dict(root=str(root), recorded_reports=len(checks), smoke_tasks=smoke['tasks'])))

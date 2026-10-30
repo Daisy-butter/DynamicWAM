@@ -44,6 +44,10 @@ from dynamicwam.dualrate import producer,online
 import dualrate_deployment_inputs as inputs
 import dualrate_slow_process as slow
 repo=Path(sys.argv[2]).resolve()
+wan=repo/'external/Wan2.2-TI2V-5B'
+for asset in ('config.json','Wan2.2_VAE.pth','models_t5_umt5-xxl-enc-bf16.pth',
+              'google/umt5-xxl/tokenizer_config.json'):
+    assert (wan/asset).is_file(), 'missing isolated native asset: '+str(wan/asset)
 for m in (producer,online,inputs,slow):
     assert Path(m.__file__).resolve().is_relative_to(repo),m.__file__
 for fn in (producer._letterbox,producer.view_overlap,online.OnlineBatchBuilder.current,
