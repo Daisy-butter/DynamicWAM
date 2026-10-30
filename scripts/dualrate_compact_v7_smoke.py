@@ -5,6 +5,26 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
 from dualrate_domino_smoke import save
 
+class FullDrivenIntegrationEnv:
+    """TEST ONLY: execute aligned Full actions while observing compact proposals.
+
+    This is not the deployed policy, a fallback, or a policy score. It tests
+    real native physics/observation/cache plumbing before the student is trained.
+    """
+    def __init__(self,env,policy):
+        self.env=env;self.policy=policy;self.targets=[]
+    def __getattr__(self,name):return getattr(self.env,name)
+    def take_action(self,proposal,action_type):
+        import torch
+        p=self.policy;offset=p.command_index-p.source_index
+        if not 0<=offset<16:raise RuntimeError('diagnostic Full plan lacks this command')
+        raw=p.world['reference_actions'][0,offset].detach().cpu()*p.builder.scale+p.builder.mean
+        raw,_=p.bounds(raw[None],torch.zeros(1,dtype=torch.bool))
+        self.targets.append(dict(command_index=p.command_index,source_command_index=p.source_index,
+            proposed_action=proposal.tolist(),executed_full_action=raw[0].tolist()))
+        return self.env.take_action(raw[0].numpy(),action_type=action_type)
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config');p.add_argument('--device');p.add_argument('--authorization')
     args=p.parse_args();c=json.loads(Path(args.config).read_text())
@@ -64,7 +84,7 @@ def main():
     from dataclasses import asdict
     task_settings=yaml.safe_load((domino/'task_config'/f"{c['deployment']['task_config']}.yml").read_text())
     if not task_settings['use_dynamic'] or task_settings['dynamic_level']!=1:raise ValueError('native level1 required')
-    reports=[]
+    reports=[];integration=[]
     for task in c['deployment']['tasks']:
       metrics=[]
       for episode in range(c['deployment']['episodes']):
@@ -117,15 +137,38 @@ def main():
             metric=asdict(tracker.get_episode_metrics(success,None if reason in ('success','action_budget_exhausted') else reason,seed=prepared['seed']))
             save(d/'metrics.json',metric);metrics.append(metric)
             write_domino_results(native,c['deployment']['result_stamp'],c['deployment']['instruction_type'],aggregate_native_metrics(metrics))
+            # Preserve the autonomous rollout above, including all failures.
+            # A separate fresh scene tests cache reuse on native Full-driven
+            # physical trajectories. No clock, TTL or action budget is relaxed.
+            env.close_env();env.release_episode_resources();env=None
+            with SapienInitLock():
+                env,replayed=prepare_level1_env(domino,task_name=task,task_config=c['deployment']['task_config'],
+                    start_seed=int(prepared['seed']),instruction_type=c['deployment']['instruction_type'],native_protocol=True)
+            if replayed['seed']!=prepared['seed'] or replayed['instruction']!=prepared['instruction']:
+                raise RuntimeError('integration scene identity changed')
+            env.set_instruction(instruction=prompt)
+            shadow=NativeDualRatePolicy(system,builder,seed=int(prepared['seed']))
+            driver=FullDrivenIntegrationEnv(env,shadow)
+            for _ in range(8):
+                if env.eval_success or env.eval_fail or env.take_action_cnt>=env.step_lim:break
+                shadow.step(driver,env.get_obs())
+                if env.check_gripper_contact_dynamic_object() and prepared['stop_on_contact']:env.stop_dynamic_object_motion()
+                if not getattr(env,'_dynamic_object_stopped',False) and not env.check_dynamic_object_boundary():break
+            integration.append(dict(task=task,diagnostic_driver='Full_A10_test_only',scored=False,
+                action_count=env.take_action_cnt,physical_end=shadow._time(env),events=shadow.records,targets=driver.targets))
+            save(d/'full_driven_integration.json',integration[-1])
+
         except BaseException as exc:
             save(d/'failure.json',dict(error=repr(exc),traceback=traceback.format_exc()));raise
         finally:
             if env is not None:env.close_env();env.release_episode_resources()
     queries=[e for r in reports for e in r['events'] if 'query_physical_time' in e]
     if not queries or not any(e['source_command_index']>0 for e in queries):raise RuntimeError('no refreshed world consumed')
-    if not any(e['source_command_index']<e['command_index'] for e in queries):raise RuntimeError('no multirate cache reuse')
+    iq=[e for r in integration for e in r['events'] if 'query_physical_time' in e]
+    if not any(e['source_command_index']<e['command_index'] for e in iq):raise RuntimeError('no native Full-driven multirate cache reuse')
+    if not any(e['source_command_index']>0 for e in iq):raise RuntimeError('no refreshed native Full-driven reference')
     # Independent ordinal/physical-clock replay before formal can be authorized.
-    for report in reports:
+    for report in reports+integration:
         count=0;last=None;sources={}
         for event in report['events']:
             if 'query_physical_time' in event:
@@ -147,7 +190,9 @@ def main():
     for f,h in c['deployment_artifact_sha256'].items():
         if file_sha256(f)!=h:raise RuntimeError('external source changed while running')
     save(out/'deployment_acceptance.json',dict(passed=True,protocol=PROTOCOL,episodes=len(reports),
-        native_motion_unmodified=True,all_video_passed=True,reference_refreshed_and_reused=True,
+        native_motion_unmodified=True,all_video_passed=True,reference_refreshed_and_reused=True,reuse_evidence_scope='Full_driven_integration_not_student_performance',
+        autonomous_reference_reuses=sum(e['source_command_index']<e['command_index'] for e in queries),
+        integration_reference_reuses=sum(e['source_command_index']<e['command_index'] for e in iq),
         inference_physics_frozen=True,integer_physical_prior_replay_passed=True,query_count=len(queries),binding=binding,source_sha256=identity['source_sha256'],
         initial_weight_fixture=False,diagnostic_training_fixture=True,
         diagnostic_checkpoint_sha256=c['diagnostic_checkpoint_sha256'],performance_accepted=False))

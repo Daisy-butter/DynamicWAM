@@ -74,6 +74,7 @@ class NativeDualRatePolicy:
             sampled=self.system.sample_fast(batch,self.world,steps=10,generator=self.generator,initial_action_noise=noise)
             # Actual native units and bounds. A changed actuator target invalidates Z.
             raw=sampled['actions'][0].cpu()*self.builder.scale+self.builder.mean
+            raw_before=raw.clone()
             raw,projection=self.bounds(raw,torch.zeros(16,dtype=torch.bool))
             if self._time(env)!=now:raise RuntimeError("native physics advanced during inference")
             self.previous_plan=((raw-self.builder.mean)/self.builder.scale).to(self.builder.device)[None]
@@ -84,6 +85,9 @@ class NativeDualRatePolicy:
                 slow_seconds=slow_seconds,fast_seconds=time.monotonic()-t,query_seconds=time.monotonic()-begin,
                 reference_age=now-float(self.world['source_time'][0]),prefix_rows=0,
                 forecast_invalidated=projection['forecast_invalidated'],protocol=PROTOCOL,
+                normalized_action_rms=float(sampled['actions'].float().square().mean().sqrt()),
+                first_action_raw=raw_before[0].tolist(),first_action_executed_target=raw[0].tolist(),
+                projection_changed_coordinates=projection['changed_coordinates'],
                 future_command_events=batch['future_events'][0].tolist(),future_physical_end_times_known=False,
                 previous_plan_aligned=had_previous,action_prior='event-aligned bounded A10 Gaussian prior; no output blend',
                 prior_source_event=self.source_index,prior_row_offset=self.command_index-self.source_index,

@@ -9,6 +9,15 @@ Source/config frozen during GPU runs, no retry or GPU recovery. Three-phase 8-ra
 and actual native deployment/Graph/latency/clean-exit acceptance gate formal.
 All large artifacts SSD. Initial formal stability >=300 seconds, then no extra watcher.
 
+
+Pretraining acceptance distinguishes autonomous student rollouts from a separate,
+explicitly unscored Full-driven integration fixture. Both run actual native TOPP
+and record actual physical clocks/command joins; the latter tests reference reuse
+without requiring an untrained compact student to already control successfully.
+Production executes only fast outputs; there is no Full action fallback. Keep
+autonomous failures visible. Learned-policy reuse/SR must be checked after training.
+No TTL, physics, executor or benchmark relaxation is permitted by this fixture.
+
 ---
 
 # Current authorized revision: Native Event Single V6, 2026-10-30

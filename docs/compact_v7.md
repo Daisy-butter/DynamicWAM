@@ -57,13 +57,26 @@ K10联合采样核心，每次复制全部动态输入，原生shifted sigma必�
 同GPU、相同当前编码/上下文/Graph/K10，对比384/6与448/6完整sample_fast服务时间：
 p50<=1.20倍，p95<=1.25倍。该控制不是旧ckpt闭环SR证据；不含仿真竞争，另跑完整原生回合。
 
-随机快路的两个完整回合虽时钟正确，但大幅随机动作让TOPP实际时间超过TTL，M复用为零，
-该次验收明确失败。不得放宽TTL或改执行动作伪造复用。部署烟测改为使用本次诊断短训权重：
-warmup256更新，后两阶段各2更新；同源/配置/数据/Full起点严格绑定，绝不用于formal初始化。
-三个阶段实际8rank训练和24个严格全状态恢复、两完整原生回合/MP4全解码、时钟事件
-和新M更新复用、所有owned/guard干净退出及内核不变通过后，才运行正式自动脚本。
+诊断短训为warmup256更新、后两阶段各2更新，同源/配置/数据/Full起点严格绑定。
+自主快路完整回合保存所有失败、真实TOPP耗时与零复用现象；这尚不是合格控制策略。
+另开新场景，明确使用Full A10驱动8条命令，同时运行真实快路查询，验收实际物理时间下
+参考复用、刷新与事件对应。该测试轨迹单独保存、不计分，不给生产部署增加动作回退。
+训练前门槛是三个阶段实际8rank与24个严格全状态恢复、两完整自主回合/MP4全解码、
+独立Full驱动集成轨迹的时钟/事件/M复用及所有owned/guard干净退出、内核不变。
+训练后仍须自主闭环证明M复用和控制质量；不能用这项集成测试替代最终部署验收。
 从官方DynamicWAM_full.pt重新构建，随机新快路；正式warmup1k→10k→20k，8×micro1×GAS2。
 新快路全部阶段训练，不错误冻结不存在的native motor。Full固定，快路/读出/观测LR1e-4，
-阶段交接严格恢复模型/优化器/游标/RNG；烟测权重不能进入formal。
+阶段交接保留模型/FP32主权重/Adam状态，重置该阶段数据游标、RNG与LR计划；
+阶段内恢复严格保持完整状态。烟测权重不能进入formal。
 任一失败停止，无自动重试、GPU reset/unbind/驱动恢复。大文件只存SSD wuruihan。
 正式开始后做一次>=300秒稳定验收，结束额外检查，仅保留必要阶段监督。
+
+## Pretraining integration evidence
+
+Pretraining acceptance distinguishes autonomous student rollouts from a separate,
+explicitly unscored Full-driven integration fixture. Both run actual native TOPP
+and record actual physical clocks/command joins; the latter tests reference reuse
+without requiring an untrained compact student to already control successfully.
+Production executes only fast outputs; there is no Full action fallback. Keep
+autonomous failures visible. Learned-policy reuse/SR must be checked after training.
+No TTL, physics, executor or benchmark relaxation is permitted by this fixture.
