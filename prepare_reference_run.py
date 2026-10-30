@@ -20,6 +20,7 @@ assert sum(x['result']['active_empty_reference_queries'] for x in checks) >= 1
 smoke = json.loads((old/'smoke01.config.json').read_text())
 smoke.update(output=str(root/'smoke50_01'), tasks=['hanging_mug','place_empty_cup'],
              result_stamp='dualrate_reference_smoke_20261030',
+             profile=str(repo/'configs/dualrate_native_v2.yaml'),
              native_profile=str(repo/'configs/dualrate_native_v2.yaml'))
 (root/'smoke50_01.config.json').write_text(json.dumps(smoke, indent=2))
 tasks = json.loads((old/'tasks.json').read_text())
