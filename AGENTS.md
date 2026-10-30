@@ -1,3 +1,16 @@
+# Current repair 2026-10-30: .50 only, unchanged final checkpoint and 500ms continuous bench
+
+Read docs/reference_acceptance_20261030.md. User authorizes repair and fresh35x20.
+Only CPU reference/response acceptance changes: allow the already-trained explicit
+empty-world path iff all previously published references have expired. Never skip
+a live M, reuse expired M, extend TTL/deadlines, or alter clocks/queue/model/data.
+This supersedes historical every-active-query-must-have-M acceptance wording;
+it implements the existing documented missing-reference/dropout runtime contract.
+Require original raw-event regression, full4episode GPU smoke, all prior response/
+Graph/concurrency/newM/video/clean-exit gates, then fresh700 with detached no-retry
+supervision. Preserve old failed artifacts; no old-score merging. .92/.100 untouched.
+
+---
 # Consistency audit revision02, 2026-10-27
 
 The prior CPU-only waiter2764016 was intentionally stopped before evaluation

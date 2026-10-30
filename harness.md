@@ -1,3 +1,16 @@
+# Current repair 2026-10-30: .50 only, unchanged final checkpoint and 500ms continuous bench
+
+Read docs/reference_acceptance_20261030.md. User authorizes repair and fresh35x20.
+Only CPU reference/response acceptance changes: allow the already-trained explicit
+empty-world path iff all previously published references have expired. Never skip
+a live M, reuse expired M, extend TTL/deadlines, or alter clocks/queue/model/data.
+This supersedes historical every-active-query-must-have-M acceptance wording;
+it implements the existing documented missing-reference/dropout runtime contract.
+Require original raw-event regression, full4episode GPU smoke, all prior response/
+Graph/concurrency/newM/video/clean-exit gates, then fresh700 with detached no-retry
+supervision. Preserve old failed artifacts; no old-score merging. .92/.100 untouched.
+
+---
 ## 2026-10-29 authorized relaxed backlog benchmark
 
 The user explicitly authorizes raising the backlog bound and requests evaluating only the final DualRate checkpoint now; do not launch Full baseline. Start with .5 seconds plus original .005 scheduling tolerance, validate recorded failure controls and full policy smoke before formal. Preserve 1x wall/physics clocks, original .24 camera ages, 45 ticks/action, task budgets, all deadlines/leases/response gates and CPU PhysX0. New full700 only; no old80 retention or merged score. Label the changed benchmark and do not claim strict comparison with original25.43percent. GPU hygiene/no retries unchanged.

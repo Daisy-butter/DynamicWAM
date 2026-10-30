@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import statistics
 import sys
+from dualrate_continuous_acceptance import validate_empty_reference
 
 DEFAULT_CRITERIA = dict(min_two_prefix_fraction=.90,
                         max_episode_observation_response_median_s=.60,
@@ -60,8 +61,11 @@ def episode_response(report):
     require(held_rows == 2 and close(act['held_prefix_seconds'], 2*dt), 'bootstrap holds changed')
     starts = {}; commits = []; seen_response = set(); response = []; margins_wall=[]; margins_physical=[]
     prefix_counts = {2:0, 3:0}; rows=[]; active=False; active_commits=0
+    published = {}; empty_reference_queries = 0
     for event in events:
         kind = event['event']
+        if kind == 'slow_completed' and event.get('accepted') is True:
+            published[event['version']] = event
         if kind == 'activation': active=True
         if kind == 'actuator_projection':
             require(event['hard_prefix_preserved'] is True, 'actuator projection changed hard prefix')
@@ -69,7 +73,14 @@ def episode_response(report):
             raise ValueError('hold/underrun/rejected plan present')
         if active and kind == 'fast_started':
             qid = event['query_id']; q = event['query_time']
-            require(qid not in starts and event['reference_version'] >= 1, 'duplicate query/missing reference')
+            require(qid not in starts, 'duplicate query')
+            if event['reference_version'] == -1:
+                # The full engineering gate separately checks publication/TTL
+                # and every lease. Keep the response gate consistent with it.
+                validate_empty_reference(event, published, 2.)
+                empty_reference_queries += 1
+            else:
+                require(event['reference_version'] >= 1, 'invalid reference identity')
             n = event['effective_protect_steps']
             require(type(n) is int and n in (2,3), 'prefix outside trained two/three rows')
             start = ap + math.floor((q-ap)/dt + 1e-9)*dt
@@ -115,6 +126,7 @@ def episode_response(report):
     # We forbid executor-inserted holds and bind the executor source separately.
     return dict(task=report['task'],episode=report['episode_index'],prefix_counts=prefix_counts,
                 active_queries=len(starts),active_commits=active_commits,executed_rows=len(rows),
+                empty_reference_queries=empty_reference_queries,
                 observation_to_execution_wall_s=stats(response),
                 wall_commit_deadline_margin_s=stats(margins_wall),
                 physical_commit_deadline_margin_s=stats(margins_physical),

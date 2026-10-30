@@ -2,14 +2,34 @@
 import math
 
 
+def validate_empty_reference(event, published, ttl):
+    """The trained empty-world path is legal only when no live M exists.
+
+    Do not extend TTL, reuse stale tensors or suppress a valid publication.
+    Bootstrap must still have established a real reference before activation.
+    """
+    query = event['query_time']
+    if (event['reference_version'] != -1 or not published
+            or not math.isfinite(query) or not math.isfinite(ttl) or ttl <= 0
+            or event.get('source_time') is not None or event.get('reference_age') is not None):
+        raise ValueError('invalid explicit empty reference')
+    for reference in published.values():
+        source, completed = reference['source_time'], reference['completed_time']
+        if (not math.isfinite(source) or not math.isfinite(completed)
+                or not source <= completed <= query):
+            raise ValueError('empty reference has noncausal publication history')
+        if query < source + ttl:
+            raise ValueError('empty reference bypassed a valid published reference')
+
+
 def validate_reference_leases(events, config, activation):
-    """Every active query consumes the latest causally published reference.
+    """Use the latest live M, or the trained empty-world path after expiry.
 
     A terminal episode may cancel its last query; only committed queries must
     have a matching submission. Bootstrap publications remain valid inputs.
     """
     published, started, active, latest = {}, {}, False, None
-    count = commits = 0
+    count = commits = empty = 0
     ttl = float(config.get('runtime', {}).get('reference_max_age', 2.))
     aw, ap = activation['wall_time'], activation['physics_time']
     for event in events:
@@ -26,12 +46,16 @@ def validate_reference_leases(events, config, activation):
         elif active and kind == 'fast_started':
             version, query = event['reference_version'], event['query_time']
             reference = published.get(version)
-            if (version < 1 or version != latest or reference is None
+            if event['query_id'] in started:
+                raise ValueError('duplicate active query identity')
+            if version == -1:
+                validate_empty_reference(event, published, ttl)
+                empty += 1
+            elif (version < 1 or version != latest or reference is None
                     or not reference['source_time'] <= reference['completed_time'] <= query
                     or not query < reference['source_time'] + ttl
                     or event['source_time'] != reference['source_time']
-                    or not math.isclose(event['reference_age'], query-reference['source_time'], abs_tol=1e-7)
-                    or event['query_id'] in started):
+                    or not math.isclose(event['reference_age'], query-reference['source_time'], abs_tol=1e-7)):
                 raise ValueError('active fast query lacks latest causal unexpired reference')
             if not event['request_wall_time'] < aw + event['protected_until']-ap-event['submit_margin']:
                 raise ValueError('active query started after its real wall deadline')
@@ -49,7 +73,8 @@ def validate_reference_leases(events, config, activation):
                     or event['commit_time']+1e-7 < ap+event['ready_wall_time']-aw):
                 raise ValueError('commit violated strict deadline or wall release')
             commits += 1
-    return dict(active_reference_queries=count, active_commits=commits)
+    return dict(active_queries=count, active_reference_queries=count-empty,
+                active_empty_reference_queries=empty, active_commits=commits)
 
 
 def validate_continuous_report(report, config):
