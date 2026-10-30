@@ -24,7 +24,7 @@ class NativeDualRatePolicy:
         self.replan_actions=replan_actions;self.refresh_actions=refresh_actions;self.ttl=max_reference_age
         self.generator=torch.Generator(device=builder.device).manual_seed(seed)
         self.noise_seed=seed
-        self.history=ObservationHistory();self.pending=deque()
+        self.history=ObservationHistory(allow_equal_exposure=True);self.pending=deque()
         self.command_index=0;self.source_index=None;self.world=None;self.records=[]
         self.env=None;self.bounds=None
 
@@ -39,8 +39,6 @@ class NativeDualRatePolicy:
             self.env=env;self.bounds=ActuatorProjection.from_robot(env.robot)
         if self.env is not env:raise ValueError("new episode requires a fresh policy/history")
         now=self._time(env)
-        if self.history.frames and now==self.history.frames[-1].exposure:
-            self.history.frames.pop()  # new capture at the same real scene time
         self.history.append(observation,exposure=now,available=now)
         frames=self.history.snapshot(now)
         if not self.pending:

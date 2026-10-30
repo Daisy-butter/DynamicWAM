@@ -439,15 +439,27 @@ class DualRateSystem(nn.Module):
         graph = getattr(self, '_fast_graph_sampler', None)
         if graph is not None:
             return graph.sample(a,z,known,mask,context,fields,contacts,steps=steps)
+        if getattr(self,'native_v5',None):
+            from dynamicwam.vendor.wan.utils.fm import FlowMatchScheduler
+            schedule=dict(self.slow.schedule_config)
+            schedule.pop('action_steps');schedule.pop('video_steps')
+            scheduler=FlowMatchScheduler(num_inference_steps=steps,**schedule)
+            scheduler.set_timesteps(num_inference_steps=steps,training=False)
+            sigma_grid=scheduler.sigmas.to(device=a.device,dtype=a.dtype)
+        else:
+            sigma_grid=torch.arange(steps,0,-1,device=a.device,dtype=a.dtype)/steps
         # Static unsupported fields stay zero in both training and inference;
         # their unsupervised velocities cannot alter joint action generation.
         for step in range(steps):
-            sigma = a.new_full((b,), 1 - step / steps)
+            sigma = sigma_grid[step].expand(b)
+            delta=(sigma_grid[step+1] if step+1<steps else 0.)-sigma_grid[step]
             result = self.fast.forward_cached(a, z, sigma, context,
                 known_actions=known, action_known_mask=mask)
             # The immutable query prefix was validated once before this loop.
-            a = torch.where(mask[..., None], known, a - result["action_velocity"] / steps)
-            z = torch.where(fields,z - result["future_velocity"] / steps,z)
+            next_a=(a+result["action_velocity"]*delta if getattr(self,'native_v5',None) else a-result["action_velocity"]/steps)
+            next_z=(z+result["future_velocity"]*delta if getattr(self,'native_v5',None) else z-result["future_velocity"]/steps)
+            a = torch.where(mask[..., None], known, next_a)
+            z = torch.where(fields,next_z,z)
         final = self.fast.forward_cached(a, z, a.new_zeros(b), context,
             known_actions=known, action_known_mask=mask)
         return dict(actions=a, future=torch.where(fields,z,torch.zeros_like(z)),

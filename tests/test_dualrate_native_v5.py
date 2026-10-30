@@ -77,3 +77,15 @@ def test_native_clock_replanning_and_cache_reuse(monkeypatch):
     torch.testing.assert_close(a[:,2:],b[:,:14],rtol=0,atol=0)
 
 
+def test_native_flow_uses_original_command_stride_and_actual_times():
+    from types import SimpleNamespace
+    from dynamicwam.dualrate.online import history_endpoints
+    frames=[SimpleNamespace(exposure=i*.113+(i%3)*.007,frame_id=i) for i in range(25)]
+    selected,valid=history_endpoints(frames,native_ordinal=True)
+    assert all(valid)
+    assert [x.frame_id for x in selected]==[4,8,12,16,20,24]
+    assert selected[-1].exposure-selected[-2].exposure==pytest.approx(.438)
+    assert selected[-1].exposure-selected[-2].exposure!=pytest.approx(.72)
+
+
+

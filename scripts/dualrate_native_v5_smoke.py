@@ -47,13 +47,16 @@ def main():
     from dynamicwam.dualrate.producer import episode_prompt,SCENE_PREFIX
     from dynamicwam.runtime.domino_rt.domino_session import prepare_level1_env
     from dynamicwam.runtime.domino_rt.sapien_init_lock import SapienInitLock
-    from video_artifacts import BufferedHeadVideo,validate_video_artifacts
+    from video_artifacts import BufferedHeadVideo,validate_video_artifacts,aggregate_native_metrics,write_domino_results
     domino=Path(c['domino_root']);sys.path.insert(0,str(domino/'script'))
     import yaml
+    from eval_metrics import EvalMetricsTracker
+    from dataclasses import asdict
     task_settings=yaml.safe_load((domino/'task_config'/f"{c['deployment']['task_config']}.yml").read_text())
     if not task_settings['use_dynamic'] or task_settings['dynamic_level']!=1:raise ValueError('native level1 required')
     reports=[]
     for task in c['deployment']['tasks']:
+      metrics=[]
       for episode in range(c['deployment']['episodes']):
         env=None;video=BufferedHeadVideo();d=out/task/f'episode_{episode:04d}';d.mkdir(parents=True,exist_ok=False)
         try:
@@ -74,6 +77,8 @@ def main():
                 encoder=_build_t5_encoder(profile,'cuda:0')
                 language,_=pack_contexts(encoder,[prompt],torch.device('cuda:0'))[0];del encoder
             env.set_instruction(instruction=prompt)
+            tracker=EvalMetricsTracker(env,task_settings);tracker.on_episode_start()
+            env._metrics_tracker=tracker
             builder=OnlineBatchBuilder(m,action_mean=m['action_statistics']['mean'],action_scale=m['action_statistics']['std'],language=language,device='cuda:0')
             policy=NativeDualRatePolicy(system,builder,seed=int(prepared['seed']))
             lifted=False;success=False;reason='action_budget_exhausted';began=time.monotonic()
@@ -88,7 +93,7 @@ def main():
                     reason='success' if success else 'object_not_lifted';break
                 if env.check_gripper_contact_dynamic_object() and prepared['stop_on_contact']:env.stop_dynamic_object_motion()
                 if not getattr(env,'_dynamic_object_stopped',False) and not env.check_dynamic_object_boundary():
-                    env.eval_fail=True;reason='out_of_bounds';break
+                    env.eval_fail=True;tracker.record_out_of_bounds();reason='out_of_bounds';break
                 if env.eval_fail:reason='eval_fail';break
             native=out/'eval_result'/task/'dualrate_native_v5'/c['deployment']['task_config']/'initial_diagnostic'/c['deployment']['result_stamp']
             report=dict(protocol=PROTOCOL,task=task,episode_index=episode,seed=prepared['seed'],success=success,
@@ -98,6 +103,9 @@ def main():
             report.update(video.finalize(native/f'episode{episode}.mp4',episode_end_physics_s=policy._time(env)))
             if not validate_video_artifacts(report):raise RuntimeError('native video validation failed')
             save(d/'report.json',report);reports.append(report)
+            metric=asdict(tracker.get_episode_metrics(success,None if reason in ('success','action_budget_exhausted') else reason,seed=prepared['seed']))
+            save(d/'metrics.json',metric);metrics.append(metric)
+            write_domino_results(native,c['deployment']['result_stamp'],c['deployment']['instruction_type'],aggregate_native_metrics(metrics))
         except BaseException as exc:
             save(d/'failure.json',dict(error=repr(exc),traceback=traceback.format_exc()));raise
         finally:

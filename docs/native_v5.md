@@ -12,11 +12,12 @@ Reference design: DualRate_DynamicWAM_Design.md plus explicit user revisions on 
 - Velocity = native motor velocity + tanh(zero-initialized gate) * reactive A/Z velocity. A and Z interact at every denoising step.
 - Slow reference actions are excluded from generic attention tokens. Ordinal-aligned normalized arm references shift the Gaussian prior by at most coefficient .15, exponentially decayed by actual reference age and committed deviation. They never clamp the generated suffix or average final actions. Grippers receive no such shift.
 - Hard committed prefixes remain supported, but native synchronous execution has zero inference prefix.
-- Full Action capacity is retained; first version uses ten sampler steps. Few-step distillation is not claimed implemented.
+- Full Action capacity is retained; first version uses ten steps with the native shifted FlowMatchScheduler grid. Few-step distillation is not claimed implemented.
 
 ## Time and deployment
 - Native env.take_action(qpos), original TOPP, dynamic per-action movement, contact/lift/out-of-bounds and native action-count limits.
 - No realtime velocity conversion, wall catch-up, extra hold actions or lease deadlines in native mode.
+- Native flow pairs span four actual command observations, using their actual physical time differences (same stride semantics as the original native policy); fixed .72s nearest-frame matching is reserved for continuous mode.
 - Real scene step clock is authoritative for camera/history and Z. Wall time measures compute cost only.
 - Waypoint indices align A references. Unknown TOPP completion times are not fabricated as fixed .18s endpoints.
 - Fast replans every two executed commands; slow refreshes every four or reference age >1.44s.

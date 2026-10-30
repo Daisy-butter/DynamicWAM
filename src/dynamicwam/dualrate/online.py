@@ -99,16 +99,17 @@ class ObservationPairCache:
 
 
 class ObservationHistory:
-    def __init__(self, max_frames=128):
+    def __init__(self, max_frames=128, *, allow_equal_exposure=False):
         if max_frames < 61:
             raise ValueError('history needs five preceding twelve-frame flow pairs')
         self.frames = deque(maxlen=max_frames)
         self.next_id = 0
+        self.allow_equal_exposure=bool(allow_equal_exposure)
 
     def append(self, observation, *, exposure, available):
         if not math.isfinite(exposure) or not math.isfinite(available) or available < exposure:
             raise TimingError('capture exposure/availability are not causal')
-        if self.frames and exposure <= self.frames[-1].exposure:
+        if self.frames and (exposure < self.frames[-1].exposure or (exposure == self.frames[-1].exposure and not self.allow_equal_exposure)):
             raise TimingError('duplicate/decreasing camera exposure')
         images = tuple(np.asarray(observation['observation'][c]['rgb']) for c in CAMERAS)
         for x in images:
@@ -139,7 +140,7 @@ def composite(images, shape):
     return cv2.resize(np.concatenate((head,bottom),axis=0),(shape[1],shape[0]))
 
 
-def history_endpoints(frames, *, strict=False, action_dt=DT):
+def history_endpoints(frames, *, strict=False, action_dt=DT, native_ordinal=False):
     """Match raw-frame offsets to captures already available at the anchor.
 
     Offset 0 is the anchor itself and is always matched. Every earlier offset
@@ -152,6 +153,11 @@ def history_endpoints(frames, *, strict=False, action_dt=DT):
         raise ValueError('empty captured history')
     anchor = frames[-1]
     selected, matched = [], []
+    if native_ordinal:
+        for offset in FLOW_HISTORY_OFFSETS_FRAMES:
+            index=len(frames)-1-(offset//12)*4
+            selected.append(frames[max(0,index)]);matched.append(index>=0)
+        return tuple(selected),tuple(matched)
     for offset in FLOW_HISTORY_OFFSETS_FRAMES:
         if offset == 0:
             selected.append(anchor)
@@ -175,7 +181,7 @@ def history_endpoints(frames, *, strict=False, action_dt=DT):
     return tuple(selected), tuple(matched)
 
 
-def history_features(frames, contract, *, strict=False, action_dt=DT, pair_cache=None, include_spatial=True):
+def history_features(frames, contract, *, strict=False, action_dt=DT, pair_cache=None, include_spatial=True, native_ordinal=False):
     """Reproduce the 0.72 s flow windows, including the preceding acceleration pair."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
@@ -188,7 +194,7 @@ def history_features(frames, contract, *, strict=False, action_dt=DT, pair_cache
     contract=json.loads(contract_key)
     def pair_value(kind,a,b,function):
         return function() if pair_cache is None else pair_cache.compute(kind,a,b,contract_key,function)
-    selected, matched = history_endpoints(frames, strict=strict, action_dt=action_dt)
+    selected, matched = history_endpoints(frames, strict=strict, action_dt=action_dt,native_ordinal=native_ordinal)
     selected = list(selected)
     flows, displacement, starts, ends, valid = [], [], [], [], []
     for index, (a, b) in enumerate(zip(selected, selected[1:])):
@@ -236,6 +242,7 @@ class OnlineBatchBuilder:
         self.slow_device=torch.device(device if slow_device is None else slow_device)
         self.action_dt=float(manifest.get('action_interval_seconds',DT))
         self.hardtime=manifest.get('time_contract')=='exposure_anchor_wall_release_v4'
+        self.native_ordinal=manifest.get('time_contract')=='native_sync_ordinal_v5'
         if not math.isfinite(self.action_dt) or self.action_dt<=0:
             raise ValueError('finite positive physical action interval required')
         self.mean=torch.as_tensor(action_mean,dtype=torch.float32)
@@ -266,7 +273,7 @@ class OnlineBatchBuilder:
         rgb,pixels=zip(*[_letterbox(image,tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v]))
                         for v,image in enumerate(frames[-1].images)])
         h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt,
-                           pair_cache=self.pair_cache);h.pop('flow_rgb')
+                           pair_cache=self.pair_cache,native_ordinal=self.native_ordinal);h.pop('flow_rgb')
         starts=torch.arange(16,dtype=torch.float64)*self.action_dt+action_start
         trace=[row for row in executed if row[1]<=query_time+1e-8]
         values=dict(h,rgb=torch.stack(rgb),rgb_pixel_valid=torch.stack(pixels),
@@ -296,7 +303,7 @@ class OnlineBatchBuilder:
         # Native motion retains each pair's actual dt; nearest endpoints are
         # bounded data sampling, never relabelled as exact nominal endpoints.
         h=history_features(frames,self.manifest['flow_contract'],action_dt=self.action_dt,
-                           pair_cache=self.pair_cache,include_spatial=False);last=frames[-1]
+                           pair_cache=self.pair_cache,include_spatial=False,native_ordinal=self.native_ordinal);last=frames[-1]
         raw=np.stack([cv2.resize(x,(320,384)) for x in h['flow_rgb']]+[composite(last.images,(384,320))])
         # Match producer FP32 pixel normalization before the native VAE cast;
         # BF16 division/subtraction first introduces a different rounding path.
