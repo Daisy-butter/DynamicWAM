@@ -81,7 +81,12 @@ def build_system(config, device="cpu"):
         motion_mean=native.config.motion_feature_mean, motion_scale=native.config.motion_feature_scale,
         codec_id=config["codec_id"],future_field_support=config["future_field_support"],
         contact_field_support=config["contact_field_support"])
-    if config.get('native_v5'):
+    if config.get('native_v6'):
+        from .native_v6 import SingleNativeFast, EventWorldReadout, configure
+        model.fast=SingleNativeFast(arch,native)
+        model.world_readout=EventWorldReadout(latent_channels=48,action_dim=arch.action_dim,world_dim=arch.world_dim,native_hidden_dim=2048)
+        configure(model,config['native_v6'])
+    elif config.get('native_v5'):
         from .native_v5 import NativeFast, configure_v5
         model.fast = NativeFast(model.fast, native)
         configure_v5(model, config['native_v5'])

@@ -242,7 +242,7 @@ class OnlineBatchBuilder:
         self.slow_device=torch.device(device if slow_device is None else slow_device)
         self.action_dt=float(manifest.get('action_interval_seconds',DT))
         self.hardtime=manifest.get('time_contract')=='exposure_anchor_wall_release_v4'
-        self.native_ordinal=manifest.get('time_contract')=='native_sync_ordinal_v5'
+        self.native_ordinal=manifest.get('time_contract') in ('native_sync_ordinal_v5','native_event_single_v6')
         if not math.isfinite(self.action_dt) or self.action_dt<=0:
             raise ValueError('finite positive physical action interval required')
         self.mean=torch.as_tensor(action_mean,dtype=torch.float32)

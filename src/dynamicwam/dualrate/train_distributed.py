@@ -146,6 +146,7 @@ def phase_contract(config, identity):
         contract.update(time_contract=config["time_contract"],
                         action_interval_seconds=float(config["action_interval_seconds"]))
     if config.get("native_v5"):contract["native_v5"]=config["native_v5"]
+    if config.get("native_v6"):contract["native_v6"]=config["native_v6"]
     return contract
 
 
@@ -153,10 +154,10 @@ def set_phase(system, phase):
     if phase not in PHASES:
         raise ValueError("unknown phase")
     system.train()
-    system.slow.requires_grad_(phase != "warmup")
+    system.slow.requires_grad_(phase != "warmup" and not getattr(system,"native_v6",None))
     if getattr(system,"native_v5",None):
         system.fast.motor.requires_grad_(phase != "warmup")
-    if phase == "warmup":
+    if phase == "warmup" or getattr(system,"native_v6",None):
         system.slow.eval()
 
 
@@ -317,8 +318,8 @@ def run_distributed(config, *, device="cuda", resume=None, authorization=None, s
     activate_dependency_overlay(dependencies)
     manifest_path = Path(config["manifest"]).resolve(strict=True)
     manifest = json.loads(manifest_path.read_text())
-    if config.get('native_v5'):
-        if manifest.get('time_contract')!='native_sync_ordinal_v5' or config.get('time_contract')!=manifest['time_contract']:
+    if config.get('native_v5') or config.get('native_v6'):
+        if manifest.get('time_contract')!=('native_event_single_v6' if config.get('native_v6') else 'native_sync_ordinal_v5') or config.get('time_contract')!=manifest['time_contract']:
             raise ValueError('native training/data contract mismatch')
         if config['runtime']['protect_steps']!=0 or config['runtime']['action_dt']!=manifest['action_interval_seconds']:
             raise ValueError('native synchronous training must use zero inference prefix')
@@ -396,7 +397,7 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
     new = [p for p in system.parameters() if id(p) not in slow_ids and p.requires_grad]
     # Fixed optimizer groups across phases preserve fast moments and slow masters.
     groups=[dict(params=slow,lr=config["slow_lr"],name="slow")]
-    if config.get("native_v5"):
+    if config.get("native_v5") or config.get("native_v6"):
         motor=list(system.fast.motor.parameters());motor_ids={id(p) for p in motor}
         new=[p for p in new if id(p) not in motor_ids]
         groups.append(dict(params=motor,lr=config["motor_lr"],name="motor"))
@@ -468,7 +469,7 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
                 raise FloatingPointError("nonfinite gradient")
             if norm_value > 0:
                 gradients[owner[id(parameter)]] += 1
-        required = ("world_readout", "observation", "fast") if config["phase"] == "warmup" else tuple(gradients)
+        required = ("world_readout", "observation", "fast") if config["phase"] == "warmup" or config.get("native_v6") else tuple(gradients)
         if any(gradients[name] == 0 for name in required):
             raise RuntimeError(f"disconnected module in {config['phase']}: {gradients}")
         norm = optimizer.clip_accumulated_grad_norm_(float(config["max_grad_norm"]),

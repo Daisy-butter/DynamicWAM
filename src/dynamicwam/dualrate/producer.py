@@ -759,7 +759,7 @@ class DominoPhysicalDataset(Dataset):
         self.dt=float(m['action_interval_seconds'])
         _require(math.isfinite(self.dt) and self.dt>0 and m['codec_id']==CODEC_ID,"unverified timing/codec contract")
         if m.get('native_v5'):
-            _require(m.get('time_contract')=='native_sync_ordinal_v5','native clock contract required')
+            _require(m.get('time_contract')==('native_event_single_v6' if m.get('native_v6') else 'native_sync_ordinal_v5'),'native clock contract required')
         elif self.exposure_anchored:
             self.event_templates=load_templates(bound_metadata_path(m,self.path.parent,'event_templates_file'),
                                                 m['event_templates_file_sha256'])
@@ -820,6 +820,9 @@ class DominoPhysicalDataset(Dataset):
             source_frame=select_frame(t,s,past_only=True,tolerance=RGB_TOLERANCE)
             query_frame=select_frame(t,q,past_only=True,tolerance=RGB_TOLERANCE)
             starts=s+np.arange(16)*dt;fast_starts=q+np.arange(16)*dt
+            event_offset=round((q-s)/dt)
+            if self.manifest.get('native_v6'):
+                s=float(t[source_frame]);q=float(t[query_frame]);completed=s
             source_known=torch.zeros(16,dtype=torch.bool);fast_known=source_known.clone()
         elif self.exposure_anchored:
             # V4 rows bind a REAL source image index and a complete event template.
@@ -845,6 +848,9 @@ class DominoPhysicalDataset(Dataset):
             source_frame=available_condition_frame(t,s,delay=delay)
             query_frame=available_condition_frame(t,q,delay=delay)
             starts=s+np.arange(16)*dt;fast_starts=q+np.arange(16)*dt
+            event_offset=round((q-s)/dt)
+            if self.manifest.get('native_v6'):
+                s=float(t[source_frame]);q=float(t[query_frame]);completed=s
             source_known=torch.arange(16)<2;fast_known=torch.arange(16)<2
         source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+dt)
         fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
@@ -861,7 +867,7 @@ class DominoPhysicalDataset(Dataset):
             except ValueError:
                 if not self.manifest.get('native_v5'):raise
                 video_frames.append(source_frame);video_valid.append(False)
-        visual_requests=q+np.array([.1,.2,.4,.8])
+        visual_requests=(fast_starts[0]+np.array([1,2,4,8])*dt if self.manifest.get('native_v6') else q+np.array([.1,.2,.4,.8]))
         visual_frames=[]
         for target in visual_requests:
             try:visual_frames.append(select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE))
@@ -869,7 +875,8 @@ class DominoPhysicalDataset(Dataset):
         with h5py.File(ep['raw_path'],'r') as h:
             sm,smv,sma,smi,_,_,_,source_flow_rgb=_flow_features(
                 h,t,source_frame,flow,self.manifest['flow_contract'],return_flow_rgb=True,interval_seconds=4*dt)
-            motion,mv,ma,mi,spatial,spatial_valid,spatial_times=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'],interval_seconds=4*dt)
+            motion,mv,ma,mi,spatial,spatial_valid,spatial_times,query_flow_rgb=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'],interval_seconds=4*dt,return_flow_rgb=True)
+            query_condition=np.stack([cv2.resize(image,(320,384)) for image in query_flow_rgb]+[_composite(h,query_frame,(384,320))])
             rgb,pixelvalid=zip(*[_letterbox(_rgb(h,query_frame,c),tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v])) for v,c in enumerate(CAMERAS)])
             condition=np.stack([cv2.resize(image,(320,384)) for image in source_flow_rgb]+[_composite(h,source_frame,(384,320))])
             future=np.stack([_composite(h,source_frame,(192,160))]+[_composite(h,i,(192,160)) for i in video_frames])
@@ -881,7 +888,8 @@ class DominoPhysicalDataset(Dataset):
         features=torch.zeros_like(records.frozen_visual_features);context_valid=torch.zeros_like(records.visibility)
         for frame in set(i for i in visual_frames if i>=0):features[frame],context_valid[frame]=visual_cache[frame]
         r=replace(records,frozen_visual_features=features,projectability=context_valid,visual_context_valid=context_valid)
-        labels=produce_future_labels(r,q,max_interpolation_gap=INTERPOLATION_GAP,max_contact_age=INTERPOLATION_GAP,duplicate_policy='last',max_visual_time_error=RGB_TOLERANCE)
+        labels=produce_future_labels(r,q,max_interpolation_gap=INTERPOLATION_GAP,max_contact_age=INTERPOLATION_GAP,duplicate_policy='last',max_visual_time_error=RGB_TOLERANCE,
+            target_offsets=(visual_requests-q).tolist() if self.manifest.get('native_v6') else None)
         item={key:value.index_select(0,self.future_token_indices) for key,value in labels.tensors().items()}
         item['future']=normalize_future(item['future'],item['future_loss_valid'],self.manifest['statistics'])
         textrow=self.text_index[ep['prompt_id']];p=(self.text_root.parent/textrow['path']).resolve()
@@ -942,8 +950,19 @@ class DominoPhysicalDataset(Dataset):
                 query_rgb_sampling_error=torch.tensor(t[query_frame]-(s+event['query_rgb_time']),dtype=torch.float64))
         if self.manifest.get('native_v5'):
             item['native_source_index']=torch.tensor(0,dtype=torch.long)
-            item['native_query_index']=torch.tensor(round((fast_starts[0]-s)/dt),dtype=torch.long)
+            item['native_query_index']=torch.tensor(event_offset,dtype=torch.long)
             item['native_video_valid']=torch.tensor(all(video_valid))
+        if self.manifest.get('native_v6'):
+            hist_start=float(mi[mv,0].min()) if bool(mv.any()) else q
+            item.update(future_events=torch.tensor([event_offset+n for n in (1,2,4,8)]*len(self.active_entity_roles)),
+                teacher_condition_frames=torch.from_numpy(query_condition).permute(3,0,1,2).float()/127.5-1,
+                teacher_initial_state=item['state'],teacher_motion=motion,teacher_motion_valid=mv,teacher_motion_acceleration_valid=ma,
+                teacher_motion_times=mi,teacher_text=language['context'],teacher_known_actions=torch.zeros_like(fast_action),teacher_known_mask=fast_known,
+                teacher_action_times=item['action_times'],teacher_action_intervals=item['action_intervals'],
+                teacher_future_intervals=torch.tensor([[q,q+8*dt],[q+8*dt,q+16*dt]],dtype=torch.float64),
+                teacher_temporal_support=torch.tensor([mi[0].tolist(),[hist_start,q]],dtype=torch.float64),
+                teacher_view_overlap=source_overlap,teacher_token_valid=torch.cat([torch.full((120,),bool(mv[0])),torch.ones(120,dtype=torch.bool)]),
+                teacher_input_type=torch.tensor([1,2]))
         return item
 
 
@@ -983,6 +1002,11 @@ def materialize_native_latents(batch, vae, *, device=None):
     all_future=encode(future)
     _require(all_future.ndim==5 and all_future.shape[2]==3,'native 1+8 frame codec must produce three slices')
     result['source_future_latent']=all_future[:,:,1:].contiguous()
+    if 'teacher_condition_frames' in batch:
+        result['teacher_condition_latent']=encode(batch['teacher_condition_frames'])
+    previous={k[9:]:v for k,v in batch.items() if k.startswith('previous_')}
+    if 'source_condition_frames' in previous:
+        result.update({'previous_'+k:v for k,v in materialize_native_latents(previous,vae,device=device).items()})
     if 'native_video_valid' in batch:
         result['source_video_loss_valid']=batch['native_video_valid'][:,None,None,None,None].expand_as(result['source_future_latent'])
     return result

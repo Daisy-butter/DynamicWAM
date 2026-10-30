@@ -129,7 +129,7 @@ def produce_future_labels(records: EpisodeRecords, query_time: float, *,
                           max_interpolation_gap: float,
                           max_contact_age: float,
                           max_visual_time_error: float = 0.030001,
-                          duplicate_policy: str = "error") -> FutureLabels:
+                          duplicate_policy: str = "error", target_offsets=None) -> FutureLabels:
     """Interpolate continuous targets only inside valid, identity-stable brackets.
 
     Contact uses exact observations or agreeing valid bracket endpoints, with an
@@ -150,7 +150,9 @@ def produce_future_labels(records: EpisodeRecords, query_time: float, *,
     masks = torch.zeros_like(values, dtype=torch.bool)
     contacts = torch.zeros(4, 4, 2)
     contacts_valid = torch.zeros(4, 4, 2, dtype=torch.bool)
-    target_times = torch.tensor([query_time + h for h in FUTURE_OFFSETS], dtype=torch.float64)
+    offsets=FUTURE_OFFSETS if target_offsets is None else tuple(target_offsets)
+    _require(len(offsets)==4 and all(math.isfinite(v) and v>0 for v in offsets),"four causal target offsets required")
+    target_times = torch.tensor([query_time + h for h in offsets], dtype=torch.float64)
 
     for h, target in enumerate(target_times.tolist()):
         if target < float(times[0]) or target > float(times[-1]) + 1e-10:
@@ -402,5 +404,8 @@ def open_training_dataset(manifest_path: str | Path, **kwargs) -> Dataset:
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     if manifest.get("schema_version") == "dualrate-domino-lazy-v2":
         from .producer import DominoPhysicalDataset
+        if manifest.get('native_v6'):
+            from .native_v6_data import EventDataset
+            return EventDataset(manifest_path,**kwargs)
         return DominoPhysicalDataset(manifest_path, **kwargs)
     return DualRateShardDataset(manifest_path, **kwargs)

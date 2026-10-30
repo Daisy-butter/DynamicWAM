@@ -1,0 +1,124 @@
+"""Finite native TOPP deployment smoke; guarded, original episode rules, no retry."""
+import argparse,json,os,sys,time,traceback
+from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'src'))
+from dualrate_domino_smoke import save
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--config');p.add_argument('--device');p.add_argument('--authorization')
+    args=p.parse_args();c=json.loads(Path(args.config).read_text())
+    from dynamicwam.dualrate.renderer_runtime import verify_renderer_environment
+    verify_renderer_environment(c,os.environ)
+    from dynamicwam.dualrate.dependencies import validate_dependency_overlay,activate_dependency_overlay,probe_dependency_imports
+    dep=validate_dependency_overlay(c);activate_dependency_overlay(dep)
+    import torch
+    from dynamicwam.dualrate.train import _validate_storage,_validate_normalization,_gpu_authorization,source_identity,canonical_hash,file_sha256
+    out=_validate_storage(c);m=json.loads(Path(c['manifest']).read_text());_validate_normalization(c,m)
+    if m['time_contract']!='native_event_single_v6' or c['run_kind']!='domino_deployment_smoke':raise ValueError('native smoke only')
+    for f,h in c['deployment_artifact_sha256'].items():
+        if file_sha256(f)!=h:raise ValueError('native external source changed: '+f)
+    identity=dict(source_sha256=source_identity(),config_sha256=canonical_hash(c),manifest_sha256=file_sha256(c['manifest']),
+                  init_checkpoint_sha256=c['init_checkpoint_sha256'],device_type='cuda',torch_version=str(torch.__version__))
+    _gpu_authorization(Path(args.authorization),identity,out,expected_mode='domino_deployment_smoke',expected_dependencies=dep)
+    probe_dependency_imports(c,require_flash_attention=True)
+    torch.set_num_threads(1);torch.set_num_interop_threads(1);torch.cuda.set_device(0)
+    uuids=os.environ['CUDA_VISIBLE_DEVICES'].split(',')
+    if len(uuids)!=1:raise ValueError('native smoke requires one explicitly bound renderer/policy GPU')
+    pci=None
+    for f in Path('/proc/driver/nvidia/gpus').glob('*/information'):
+        if uuids[0] in f.read_text():pci=f.parent.name
+    if pci is None:raise RuntimeError('renderer PCI identity unavailable')
+    os.environ['DYNAMICWAM_GPU_PCI']=pci
+    from dynamicwam.runtime.domino_rt.gpu_binding import install_gpu_binding
+    binding=install_gpu_binding()
+    from dynamicwam.dualrate.factory import build_system
+    system=build_system(c,'cuda:0').eval().requires_grad_(False)
+    from dynamicwam.dualrate.native_v6 import verify_single_motor as verify_native_motor
+    from dynamicwam.dualrate.producer import DominoPhysicalDataset,materialize_native_latents
+    from dynamicwam.dualrate.train import _device_batch
+    fixture=materialize_native_latents(_device_batch(torch.utils.data.default_collate(
+        [DominoPhysicalDataset(c['manifest'])[0]]),torch.device('cuda:0')),system.slow.native.compact_wan.video_model.vae)
+    save(out/'native_motor_parity.json',verify_native_motor(system,fixture));del fixture
+    # This is an initial-architecture deployment fixture, never formal evaluation.
+    if not c.get('diagnostic_initial_weights'):raise ValueError('explicit initial-weight smoke provenance required')
+    from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language
+    from dynamicwam.dualrate.native_v6_deployment import NativeDualRatePolicy,PROTOCOL
+    from dynamicwam.dualrate.producer import episode_prompt,SCENE_PREFIX
+    from dynamicwam.runtime.domino_rt.domino_session import prepare_level1_env
+    from dynamicwam.runtime.domino_rt.sapien_init_lock import SapienInitLock
+    from video_artifacts import BufferedHeadVideo,validate_video_artifacts,aggregate_native_metrics,write_domino_results
+    domino=Path(c['domino_root']);sys.path.insert(0,str(domino/'script'))
+    import yaml
+    from eval_metrics import EvalMetricsTracker
+    from dataclasses import asdict
+    task_settings=yaml.safe_load((domino/'task_config'/f"{c['deployment']['task_config']}.yml").read_text())
+    if not task_settings['use_dynamic'] or task_settings['dynamic_level']!=1:raise ValueError('native level1 required')
+    reports=[]
+    for task in c['deployment']['tasks']:
+      metrics=[]
+      for episode in range(c['deployment']['episodes']):
+        env=None;video=BufferedHeadVideo();d=out/task/f'episode_{episode:04d}';d.mkdir(parents=True,exist_ok=False)
+        try:
+            with SapienInitLock():
+                env,prepared=prepare_level1_env(domino,task_name=task,task_config=c['deployment']['task_config'],
+                    start_seed=c['deployment']['seed']+episode,instruction_type=c['deployment']['instruction_type'],native_protocol=True)
+            if prepared['velocity'] is not None:raise RuntimeError('native motion was converted')
+            prompt=SCENE_PREFIX+prepared['instruction']
+            try:language=load_cached_language(Path(c['manifest']).parent,prompt,index_path=m['text_index'])
+            except KeyError:
+                from dynamicwam.inference.model_loader import _build_t5_encoder,load_deploy_config
+                from prepare_dualrate_text import pack_contexts,native_text_inputs,tokenizer_identity
+                profile=load_deploy_config(c['native_profile'])
+                _,ep,tp=native_text_inputs(profile,{'query':prompt})
+                ti=json.loads(Path(m['text_index']).read_text())['identity']
+                if file_sha256(ep)!=ti['source_encoder_sha256'] or tokenizer_identity(tp)!=ti['tokenizer_sha256']:
+                    raise ValueError('native text encoder identity changed')
+                encoder=_build_t5_encoder(profile,'cuda:0')
+                language,_=pack_contexts(encoder,[prompt],torch.device('cuda:0'))[0];del encoder
+            env.set_instruction(instruction=prompt)
+            tracker=EvalMetricsTracker(env,task_settings);tracker.on_episode_start()
+            env._metrics_tracker=tracker
+            builder=OnlineBatchBuilder(m,action_mean=m['action_statistics']['mean'],action_scale=m['action_statistics']['std'],language=language,device='cuda:0')
+            policy=NativeDualRatePolicy(system,builder,seed=int(prepared['seed']))
+            lifted=False;success=False;reason='action_budget_exhausted';began=time.monotonic()
+            while env.take_action_cnt<env.step_lim:
+                obs=env.get_obs()
+                video.append(obs['observation']['head_camera']['rgb'],physics_time_s=policy._time(env),capture_wall_perf_s=time.monotonic())
+                policy.step(env,obs)
+                if prepared['check_z_threshold'] is not None and not lifted:
+                    lifted=float(prepared['lift_actor'].get_pose().p[2])-prepared['start_z']>prepared['check_z_threshold']
+                if env.eval_success:
+                    success=prepared['check_z_threshold'] is None or lifted
+                    reason='success' if success else 'object_not_lifted';break
+                if env.check_gripper_contact_dynamic_object() and prepared['stop_on_contact']:env.stop_dynamic_object_motion()
+                if not getattr(env,'_dynamic_object_stopped',False) and not env.check_dynamic_object_boundary():
+                    env.eval_fail=True;tracker.record_out_of_bounds();reason='out_of_bounds';break
+                if env.eval_fail:reason='eval_fail';break
+            native=out/'eval_result'/task/'dualrate_native_v6'/c['deployment']['task_config']/'initial_diagnostic'/c['deployment']['result_stamp']
+            report=dict(protocol=PROTOCOL,task=task,episode_index=episode,seed=prepared['seed'],success=success,
+                stop_reason=reason,action_count=env.take_action_cnt,action_limit=env.step_lim,
+                physical_end=policy._time(env),wall_seconds=time.monotonic()-began,events=policy.records,
+                diagnostic_initial_weights=True,performance_accepted=False,native_motion_unmodified=True)
+            report.update(video.finalize(native/f'episode{episode}.mp4',episode_end_physics_s=policy._time(env)))
+            if not validate_video_artifacts(report):raise RuntimeError('native video validation failed')
+            save(d/'report.json',report);reports.append(report)
+            metric=asdict(tracker.get_episode_metrics(success,None if reason in ('success','action_budget_exhausted') else reason,seed=prepared['seed']))
+            save(d/'metrics.json',metric);metrics.append(metric)
+            write_domino_results(native,c['deployment']['result_stamp'],c['deployment']['instruction_type'],aggregate_native_metrics(metrics))
+        except BaseException as exc:
+            save(d/'failure.json',dict(error=repr(exc),traceback=traceback.format_exc()));raise
+        finally:
+            if env is not None:env.close_env();env.release_episode_resources()
+    queries=[e for r in reports for e in r['events'] if 'query_physical_time' in e]
+    if not queries or not any(e['source_command_index']>0 for e in queries):raise RuntimeError('no refreshed world consumed')
+    if not any(e['source_command_index']<e['command_index'] for e in queries):raise RuntimeError('no multirate cache reuse')
+    for f,h in c['deployment_artifact_sha256'].items():
+        if file_sha256(f)!=h:raise RuntimeError('external source changed while running')
+    save(out/'deployment_acceptance.json',dict(passed=True,protocol=PROTOCOL,episodes=len(reports),
+        native_motion_unmodified=True,all_video_passed=True,reference_refreshed_and_reused=True,
+        inference_physics_frozen=True,query_count=len(queries),binding=binding,source_sha256=identity['source_sha256'],
+        initial_weight_fixture=True,performance_accepted=False))
+
+if __name__=='__main__':main()
+

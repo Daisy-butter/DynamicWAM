@@ -1,3 +1,12 @@
+# Current authorized revision: Native Event Single V6, 2026-10-30
+Only .92 isolated dualrate-native-v6-20261030 is writable; .50/.100 protected.
+User authorized replacing V5 training. Archive V5 and stop only its verified controller.
+Read docs/native_v6.md. Source/config frozen during GPU runs. All large artifacts on SSD.
+Native synchronous event coordinates are distinct from physical seconds. No GPU recovery,
+no automatic retries, clean owned-process and eight-rank/deployment acceptance before formal.
+
+---
+
 # Current authorized revision: Native DualRate V5, 2026-10-30
 Only the independent .92 worktree dualrate-native-v5-20261030 is writable for this revision.
 The .50 formal evaluation and .100 remain protected. Existing V4 is archived as
