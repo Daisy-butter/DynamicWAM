@@ -123,8 +123,13 @@ def validate_phase_config(config):
         raise ValueError("future token budget must match active roles times four target times")
     if not (0 < float(config["min_lr_ratio"]) <= 1) or int(config["lr_warmup_steps"]) < 0:
         raise ValueError("invalid LR schedule")
-    if min(float(config["slow_lr"]), float(config["fast_lr"]), float(config["max_grad_norm"])) <= 0:
-        raise ValueError("positive LR and gradient norm required")
+    if not (float(config["fast_lr"]) > 0 and float(config["max_grad_norm"]) > 0):
+        raise ValueError("positive fast LR and gradient norm required")
+    if config.get("native_v6"):
+        if float(config["slow_lr"]) != 0 or not float(config["motor_lr"]) > 0:
+            raise ValueError("V6 requires frozen Full teacher and positive motor LR")
+    elif not float(config["slow_lr"]) > 0:
+        raise ValueError("positive slow LR required")
     if phase == "warmup" and config.get("stage_init_checkpoint"):
         raise ValueError("first phase must use official full native initialization, never smoke weights")
     if phase != "warmup" and (not config.get("stage_init_checkpoint") or not config.get("stage_init_checkpoint_sha256")):

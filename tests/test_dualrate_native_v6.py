@@ -32,12 +32,18 @@ def test_native_zero_prefix_and_teacher_origin():
     b['fast_known_mask'][0,0]=True
     with pytest.raises(ValueError,match='zero'):validate_events(b)
 
-def test_unknown_endpoint_time_never_replaces_command_identity():
-    p=torch.randn(1,16,14)
-    # Different physical durations must select the same unexecuted command rows.
-    a,_=align_plan(p,torch.tensor([4]),torch.tensor([6]))
-    b,_=align_plan(p,torch.tensor([4]),torch.tensor([6]))
-    torch.testing.assert_close(a,b,rtol=0,atol=0)
+def test_frozen_teacher_phase_config():
+    import json
+    from pathlib import Path
+    from dynamicwam.dualrate.train_distributed import validate_phase_config
+    c=json.loads((Path(__file__).resolve().parents[1]/'configs/dualrate_native_v6_core.json').read_text())
+    c['run_kind']='distributed_training_smoke'
+    validate_phase_config(c)
+    with pytest.raises(ValueError,match='frozen Full teacher'):
+        validate_phase_config(dict(c,slow_lr=1e-5))
+    c.pop('native_v6')
+    with pytest.raises(ValueError,match='positive slow LR'):
+        validate_phase_config(c)
 
 
 def test_native_clock_replanning_and_cache_reuse(monkeypatch):

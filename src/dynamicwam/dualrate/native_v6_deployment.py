@@ -1,7 +1,7 @@
 """Native DOMINO policy: synchronous physics, TOPP and ordinal action commands.
 
 Inference consumes wall time only. A's order is known; TOPP end times are not.
-Z and camera/history timestamps always use the observed scene physical clock.
+Z uses command events; camera/history timestamps use the scene physical clock.
 """
 from collections import deque
 import time
