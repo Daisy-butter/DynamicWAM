@@ -22,7 +22,10 @@ smoke.update(output=str(root/'smoke50_01'), tasks=['hanging_mug','place_empty_cu
              result_stamp='dualrate_reference_smoke_20261030',
              native_profile=str(repo/'configs/dualrate_native_v2.yaml'))
 (root/'smoke50_01.config.json').write_text(json.dumps(smoke, indent=2))
-(root/'tasks.json').write_bytes((old/'tasks.json').read_bytes())
+tasks = json.loads((old/'tasks.json').read_text())
+ordered = smoke['tasks'] + [t for t in tasks if t not in smoke['tasks']]
+assert len(ordered) == len(set(ordered)) == 35 and set(ordered) == set(tasks)
+(root/'tasks.json').write_text(json.dumps(ordered, indent=2))
 notes = '''# Current repair 2026-10-30: .50 only, unchanged final checkpoint and 500ms continuous bench
 
 Read docs/reference_acceptance_20261030.md. User authorizes repair and fresh35x20.
