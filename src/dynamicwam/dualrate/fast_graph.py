@@ -158,13 +158,17 @@ class FastGraphSampler:
             raise ValueError('CUDA Graph core inputs must reside on one fast CUDA device')
         static = {name: value.detach().clone() for name, value in values.items()}
         private = _context(context, static)
-        stream = torch.cuda.current_stream(device)
-        for _ in range(self.warmup):
-            self._eager(static, private, steps)
-        stream.synchronize()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, stream=stream):
-            outputs = self._eager(static, private, steps)
+        caller = torch.cuda.current_stream(device)
+        stream = torch.cuda.Stream(device=device)
+        stream.wait_stream(caller)
+        with torch.cuda.stream(stream):
+            for _ in range(self.warmup):
+                self._eager(static, private, steps)
+            stream.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=stream):
+                outputs = self._eager(static, private, steps)
+        caller.wait_stream(stream)
         slot = dict(graph=graph, inputs=static, outputs=outputs, context=private,
                     steps=steps, parameter_versions=context.parameter_versions)
         slot['parity'] = self._parity_cases(slot, values, context)
