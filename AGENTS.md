@@ -1,3 +1,17 @@
+# Current scope: .92 V7 deployment history repair, 2026-10-31
+
+Only this isolated dualrate-v7-physical-history-20261031 checkout is writable
+for the deployment repair. Preserve active dualrate-compact-v7-20261030 Stage3,
+its source/configuration/checkpoints/processes and all occupied GPUs.
+Read docs/v7_physical_history_repair_20261031.md. Native synchronous TOPP and
+zero-prefix remain; physical-time history is not continuous RTC acceptance.
+CPU tests do not replace real renderer/GPU acceptance after resources are free.
+Do not run the inherited training pipeline or overwrite the active train tree.
+Keep large artifacts on SSD; no GPU recovery, automatic retries or broad kills.
+The user separately authorizes .50 design work, without changing .92 training.
+
+---
+
 # Current authorized revision: Compact A/Z V7, 2026-10-30
 User authorizes stopping V6, replacing ONLY fast architecture plus consistent
 slow-action conditioning, then smoke and fresh formal training from official Full.

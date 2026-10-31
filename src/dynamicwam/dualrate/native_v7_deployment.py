@@ -7,11 +7,11 @@ from collections import deque
 import time
 import numpy as np
 import torch
-from .online import ObservationHistory
+from .native_history import NativePhysicalHistory
 from .actuators import ActuatorProjection
 from .native_v6 import align_plan,Z_EVENTS
 
-PROTOCOL="native_domino_sync_topp_compact_v7"
+PROTOCOL="native_domino_sync_topp_compact_v7_physical_history_v1"
 
 class NativeDualRatePolicy:
     def __init__(self,system,builder,*,replan_actions=2,refresh_actions=4,max_reference_age=1.44,seed=0):
@@ -21,11 +21,13 @@ class NativeDualRatePolicy:
             raise ValueError("untrained native refresh contract")
         if builder.device!=builder.slow_device:
             raise ValueError("this native synchronous implementation uses one policy device")
+        if builder.native_ordinal or builder.history_sampling!='physical_time':
+            raise ValueError('V7 flow history must use the training physical-time selector')
         self.system=system.eval();self.builder=builder
         self.replan_actions=replan_actions;self.refresh_actions=refresh_actions;self.ttl=max_reference_age
         self.generator=torch.Generator(device=builder.device).manual_seed(seed)
         self.noise_seed=seed
-        self.history=ObservationHistory(allow_equal_exposure=True);self.pending=deque()
+        self.sensors=NativePhysicalHistory();self.history=self.sensors.history;self.pending=deque()
         self.command_index=0;self.source_index=None;self.world=None;self.records=[]
         self.env=None;self.bounds=None;self.previous_plan=None;self.previous_origin=None
 
@@ -41,8 +43,7 @@ class NativeDualRatePolicy:
         if self.env is not env:raise ValueError("new episode requires a fresh policy/history")
         if self.command_index!=env.take_action_cnt:raise RuntimeError('native command ledger diverged from executor')
         now=self._time(env)
-        self.history.append(observation,exposure=now,available=now)
-        frames=self.history.snapshot(now)
+        frames=self.sensors.query_frames(env,observation)
         if not self.pending:
             begin=time.monotonic();slow_seconds=0.
             if self.world is None or self.command_index-self.source_index>=self.refresh_actions or now-float(self.world['source_time'][0])>self.ttl:
@@ -92,9 +93,13 @@ class NativeDualRatePolicy:
                 previous_plan_aligned=had_previous,action_prior='event-aligned bounded A10 Gaussian prior; no output blend',
                 prior_source_event=self.source_index,prior_row_offset=self.command_index-self.source_index,
                 prior_overlap_rows=max(0,16-(self.command_index-self.source_index)),
-                prior_maximum=self.system.native_v7['prior_maximum'],graph_ready=self.system._fast_graph_sampler.receipt()['passed']))
+                prior_maximum=self.system.native_v7['prior_maximum'],graph_ready=self.system._fast_graph_sampler.receipt()['passed'],
+                **self.sensors.describe(frames,action_dt=self.builder.action_dt)))
         before_count=env.take_action_cnt
-        env.take_action(self.pending.popleft(),action_type='qpos')
+        first_capture=len(self.sensors.capture_events)
+        with self.sensors.during_action(env):
+            env.take_action(self.pending.popleft(),action_type='qpos')
+        self.records.extend(dict(e,kind='native_history_capture') for e in self.sensors.capture_events[first_capture:])
         if env.take_action_cnt!=before_count+1:raise RuntimeError("native action budget counter changed")
         self.command_index+=1
         after=self._time(env)

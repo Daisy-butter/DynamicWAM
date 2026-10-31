@@ -59,7 +59,9 @@ def main():
     payload=torch.load(diagnostic,map_location='cpu',weights_only=True)
     if payload.get('run_kind')!='distributed_training_smoke' or payload.get('phase')!='cross_time_joint' or not payload.get('phase_complete'):
         raise ValueError('completed diagnostic-only phase state required')
-    for key in ('source_sha256','manifest_sha256','init_checkpoint_sha256'):
+    from dynamicwam.dualrate.native_v7_source_compat import validate_deployment_source
+    save(out/'training_source_compatibility.json',validate_deployment_source(payload['identity']['source_sha256']))
+    for key in ('manifest_sha256','init_checkpoint_sha256'):
         if payload['identity'][key]!=identity[key]:raise ValueError('diagnostic state identity differs: '+key)
     for key in ('architecture','native_v6','native_v7','time_contract','codec_id'):
         if payload['contract'][key]!=c[key]:raise ValueError('diagnostic model contract differs: '+key)
@@ -182,10 +184,14 @@ def main():
                 if event['previous_plan_aligned']!=(q>0):raise RuntimeError('previous proposal missing')
                 if event['prior_row_offset']!=q-s or event['prior_overlap_rows']!=max(0,16-(q-s)):raise RuntimeError('A10 join mismatch')
                 if event['prior_source_event']!=s or not event['graph_ready']:raise RuntimeError('prior/graph mismatch')
-            else:
+            elif event.get('kind')=='native_history_capture':
+                if not -1e-6<=event['exposure']-event['requested_exposure']<=event['physics_step_seconds']+1e-6:
+                    raise RuntimeError('physical history capture missed its tick')
+            elif event.get('kind')=='native_topp_execute':
                 if event['command_index']!=count or event['physical_end']<event['physical_start']:raise RuntimeError('execution clock mismatch')
                 if last is not None and event['physical_start']!=last:raise RuntimeError('physical gap')
                 last=event['physical_end'];count+=1
+            else:raise RuntimeError('unknown native diagnostic event')
         if count!=report['action_count'] or last!=report['physical_end']:raise RuntimeError('terminal ledger mismatch')
     for f,h in c['deployment_artifact_sha256'].items():
         if file_sha256(f)!=h:raise RuntimeError('external source changed while running')

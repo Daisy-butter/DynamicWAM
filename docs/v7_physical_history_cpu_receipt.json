@@ -1,0 +1,33 @@
+{
+  "cpu_passed": 76,
+  "cpu_seconds": 4.33,
+  "gpu_run": false,
+  "protected_files_equal": 302,
+  "training_workers_alive": [
+    3435196,
+    3435197,
+    3435198,
+    3435199,
+    3435200,
+    3435201,
+    3435202,
+    3435203
+  ],
+  "training_phase": "cross_time_joint",
+  "protected_training_source": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-compact-v7-20261030",
+  "deployment_source": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v7-physical-history-20261031",
+  "source_compatibility": {
+    "training_commit": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+    "training_source_sha256": "54a6908d646c26cd15b0fabf4a8f118cc5cdfa6c7540b324f5b4077223c5c1d1",
+    "protected_model_and_training_equal": true,
+    "deployment_changes": {
+      "dualrate/native_history.py": "695bb088a429f2a33cd2b02df9c0c04443ad914f9e10ed3ca11729b61f501da1",
+      "dualrate/native_v7_deployment.py": "2866a634914698d4aa365c5ee55f13cdd5069535394da0369c4a01f6523025f9",
+      "dualrate/native_v7_source_compat.py": "75478e8462155c7f005454d1b0193c3abfded9972b8f441602c7992ee80445df",
+      "dualrate/online.py": "232bc9b479701d2eee916ec0bd483789f4354e397faaa2b34054678b3ff3ba43"
+    },
+    "deployment_source_sha256": "15dcaaf0576ab16bc74b5c7e801b8d54d916bdf569746cc04eda6345f2b46ce1"
+  },
+  "gpu_acceptance_pending": true,
+  "line_ending_normalization_ast_equal": true
+}

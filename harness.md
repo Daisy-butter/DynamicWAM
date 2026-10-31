@@ -1,3 +1,15 @@
+# Current scope: .92 V7 deployment history repair, 2026-10-31
+
+Only this independent deployment checkout may change. The active V7 Stage3
+tree, its configuration, weights and processes remain protected. Read
+docs/v7_physical_history_repair_20261031.md and AGENTS.md before work.
+Preserve native synchronous TOPP/zero-prefix and the frozen model contract.
+Physical-time history uses real intermediate captures; no fake timestamps.
+GPU acceptance is pending until training releases resources. Do not launch
+the inherited training pipeline. All artifacts SSD; no GPU recovery/retry.
+
+---
+
 # Current authorized revision: Compact A/Z V7, 2026-10-30
 User authorizes stopping V6, replacing ONLY fast architecture plus consistent
 slow-action conditioning, then smoke and fresh formal training from official Full.

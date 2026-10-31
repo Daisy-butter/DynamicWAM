@@ -19,7 +19,7 @@ import torch
 from .producer import (CAMERAS, CAMERA_AVAILABILITY_SECONDS, CONDITION_RGB_MAX_AGE_SECONDS,
     DT, FLOW_ENDPOINT_TOLERANCE_SECONDS, FLOW_HISTORY_OFFSETS_FRAMES, NUMERIC_TIME_EPSILON,
     RAW_FRAME_SECONDS,
-    _letterbox, view_overlap)
+    _letterbox, view_overlap, flow_history_selection)
 from .timing import TimingError
 
 
@@ -158,27 +158,16 @@ def history_endpoints(frames, *, strict=False, action_dt=DT, native_ordinal=Fals
             index=len(frames)-1-(offset//12)*4
             selected.append(frames[max(0,index)]);matched.append(index>=0)
         return tuple(selected),tuple(matched)
-    for offset in FLOW_HISTORY_OFFSETS_FRAMES:
-        if offset == 0:
-            selected.append(anchor)
-            matched.append(True)
-            continue
-        target = anchor.exposure - (offset / 12) * 4 * float(action_dt)
-        chosen = None
-        best_error = None
-        for frame in frames:
-            if frame.exposure > anchor.exposure + NUMERIC_TIME_EPSILON:
-                break
-            error = abs(float(frame.exposure) - target)
-            tolerance = NUMERIC_TIME_EPSILON if strict else FLOW_ENDPOINT_TOLERANCE_SECONDS + NUMERIC_TIME_EPSILON
-            if error > tolerance:
-                continue
-            if chosen is None or error < best_error - NUMERIC_TIME_EPSILON or (
-                    abs(error - best_error) <= NUMERIC_TIME_EPSILON and frame.exposure >= chosen.exposure):
-                chosen, best_error = frame, error
-        selected.append(anchor if chosen is None else chosen)
-        matched.append(chosen is not None)
-    return tuple(selected), tuple(matched)
+    if len(frames)==1:
+        # Training selects inside a multi-frame episode; online bootstrap has
+        # only its first real exposure. No earlier endpoint can be observed.
+        return (anchor,)*len(FLOW_HISTORY_OFFSETS_FRAMES),tuple(x==0 for x in FLOW_HISTORY_OFFSETS_FRAMES)
+    # Use the training selector, including duplicate, tie and missing-frame rules.
+    indices, matched = flow_history_selection(
+        [x.exposure for x in frames], len(frames)-1,
+        interval_seconds=4*float(action_dt),
+        tolerance=0. if strict else FLOW_ENDPOINT_TOLERANCE_SECONDS)
+    return tuple(frames[i] for i in indices), tuple(matched)
 
 
 def history_features(frames, contract, *, strict=False, action_dt=DT, pair_cache=None, include_spatial=True, native_ordinal=False):
@@ -242,7 +231,10 @@ class OnlineBatchBuilder:
         self.slow_device=torch.device(device if slow_device is None else slow_device)
         self.action_dt=float(manifest.get('action_interval_seconds',DT))
         self.hardtime=manifest.get('time_contract')=='exposure_anchor_wall_release_v4'
-        self.native_ordinal=manifest.get('time_contract') in ('native_sync_ordinal_v5','native_event_single_v6')
+        # V6/V7 command indices align ACTIONS, not the physical-time flow history.
+        # Preserve the obsolete V5 reader only for historical reproduction.
+        self.native_ordinal=manifest.get('time_contract')=='native_sync_ordinal_v5'
+        self.history_sampling='command_ordinal_legacy' if self.native_ordinal else 'physical_time'
         if not math.isfinite(self.action_dt) or self.action_dt<=0:
             raise ValueError('finite positive physical action interval required')
         self.mean=torch.as_tensor(action_mean,dtype=torch.float32)
