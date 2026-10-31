@@ -29,6 +29,29 @@ def profile_sha256(config):
     return base.canonical_hash({k: v for k, v in config.items() if k not in OPERATIONAL_FIELDS})
 
 
+def postflight_idle(devices,out,selected,*,timeout=10.,clock=time.monotonic,sleep=time.sleep):
+    """Read-only bounded drain of utilization telemetry after owned workers exit.
+
+    No restart, GPU recovery or relaxed final idle threshold. Foreign processes
+    and retained allocations fail immediately; only a stale utilization sample
+    may be observed again while the all-adapter lifetime guard remains held.
+    """
+    deadline=clock()+timeout;attempt=0
+    while True:
+        rows=base.telemetry(devices,out,'postflight' if attempt==0 else f'postflight_drain_{attempt}')
+        chosen=[row for row in rows if row['uuid'] in selected]
+        if len(chosen)!=len(selected):raise RuntimeError('incomplete postflight GPU inventory')
+        for row in chosen:
+            if row['processes'] or row['used_mib']>512:
+                base.require_idle(rows,row['uuid'])
+        if all(row['gpu_util_percent']==0 for row in chosen):
+            for uuid in selected:base.require_idle(rows,uuid)
+            base.atomic(out/'postflight_idle.json',dict(passed=True,samples=attempt+1,strict_idle=True))
+            return
+        if clock()>=deadline:raise RuntimeError('GPU utilization did not drain within bounded postflight wait')
+        sleep(.5);attempt+=1
+
+
 def frozen_source(repo):
     result = base.source_snapshot(repo)
     result["distributed_supervisor_sha256"] = base.file_sha256(Path(__file__))
@@ -285,9 +308,7 @@ def supervise(args, repo, out):
             if len(guard.handles) == len(devices) and proc is not None:
                 try:
                     time.sleep(2.)
-                    post = base.telemetry(devices, out, "postflight")
-                    for uuid in selected:
-                        base.require_idle(post, uuid)
+                    postflight_idle(devices,out,selected)
                 except BaseException as exc:
                     errors.append(f"postflight failed: {exc!r}")
             try:

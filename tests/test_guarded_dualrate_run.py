@@ -80,5 +80,24 @@ def test_all_ranks_must_consume_same_receipt(tmp_path):
 def test_lifetime_order_in_fixed_supervisor():
     source = (SCRIPTS/"guarded_dualrate_run.py").read_text()
     assert source.index("guard.open()") < source.index('base.telemetry(devices, out, "preflight")') < source.index("proc = subprocess.Popen(command")
-    assert source.index("remaining = base.cleanup_owned") < source.index('base.telemetry(devices, out, "postflight")') < source.index("guard.close()")
+    assert source.index("remaining = base.cleanup_owned") < source.index('postflight_idle(devices,out,selected)') < source.index("guard.close()")
     assert "shell=True" not in source and "nvidia-smi -r" not in source
+
+
+def test_postflight_drains_utilization_without_relaxing_idle(monkeypatch,tmp_path):
+    clock=[0.];samples=iter([1,1,0]);calls=[]
+    def telemetry(*args):
+        u=next(samples);calls.append(u)
+        return [dict(uuid='gpu',processes=[],used_mib=1,gpu_util_percent=u)]
+    monkeypatch.setattr(runner.base,'telemetry',telemetry)
+    runner.postflight_idle({},tmp_path,['gpu'],clock=lambda:clock[0],sleep=lambda s:clock.__setitem__(0,clock[0]+s))
+    assert calls==[1,1,0] and json.loads((tmp_path/'postflight_idle.json').read_text())['strict_idle']
+
+
+def test_postflight_foreign_process_and_timeout_fail(monkeypatch,tmp_path):
+    monkeypatch.setattr(runner.base,'telemetry',lambda *a:[dict(uuid='gpu',processes=[dict(pid=42)],used_mib=1,gpu_util_percent=1)])
+    with pytest.raises(RuntimeError):runner.postflight_idle({},tmp_path,['gpu'])
+    clock=[0.]
+    monkeypatch.setattr(runner.base,'telemetry',lambda *a:[dict(uuid='gpu',processes=[],used_mib=1,gpu_util_percent=1)])
+    with pytest.raises(RuntimeError,match='did not drain'):
+        runner.postflight_idle({},tmp_path,['gpu'],timeout=1.,clock=lambda:clock[0],sleep=lambda s:clock.__setitem__(0,clock[0]+s))

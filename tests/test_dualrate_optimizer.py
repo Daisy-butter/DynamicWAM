@@ -20,6 +20,17 @@ class TinyMixed(nn.Module):
 
 
 class MasterAdamWTests(unittest.TestCase):
+    def test_frozen_bfloat_masters_do_not_hide_fp32_training_updates(self):
+        frozen=nn.Parameter(torch.ones(2,dtype=torch.bfloat16),requires_grad=False)
+        high=nn.Parameter(torch.ones(2))
+        optimizer=FP32MasterAdamW([frozen,high],lr=1e-3,record_updates=True)
+        high.sum().backward();optimizer.accumulate_gradients();optimizer.step()
+        stats=optimizer.last_step_statistics
+        self.assertEqual(stats['active_master_tensors'],0)
+        self.assertEqual(stats['sampled_changed_trainable_values'],2)
+        self.assertGreater(stats['sampled_max_abs_trainable_update'],0)
+        torch.testing.assert_close(frozen,torch.ones_like(frozen),rtol=0,atol=0)
+
     def setUp(self):
         torch.set_num_threads(1)
         torch.manual_seed(18)

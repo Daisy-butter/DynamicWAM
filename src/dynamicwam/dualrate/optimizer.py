@@ -97,6 +97,11 @@ class FP32MasterAdamW(torch.optim.Optimizer):
                     values.append(value.detach().reshape(-1)[:self.sample_values_per_master].float())
         return torch.cat(values) if values else None
 
+    def _trainable_samples(self):
+        values=[p.detach().reshape(-1)[:self.sample_values_per_master].float()
+                for group in self.param_groups for p in group['params'] if p.requires_grad and p.numel()]
+        return torch.cat(values) if values else None
+
     @torch.no_grad()
     def accumulate_gradients(self, scale=1.):
         """Accumulate each already-DDP-reduced microbatch in FP32.
@@ -151,6 +156,7 @@ class FP32MasterAdamW(torch.optim.Optimizer):
         self._sync_groups()
         before = self._samples() if self.record_updates else None
         before_forward = self._samples(forward=True) if self.record_updates else None
+        before_trainable = self._trainable_samples() if self.record_updates else None
         active_master_tensors = 0
         for group_index, (group, masters, layout) in enumerate(zip(self.param_groups, self._masters, self._layout)):
             for index, (original, master, expected) in enumerate(zip(group["params"], masters, layout)):
@@ -196,6 +202,11 @@ class FP32MasterAdamW(torch.optim.Optimizer):
             self.last_step_statistics = dict(scope="no_low_precision_parameters", sampled_elements=0,
                 sampled_max_abs_master_update=0., sampled_changed_master_values=0,
                 sampled_changed_forward_values=0, active_master_tensors=0)
+        if before_trainable is not None:
+            delta=self._trainable_samples()-before_trainable
+            stats=torch.stack((delta.abs().max(),(delta!=0).sum().float())).cpu().tolist()
+            self.last_step_statistics.update(sampled_max_abs_trainable_update=stats[0],
+                sampled_changed_trainable_values=int(stats[1]),sampled_trainable_elements=before_trainable.numel())
         self._refresh_public_state()
         return loss
 
