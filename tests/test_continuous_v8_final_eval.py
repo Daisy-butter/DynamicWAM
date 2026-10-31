@@ -10,7 +10,7 @@ import continuous_v8_final_eval as entry
 import dualrate_eval_worker as worker
 
 
-@pytest.mark.parametrize('fault',[None,'native','fixture','recipe','reserve','smoothing','runtime','linear','sequence','gripper','flow'])
+@pytest.mark.parametrize('fault',[None,'native','fixture','recipe','reserve','smoothing','runtime','linear','sequence','seed','gripper','flow'])
 def test_final_eval_contract_rejects_train_deploy_drift(fault):
     spec=json.loads((ROOT/'configs/continuous_v8_final_eval.json').read_text())
     c=json.loads((ROOT/'configs/continuous_v8_final_smoke.json').read_text())
@@ -33,6 +33,7 @@ def test_final_eval_contract_rejects_train_deploy_drift(fault):
     elif fault=='runtime':manifest['measured_runtime']['protect_steps']=3
     elif fault=='linear':c['benchmark_contract']['controller']='TOPP'
     elif fault=='sequence':c['sequence_id']='other_final'
+    elif fault=='seed':c['seed']=20261031
     elif fault=='gripper':manifest['continuous_gripper_sampling']='endpoint'
     elif fault=='flow':manifest['continuous_flow_sampling']='cached_old'
     if fault is None:entry.validate_contract(spec,c,train,manifest)

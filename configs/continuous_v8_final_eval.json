@@ -23,7 +23,7 @@
   "formal_max_runtime": 604800,
   "controller_dir": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_v8_final_eval_20261031/controller01",
   "smoke_template": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v8-continuous-eval-20261031/configs/continuous_v8_final_smoke.json",
-  "smoke_template_sha256": "2c0501d1437d7de69d4c57adc1ae84e53aeea4e5ec72f8d871bff38cba9e82af",
+  "smoke_template_sha256": "3ea231d3ca09f13763ee092728ba5d03a5f454dd4107dab3a00e7c50f15a589b",
   "formal_template": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v8-continuous-eval-20261031/configs/continuous_v8_final_formal.json",
-  "formal_template_sha256": "8d45f7a283231355f33dfe6e15a5fba913c002a1d82338394b134d63e06113cb"
+  "formal_template_sha256": "365c5a35dab96edb2cfe43377a36fcd36a0d6ba4d4ab5166f2670da9d8a55218"
 }

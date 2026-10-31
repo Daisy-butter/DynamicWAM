@@ -16,6 +16,8 @@ RECIPE=[dict(phase=name,steps=steps) for name,steps in
 
 
 def validate_contract(spec,config,training,manifest):
+    if config.get('seed')!=100000 or config.get('task_config')!='demo_clean_dynamic':
+        raise ValueError('paired benchmark scene seed/config changed')
     if spec.get('training_recipe')!=RECIPE or config.get('training_recipe')!=RECIPE:
         raise ValueError('this launcher is only for formal V8 500/4000/8000')
     if not config.get('continuous_v8') or any(config.get(k) for k in

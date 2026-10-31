@@ -38,7 +38,7 @@
   "fast_lr": 5e-05,
   "steps": 8000,
   "batch_size": 2,
-  "seed": 20261031,
+  "seed": 100000,
   "save_every": 500,
   "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_v8_rtc_20261031/half01/train.json",
   "storage_root": "/SSD_DISK/users/wuruihan",
