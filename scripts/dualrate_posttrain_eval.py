@@ -80,14 +80,30 @@ def stable_checkpoint(path, expected_sha):
                 mtime_ns=after.st_mtime_ns,stable_during_full_hash=True)
 
 
+def expected_phases(spec):
+    """An explicit recipe replaces only the old default, never receipt checks."""
+    rows=spec.get('training_recipe')
+    if rows is None:
+        return PHASES
+    if (not isinstance(rows,list) or len(rows)!=3 or
+            [r.get('phase') for r in rows if isinstance(r,dict)]!=[p[0] for p in PHASES] or
+            any(set(r)!={'phase','steps'} or type(r['steps']) is not int or r['steps']<1 for r in rows)):
+        raise ValueError('invalid explicit three-phase training recipe')
+    total=0; phases=[]
+    for row in rows:
+        total+=row['steps'];phases.append((row['phase'],row['steps'],total))
+    return tuple(phases)
+
+
 def training_ready(spec):
     """None means a healthy unfinished training controller; invalid evidence fails."""
+    recipe=expected_phases(spec)
     root=Path(spec['training_sequence_dir'])
     status=read(root/'status.json')
     source=status['source']
     if (source.get('commit')!=spec.get('expected_training_commit',TRAIN_COMMIT)
             or source.get('source_sha256')!=spec.get('expected_training_source_sha256',TRAIN_SHA)):
-        raise ValueError('training source differs from requested V4')
+        raise ValueError('training source differs from requested training revision')
     state=status.get('state')
     if status.get('errors') or state in ('failed','failed_waiting_guard_cleanup'):
         raise RuntimeError('training failed; evaluation will not start')
@@ -101,11 +117,11 @@ def training_ready(spec):
         return None
     sequence=read(root/'sequence.frozen.json')
     rows=sequence['phases']
-    if [x['phase'] for x in rows]!=[x[0] for x in PHASES] or status['sequence_id']!=sequence['sequence_id']:
+    if [x['phase'] for x in rows]!=[x[0] for x in recipe] or status['sequence_id']!=sequence['sequence_id']:
         raise ValueError('training phase order/sequence identity differs')
     if read(root/'source.json')!=source:
         raise ValueError('training sequence source receipt differs')
-    for name,_,_ in PHASES:
+    for name,_,_ in recipe:
         phase_status=read(root/name/'status.json')
         if phase_status.get('state')!='completed' or phase_status.get('guard_closed') is not True:
             raise ValueError('completed training contains an unfinished phase guard')
@@ -113,11 +129,13 @@ def training_ready(spec):
             return None
     evidence=[root/'status.json',root/'source.json',root/'sequence.frozen.json']
     phases=[];previous=None
-    for row,(name,steps,global_step) in zip(rows,PHASES):
+    for row,(name,steps,global_step) in zip(rows,recipe):
         template_path=Path(row['config'])
         if file_sha256(template_path)!=row['config_sha256']:
             raise ValueError('training phase template changed')
         template=read(template_path);config_path=root/(name+'.config.json');config=read(config_path)
+        if 'training_recipe' in spec and template.get('training_recipe')!=spec['training_recipe']:
+            raise ValueError('phase template training recipe differs')
         expected=dict(template,sequence_id=sequence['sequence_id'])
         if previous is not None:
             expected.update(stage_init_checkpoint=previous['checkpoint'],stage_init_checkpoint_sha256=previous['checkpoint_sha256'])

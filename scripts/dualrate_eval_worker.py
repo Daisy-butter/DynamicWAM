@@ -203,7 +203,7 @@ def validated_arm_smoothing(config):
     return dict(spec)
 
 
-def validate_config(config):
+def validate_config(config, *, checkpoint_pending=False):
     if config.get('run_kind') != MODE or config.get('stage') not in ('smoke', 'formal'):
         raise ValueError('explicit DualRate V4 smoke/formal configuration required')
     from dualrate_eval_protocol import validate_backlog_contract
@@ -244,7 +244,9 @@ def validate_config(config):
     # A comparison protocol cannot silently change the accepted V4 timing grid.
     if not math.isclose(float(config['action_dt']), 0.18000000854954124, abs_tol=1e-8):
         raise ValueError('common action grid must be 45 float32 physics steps')
-    for name in ('profile', 'checkpoint'):
+    if checkpoint_pending and config.get('checkpoint_sha256')!='PENDING_TRAINING_COMPLETION':
+        raise ValueError('pending preflight must not substitute a different checkpoint')
+    for name in (('profile',) if checkpoint_pending else ('profile', 'checkpoint')):
         if sha(config[name]) != config[name + '_sha256']:
             raise ValueError(name + ' hash mismatch')
     if Path(config['profile']).resolve() != Path(config['native_profile']).resolve():
@@ -554,7 +556,8 @@ def _run_worker(resources):
     cohort = EpisodeCohort(args.cohort_dir, args.task)
     native = output / 'eval_result' / args.task / 'dualrate_dynamicwam' / config['task_config'] / Path(config['checkpoint']).stem / config['result_stamp']
     save(output/args.task/'deployment_identity.json', dict(checkpoint=checkpoint_meta, checkpoint_sha256=config['checkpoint_sha256'],
-        training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config['source_compatibility_sha256'],
+        training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config.get('source_compatibility_sha256'),
+        source_compatibility_mode=compatibility.get('mode', 'audited_inference_delta'),
         inference_device_map=placement, renderer=renderer, gpu_uuids=uuids, gpu_count=3,
         trained_runtime=config['runtime'], effective_runtime=effective_runtime_settings(config),
         deployment_arm_smoothing=validated_arm_smoothing(config),

@@ -1,3 +1,10 @@
+# Current scope: V8 final continuous evaluation, 2026-10-31
+Only this isolated evaluation worktree may change. Protect active V8 training, .92 and .100.
+Read docs/continuous_v8_final_eval.md. Preserve src byte identity and the continuous RTC contract.
+Prepare only; user starts the detached launcher. Final checkpoint, clean training exit,
+full 2x2 smoke, Graph/concurrency/new-M/video/clock/cleanup gates precede 35x20.
+No automatic retry, GPU recovery or mixed old scores. All outputs on SSD.
+
 # Current authorization: .50 Continuous RTC V8, 2026-10-31
 Only the isolated .50 dualrate-v8-rtc-20261031 worktree is writable. Previous V8 is preserved.
 Protect .92 training, .100, all older .50 worktrees/results and running jobs.
