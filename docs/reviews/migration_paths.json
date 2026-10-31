@@ -1,0 +1,50 @@
+{
+  "code_base_commit": "7d84acd6cc6a04602f0efa4f40bfe547d590fe7f",
+  "branch": "review/dualrate-v7-docs-20261031",
+  "core_paths": [
+    {
+      "key": ".native_profile",
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-joint-v3-20261024/configs/dualrate_native_v2.yaml",
+      "exists": false,
+      "kind": "missing"
+    },
+    {
+      "key": ".init_checkpoint",
+      "path": "/SSD_DISK/users/wuruihan/wam/external/hf_dynamicwam_release/external/checkpoints/DynamicWAM_full.pt",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "key": ".manifest",
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/dualrate_native_v6_20261030/full_01/train.json",
+      "exists": false,
+      "kind": "missing"
+    },
+    {
+      "key": ".storage_root",
+      "path": "/SSD_DISK/users/wuruihan",
+      "exists": true,
+      "kind": "directory"
+    },
+    {
+      "key": ".output",
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_compact_v7_20261030/core",
+      "exists": false,
+      "kind": "missing"
+    },
+    {
+      "key": ".vision_weights",
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/cache/dualrate_joint_v2_20261024/resnet18-f37072fd.pth",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "key": ".python_dependency_overlay",
+      "path": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/dependencies/dualrate_v2_flashattn_20261024",
+      "exists": true,
+      "kind": "directory"
+    }
+  ],
+  "existing": 4,
+  "missing": 3
+}

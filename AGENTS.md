@@ -1,3 +1,22 @@
+# Current scope: host .50 V7 document review, 2026-10-31
+
+The latest user instruction authorizes an isolated .50 clone for V7 synchronization
+and review against the two 2026-10-31 guides. This supersedes older host-scope
+paragraphs below ONLY for this new checkout. Do not change .92 training or any
+existing .50 run, source checkout, checkpoint or evaluation result.
+Base release: 7d84acd6cc6a04602f0efa4f40bfe547d590fe7f; numeric source: 4f3b91e.
+Read docs/reviews/2026-10-31-two-guides.md before implementation.
+This checkpoint uses native synchronous TOPP and zero committed prefix. The new
+guides assume continuous RTC; do not silently combine these protocols. Review
+findings and suggested experiments are not implemented or GPU-accepted fixes.
+This revision adds only review documentation and isolated CPU diagnostic evidence.
+Datasets/dependencies/host-specific paths still need migration before a GPU launch.
+All large artifacts remain under the verified local SSD wuruihan directory.
+No GPU reset, driver/PCI recovery, broad process kills or automatic GPU retries.
+
+
+---
+
 # Current authorized revision: Compact A/Z V7, 2026-10-30
 User authorizes stopping V6, replacing ONLY fast architecture plus consistent
 slow-action conditioning, then smoke and fresh formal training from official Full.

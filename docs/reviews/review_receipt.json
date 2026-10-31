@@ -1,0 +1,25 @@
+{
+  "created_utc": "2026-10-31T06:34:40.366679+00:00",
+  "host": "10.12.208.50",
+  "source_release": "7d84acd6cc6a04602f0efa4f40bfe547d590fe7f",
+  "numeric_source": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+  "branch": "review/dualrate-v7-docs-20261031",
+  "source_equal": true,
+  "changed_model_or_runtime": false,
+  "gpu_run": false,
+  "host92_not_accessed": true,
+  "cpu_tests": {
+    "passed": 65,
+    "seconds": 24.07,
+    "log": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/reviews/dualrate_v7_20261031/cpu_review_with_deps.log"
+  },
+  "inputs": {
+    "guide.docx": "87df8393b1759c35a55c41486cad0367f5ba8dfe27038f3efcb95e69796f3b32",
+    "priority_three.md": "c732d4f010040c3c384cfcb8878d274e6dd375d75ca566c5fb6c9520079f0f11",
+    "guide_extracted.txt": "10435b90ec0a2d8289fa2367756cfd524cb4e4bede5ed72a58d5ed765904cdf4"
+  },
+  "run_ready": false,
+  "reason": "Source synchronized; data/profile/runtime migration and GPU acceptance pending.",
+  "artifacts": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/reviews/dualrate_v7_20261031",
+  "review": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v7-review-20261031/docs/reviews/2026-10-31-two-guides.md"
+}

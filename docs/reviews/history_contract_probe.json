@@ -1,0 +1,51 @@
+{
+  "kind": "deterministic_counterexample_not_measured_episode",
+  "anchor_seconds": 11.879999999999999,
+  "training_endpoints": [
+    8.28,
+    9.0,
+    9.719999999999999,
+    10.44,
+    11.16,
+    11.879999999999999
+  ],
+  "training_valid": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "deployment_endpoints": [
+    1.9799999999999998,
+    3.9599999999999995,
+    5.9399999999999995,
+    7.919999999999999,
+    9.899999999999999,
+    11.879999999999999
+  ],
+  "deployment_valid": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "training_interval_seconds": [
+    0.7200000000000006,
+    0.7199999999999989,
+    0.7200000000000006,
+    0.7200000000000006,
+    0.7199999999999989
+  ],
+  "deployment_interval_seconds": [
+    1.9799999999999998,
+    1.98,
+    1.9799999999999995,
+    1.9799999999999995,
+    1.9800000000000004
+  ],
+  "conclusion": "Real dt is preserved, but history span is not equivalent under variable-duration waypoints."
+}
