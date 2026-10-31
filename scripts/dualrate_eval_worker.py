@@ -232,8 +232,8 @@ def validate_config(config):
         raise ValueError('formal evaluation requires 35 x 20 complete native episodes')
     engineering=config.get('engineering_initialization_only') is True
     if engineering and (not config.get('continuous_v8') or config['stage']!='smoke'
-            or len(tasks)!=35 or config['episodes']!=1 or config.get('action_limit')!=32):
-        raise ValueError('V8 initial engineering suite must be explicitly unscored 35 x 1 x 32 rows')
+            or len(tasks) not in (2,35) or config['episodes']!=1 or config.get('action_limit')!=32):
+        raise ValueError('V8 initial engineering suite must be explicitly unscored 2 or 35 x 1 x 32 rows')
     if config['stage'] == 'smoke' and not engineering and (len(tasks) != 2 or config['episodes'] != 2 or config.get('action_limit') is not None):
         raise ValueError('smoke requires two environments x two complete native episodes')
     if config.get('instruction_mode', 'episode_complete_template') != 'episode_complete_template':
