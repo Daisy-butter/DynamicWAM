@@ -1,3 +1,16 @@
+# Native V7 final evaluation preparation, 2026-10-31
+
+The user authorizes this independent .92 deployment tree and launch scripts.
+Active compact-v7 training code/config/processes are protected; .50/.100 unchanged.
+Read docs/native_v7_final_eval.md. Native synchronous TOPP/event semantics only.
+No continuous physics, wall catch-up, nonzero RTC hard prefix, or Full-driven fallback.
+CPU preparation does not authorize claiming final-weight GPU acceptance. The user
+launches scripts/launch_native_v7_eval.sh; it gates GPU use on actual clean training
+completion, then autonomous final-weight 8x2 smoke, then fresh 35x20. No retry/recovery.
+Source/config frozen while running. All large artifacts stay in SSD user storage.
+
+---
+
 # Current scope: .92 V7 deployment history repair, 2026-10-31
 
 Only this isolated dualrate-v7-physical-history-20261031 checkout is writable

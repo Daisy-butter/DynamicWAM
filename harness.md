@@ -477,3 +477,14 @@ Follow docs/continuous_executor_repair_20261028.md. Fixed original wall/physics 
 Final checkpoint SHA256 8be3d67d3962d264e1883debec536888d71b7cb13e031d5463d17ec543522894 is unchanged. Prior broad CPU suite had 457 passing tests and one outdated camera-receipt fixture; after updating the fixture and independent timing/reference validation, all 61 targeted tests passed. Actual final-checkpoint GPU smoke is the next gate; launch alone is not acceptance. Preserve failures; no automatic retry/recovery.
 
 2026-10-28 later user instruction authorizes complete35x20 evaluation after corrected smoke acceptance, with the existing final checkpoint. The finite guarded formal run must require the exact tested source/checkpoint, four complete smoke reports, full MP4 decode, valid references and physical/model overlap, raw fixed-clock acceptance, and clean guarded exit. Do not bypass gates for token/time pressure. No automatic retries.
+
+
+## 2026-10-31 Compact V7 native final evaluation
+
+This evaluation-only tree preserves active training and all model/training source.
+See docs/native_v7_final_eval.md. Preparation does not launch GPU evaluation.
+The explicit launch command waits for full formal 1k/10k/20k completion and clean
+owned exits, validates final checkpoint identity, then runs autonomous 8x2 full
+native episodes before 35x20. Native TOPP, actual physical history, integer action
+events, zero hard prefix, fast2/slow4/TTL1.44 and original task budgets are fixed.
+No Full-driven integration data enter the score. No retries or GPU recovery.

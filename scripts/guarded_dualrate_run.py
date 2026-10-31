@@ -19,7 +19,7 @@ import time
 import guarded_dualrate_smoke as base
 
 TRAIN_MODES = {"distributed_training_smoke", "formal_distributed_training"}
-MODES = TRAIN_MODES | {"domino_deployment_smoke", "dualrate_eval_suite"}
+MODES = TRAIN_MODES | {"domino_deployment_smoke", "dualrate_eval_suite", "native_v7_eval_suite"}
 OPERATIONAL_FIELDS = {"run_kind", "output", "steps", "sequence_id", "acceptance_receipt",
     "acceptance_receipt_sha256", "stage_init_checkpoint", "stage_init_checkpoint_sha256", "resume"}
 
@@ -27,6 +27,29 @@ OPERATIONAL_FIELDS = {"run_kind", "output", "steps", "sequence_id", "acceptance_
 def profile_sha256(config):
     """Acceptance binds all numerical/model/data fields, not run locations/budgets."""
     return base.canonical_hash({k: v for k, v in config.items() if k not in OPERATIONAL_FIELDS})
+
+
+def postflight_idle(devices,out,selected,*,timeout=10.,clock=time.monotonic,sleep=time.sleep):
+    """Read-only bounded drain of utilization telemetry after owned workers exit.
+
+    No restart, GPU recovery or relaxed final idle threshold. Foreign processes
+    and retained allocations fail immediately; only a stale utilization sample
+    may be observed again while the all-adapter lifetime guard remains held.
+    """
+    deadline=clock()+timeout;attempt=0
+    while True:
+        rows=base.telemetry(devices,out,'postflight' if attempt==0 else f'postflight_drain_{attempt}')
+        chosen=[row for row in rows if row['uuid'] in selected]
+        if len(chosen)!=len(selected):raise RuntimeError('incomplete postflight GPU inventory')
+        for row in chosen:
+            if row['processes'] or row['used_mib']>512:
+                base.require_idle(rows,row['uuid'])
+        if all(row['gpu_util_percent']==0 for row in chosen):
+            for uuid in selected:base.require_idle(rows,uuid)
+            base.atomic(out/'postflight_idle.json',dict(passed=True,samples=attempt+1,strict_idle=True))
+            return
+        if clock()>=deadline:raise RuntimeError('GPU utilization did not drain within bounded postflight wait')
+        sleep(.5);attempt+=1
 
 
 def frozen_source(repo):
@@ -46,6 +69,9 @@ def read_json(path):
 
 
 def validate_acceptance(config, source):
+    if config["run_kind"] == "native_v7_eval_suite":
+        from native_v7_eval_common import validate_formal_acceptance
+        return validate_formal_acceptance(config, source)
     if config['run_kind'] == 'dualrate_eval_suite':
         if config.get('stage') == 'smoke':
             return None
@@ -103,7 +129,7 @@ def selected_uuids(value, devices, mode):
     if not selected or len(set(selected)) != len(selected) or any(
             re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", u) is None or u not in devices for u in selected):
         raise ValueError("distinct exact inventory GPU UUIDs required")
-    if mode in TRAIN_MODES | {'dualrate_eval_suite'} and (len(selected) != 8 or set(selected) != set(devices)):
+    if mode in TRAIN_MODES | {'dualrate_eval_suite', 'native_v7_eval_suite'} and (len(selected) != 8 or set(selected) != set(devices)):
         raise ValueError("training requires exactly all eight adapters; no single-rank substitute")
     if mode == "domino_deployment_smoke" and len(selected) not in (1, 2, 3):
         raise ValueError("deployment smoke requires one to three explicitly pinned GPUs")
@@ -113,6 +139,8 @@ def selected_uuids(value, devices, mode):
 def worker_command(repo, config, frozen, authorization, resume=None):
     mode = config["run_kind"]
     common = ["--config", str(frozen), "--device", "cuda", "--authorization", str(authorization)]
+    if mode == "native_v7_eval_suite":
+        return [sys.executable, str(repo/"scripts/native_v7_eval_suite.py"), "--config", str(frozen), "--authorization", str(authorization)]
     if mode == 'dualrate_eval_suite':
         return [sys.executable, str(repo/'scripts/dualrate_eval_suite.py'),
                 '--config', str(frozen), '--authorization', str(authorization)]
@@ -203,7 +231,7 @@ def supervise(args, repo, out):
         if base.kernel_evidence() != before:
             raise RuntimeError("new driver evidence during initial telemetry")
         env = base.worker_environment(repo, out, ",".join(selected), binding, config=config)
-        if mode in {"domino_deployment_smoke", "dualrate_eval_suite"}:
+        if mode in {"domino_deployment_smoke", "dualrate_eval_suite", "native_v7_eval_suite"}:
             render_config = dict(config, run_kind='domino_deployment_smoke')
             env.update(base.renderer_helpers().renderer_environment(render_config, env))
             base.atomic(out / "renderer_runtime_before.json", config["renderer_runtime"])
@@ -221,7 +249,7 @@ def supervise(args, repo, out):
         if frozen_source(repo) != source or base.canonical_hash(read_json(args.config)) != identity["config_sha256"]:
             raise RuntimeError("source/config changed during preflight")
         receipt = dict(mode=mode, authorized=True, identity=identity, storage_root=str(storage),
-            cuda_visible_devices=",".join(selected), gpu_uuids=selected, world_size=8 if mode in TRAIN_MODES | {'dualrate_eval_suite'} else 1,
+            cuda_visible_devices=",".join(selected), gpu_uuids=selected, world_size=8 if mode in TRAIN_MODES | {'dualrate_eval_suite', 'native_v7_eval_suite'} else 1,
             expires_at_unix=time.time()+600., external_guard=dict(pid=os.getpid(),
                 start_ticks=base.proc_identity(os.getpid())["start_ticks"], mode=base.GUARD_MODE,
                 device_paths=[v["device_path"] for v in devices.values()]),
@@ -278,10 +306,7 @@ def supervise(args, repo, out):
         if guard is not None:
             if len(guard.handles) == len(devices) and proc is not None:
                 try:
-                    time.sleep(2.)
-                    post = base.telemetry(devices, out, "postflight")
-                    for uuid in selected:
-                        base.require_idle(post, uuid)
+                    postflight_idle(devices, out, selected)
                 except BaseException as exc:
                     errors.append(f"postflight failed: {exc!r}")
             try:
@@ -312,7 +337,7 @@ def supervise(args, repo, out):
                     base.atomic(out / "dependencies_after.json", final)
                     if final != binding:
                         errors.append("dependency overlay changed during job")
-                if config is not None and config.get("run_kind") in {"domino_deployment_smoke", "dualrate_eval_suite"}:
+                if config is not None and config.get("run_kind") in {"domino_deployment_smoke", "dualrate_eval_suite", "native_v7_eval_suite"}:
                     renderer = base.renderer_helpers().validate_renderer_runtime(config)
                     base.atomic(out / "renderer_runtime_after.json", renderer)
             except BaseException as exc:

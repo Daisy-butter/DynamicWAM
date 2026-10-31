@@ -1,0 +1,19 @@
+{
+  "training_sequence_dir": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_compact_v7_20261030/pipeline05/formal_sequence",
+  "expected_training_commit": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+  "expected_training_source_sha256": "54a6908d646c26cd15b0fabf4a8f118cc5cdfa6c7540b324f5b4077223c5c1d1",
+  "template": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v7-native-eval-20261031/configs/native_v7_eval_template.json",
+  "template_sha256": "449c717b30fceb1a23d294626d2f81e430c7ced9926c166c9ffa7f84e38ef6fe",
+  "training_config_sha256": "0fd5b7381ed9bc48e655da046dc1c9f05ffa580c851a18d21a1485482b0f86df",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v7_final_eval_20261031/run01",
+  "smoke_tasks": [
+    "adjust_bottle",
+    "place_empty_cup",
+    "hanging_mug",
+    "place_object_stand",
+    "place_can_basket",
+    "place_bread_basket",
+    "handover_mic",
+    "click_bell"
+  ]
+}
