@@ -174,3 +174,24 @@ def test_each_phase_keeps_full_slow_frozen_and_fast_live():
         assert not system.slow.training
         assert not any(p.requires_grad for p in system.slow.parameters())
         assert all(p.requires_grad for p in system.fast.parameters())
+
+
+def test_checkpoint_semantics_do_not_depend_only_on_parameter_shapes():
+    from dynamicwam.dualrate.continuous_contract import validate_policy_contract
+    validate_policy_contract({}, {})
+    cfg={'continuous_v8':{'action_mode':'residual'}}
+    validate_policy_contract(cfg,cfg)
+    with pytest.raises(ValueError):validate_policy_contract(cfg,{})
+    with pytest.raises(ValueError):validate_policy_contract(cfg,{'continuous_v8':{'action_mode':'full'}})
+
+
+def test_guard_replay_is_one_worker_but_holds_eight_gpu_descriptors():
+    import ast
+    from pathlib import Path
+    tree=ast.parse((Path(__file__).parents[1]/'scripts/guarded_dualrate_run.py').read_text())
+    expressions=[k.value for node in ast.walk(tree) if isinstance(node,ast.Call)
+                 for k in node.keywords if k.arg=='world_size' and isinstance(k.value,ast.IfExp)]
+    assert len(expressions)==1
+    expr=ast.Expression(expressions[0])
+    value=eval(compile(expr,'guard_contract','eval'),{'mode':'dualrate_failure_replay','TRAIN_MODES':set()})
+    assert value==1

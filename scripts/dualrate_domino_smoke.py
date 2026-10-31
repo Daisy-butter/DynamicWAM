@@ -97,6 +97,8 @@ def main():
     if file_sha256(checkpoint)!=config['deployment_checkpoint_sha256']:raise ValueError('deployment weights hash mismatch')
     payload=torch.load(checkpoint,map_location='cpu',weights_only=True,mmap=True)
     contract=payload.get('contract',{})
+    from dynamicwam.dualrate.continuous_contract import validate_policy_contract
+    validate_policy_contract(config,contract)
     for key in ('architecture','codec_id','init_checkpoint_sha256','action_normalization_sha256','motion_normalization_sha256'):
         if contract.get(key)!=config[key]:raise ValueError('deployment/training contract differs: '+key)
     if contract.get('source_sha256')!=identity['source_sha256']:
@@ -116,7 +118,7 @@ def main():
     from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language
     from dynamicwam.dualrate.producer import episode_prompt,SCENE_PREFIX
     from dynamicwam.dualrate.runtime import RuntimeConfig
-    from dynamicwam.dualrate.deployment import run_episode,PROTOCOL
+    from dynamicwam.dualrate.deployment import run_episode,protocol_for_backlog
     from dynamicwam.runtime.domino_rt.domino_session import DominoLevel1Session,prepare_level1_env
     from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture,validate_native_rgb_conversion
     from dynamicwam.runtime.domino_rt import _sapien_color_reader
@@ -128,6 +130,9 @@ def main():
     from eval_metrics import EvalMetricsTracker
     limits=yaml.safe_load((domino/'task_config/_eval_step_limit.yml').read_text())
     dep=config['deployment'];runtime_config=RuntimeConfig(**dep['runtime'])
+    PROTOCOL=protocol_for_backlog(float(dep.get('max_backlog',.25)))
+    if config.get('continuous_v8') and dep.get('camera_async_submit') is not True:
+        raise ValueError('continuous V8 smoke requires the production asynchronous camera pipeline')
     task_config=yaml.safe_load((domino/'task_config'/f"{dep['task_config']}.yml").read_text())
     if not task_config.get('use_dynamic') or task_config.get('dynamic_level')!=1:
         raise ValueError('deployment must use real DOMINO Level-1 configuration')
@@ -197,7 +202,9 @@ def main():
                 session.metrics_tracker=EvalMetricsTracker(env,{'use_dynamic':True});session.metrics_tracker.on_episode_start()
                 if _sapien_color_reader.rgb_batch_contract!='float32_rgba_to_u8_rgb_exact_v1':
                     raise ValueError('native batch camera bridge contract differs')
-                camera=AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch)
+                camera=AsyncCameraCapture(batch_reader=_sapien_color_reader.read_rgb_batch,
+                    async_submit=bool(dep.get('camera_async_submit',False)),
+                    worker_initializer=lambda:torch.cuda.set_device(0))
                 save(episode_dir/'manifest.json',dict(task=task,episode_index=episode,requested_seed=requested_seed,seed=prepared['seed'],instruction=prompt,
                     velocity=prepared['velocity'],initial_target_position=session.object_position(),
                     action_dt=runtime_config.action_dt,checkpoint_sha256=config['deployment_checkpoint_sha256']))

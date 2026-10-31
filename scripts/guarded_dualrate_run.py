@@ -227,7 +227,7 @@ def supervise(args, repo, out):
         if frozen_source(repo) != source or base.canonical_hash(read_json(args.config)) != identity["config_sha256"]:
             raise RuntimeError("source/config changed during preflight")
         receipt = dict(mode=mode, authorized=True, identity=identity, storage_root=str(storage),
-            cuda_visible_devices=",".join(selected), gpu_uuids=selected, world_size=8 if mode in TRAIN_MODES | {'dualrate_eval_suite','dualrate_failure_replay'} else 1,
+            cuda_visible_devices=",".join(selected), gpu_uuids=selected, world_size=8 if mode in TRAIN_MODES | {'dualrate_eval_suite'} else 1,
             expires_at_unix=time.time()+600., external_guard=dict(pid=os.getpid(),
                 start_ticks=base.proc_identity(os.getpid())["start_ticks"], mode=base.GUARD_MODE,
                 device_paths=[v["device_path"] for v in devices.values()]),

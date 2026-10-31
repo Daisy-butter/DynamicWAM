@@ -4,6 +4,14 @@ import json
 from pathlib import Path
 
 
+def validate_policy_contract(config, contract):
+    """Parameter shapes alone cannot distinguish full/residual or gating modes."""
+    if config.get('continuous_v8') != contract.get('continuous_v8'):
+        raise ValueError('continuous V8 train/deploy policy semantics differ')
+    if config.get('continuous_v8') and any(config.get(k) for k in ('native_v5','native_v6','native_v7')):
+        raise ValueError('continuous V8 cannot use native event-coordinate policy')
+
+
 def validate_training_contract(config, manifest):
     expected = dict(version='continuous_rtc_v8',clock='physical_seconds',
         action_semantics='fixed_interval_endpoint_arm_absolute_gripper',
