@@ -1,3 +1,9 @@
+# 10.12.208.92 · Compact V7 · 原生 DOMINO / TOPP
+
+当前分支：`release/host92-native-domino-v7-20261031`。模型训练、最新部署修复与评测入口的对应关系见[两台服务器版本说明](docs/releases/LATEST_HOST_VERSIONS_20261031.md)。本页历史8.14%结果属于V4，不是本分支成绩。
+
+---
+
 <div align="center">
 
 <img src="assets/dynamicwam-github-banner-light.png" width="820" alt="DynamicWAM">
