@@ -46,6 +46,7 @@ def run(stack):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',required=True)
     p.add_argument('--device',choices=['cuda'],required=True);p.add_argument('--authorization',required=True)
     args=p.parse_args();config=json.loads(Path(args.config).read_text())
+    sys.setswitchinterval(float(config.get('python_thread_switch_interval_seconds',.005)))
     if config.get('run_kind')!='domino_deployment_smoke':raise ValueError('explicit deployment mode required')
     from dynamicwam.dualrate.renderer_runtime import verify_renderer_environment
     renderer_environment=verify_renderer_environment(config,os.environ)
@@ -127,6 +128,7 @@ def run(stack):
     from dynamicwam.dualrate.producer import episode_prompt,SCENE_PREFIX
     from dynamicwam.dualrate.runtime import RuntimeConfig
     from dynamicwam.dualrate.deployment import run_episode,protocol_for_backlog
+    from dualrate_physics_optimization import passive_force_scope
     from dynamicwam.runtime.domino_rt.domino_session import DominoLevel1Session,prepare_level1_env
     from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture,validate_native_rgb_conversion
     from dynamicwam.runtime.domino_rt import _sapien_color_reader
@@ -222,6 +224,7 @@ def run(stack):
                     action_limit=min(int(limits[task]),int(dep.get('action_limit',limits[task]))),
                     frame_period=float(dep.get('frame_period',runtime_config.action_dt)),max_backlog=float(dep.get('max_backlog',.25)),
                     seed=int(prepared['seed']),video=video,
+                    control_scope=lambda:passive_force_scope(env.robot,enabled=bool(dep.get('passive_force_dedup',False))),
                     camera_warmup_captures=int(dep.get('camera_warmup_captures',3)))
                 report.update(task=task,episode_index=episode,seed=prepared['seed'],gpu_count=len(uuids),
                               inference_device_map=placement,video_required=True,
