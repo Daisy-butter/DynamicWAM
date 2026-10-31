@@ -45,15 +45,15 @@ def check(spec):
     if source['source_sha256']!=spec['expected_training_source_sha256']:
         raise ValueError('policy, data or executor Python differs from protected training')
     sequence=post.read(Path(spec['training_sequence_dir'])/'sequence.frozen.json')
-    if post.file_sha256(Path(spec['training_sequence_dir'])/'sequence.frozen.json')!=spec['training_sequence_sha256']:
+    if worker.sha(Path(spec['training_sequence_dir'])/'sequence.frozen.json')!=spec['training_sequence_sha256']:
         raise ValueError('training sequence changed')
     training=post.read(sequence['phases'][-1]['config'])
     for row in sequence['phases']:
-        if post.file_sha256(row['config'])!=row['config_sha256']:
+        if worker.sha(row['config'])!=row['config_sha256']:
             raise ValueError('protected training template changed')
     configs=[]
     for kind in ('smoke','formal'):
-        if post.file_sha256(spec[kind+'_template'])!=spec[kind+'_template_sha256']:
+        if worker.sha(spec[kind+'_template'])!=spec[kind+'_template_sha256']:
             raise ValueError('evaluation template changed')
         config=post.read(spec[kind+'_template']);configs.append(config)
         validate_contract(spec,config,training,post.read(config['manifest']))
