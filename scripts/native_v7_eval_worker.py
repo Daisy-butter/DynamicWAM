@@ -76,6 +76,7 @@ def main():
     system=build_system(c,'cuda:0').eval().requires_grad_(False)
     system.load_state_dict(payload['model'],strict=True);del payload
     graph=prepare_graph(system,c)
+    (out/a.task).mkdir(parents=True, exist_ok=False)
     save(out/a.task/'model_acceptance.json',dict(graph=graph,source_compatibility=compatibility,renderer=binding,
         checkpoint_sha256=c['checkpoint_sha256'],single_action_decoder=True,full_fallback=False))
     from dynamicwam.dualrate.online import OnlineBatchBuilder
