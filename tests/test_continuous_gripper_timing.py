@@ -35,7 +35,7 @@ def test_v8_training_rejects_endpoint_gripper_contract():
         history_endpoint_seconds=.72,source='sampled_slow_prediction',
         labels='same_absolute_physical_interval',prefix='actual_committed_values_and_intervals')
     m=dict(time_contract=cfg['time_contract'],continuous_rtc_contract=expected,
-           continuous_gripper_sampling='interval_start_previous_event')
+           continuous_gripper_sampling='interval_start_previous_event',continuous_flow_sampling='raw_frames_v1')
     validate_training_contract(cfg,m)
     del m['continuous_gripper_sampling']
     with pytest.raises(ValueError):validate_training_contract(cfg,m)

@@ -49,6 +49,7 @@ def validate_training_contract(config, manifest):
             or manifest.get('time_contract')!=config['time_contract']
             or manifest.get('continuous_rtc_contract')!=expected
             or manifest.get('continuous_gripper_sampling')!='interval_start_previous_event'
+            or manifest.get('continuous_flow_sampling')!='raw_frames_v1'
             or any(config.get(k) for k in ('native_v5','native_v6','native_v7'))):
         raise ValueError('V8 requires audited continuous physical-time labels/prefixes, not native event data')
     if config['run_kind']=='formal_distributed_training':
