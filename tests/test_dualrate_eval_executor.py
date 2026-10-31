@@ -30,6 +30,7 @@ def fixture(monkeypatch, *, poll_failure=False, close_failure=False, swallowed_c
         def set_gripper(self,*args):pass
     class Scene:
         ticks=0;native_reads=0
+        def get_timestep(self):return h
         def step(self):self.ticks+=1
         def get_contacts(self):
             self.native_reads+=1
@@ -127,4 +128,5 @@ def test_ready_failure_restores_cache_and_notifies_before_close(monkeypatch):
         mod.run_episode(session,system,builder,camera,config,action_limit=4,on_ready=failed_barrier,
                         on_failure=lambda exc:order.append('failure_hook'))
     assert order==['failure_hook','runtime_close'] and not runtimes[0].bridge.active
+    assert session.physics_time()==0.
     assert not hasattr(session.env.scene,'_full_step_contact_cache')

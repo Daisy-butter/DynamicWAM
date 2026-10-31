@@ -687,7 +687,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         if bridge is not None and bridge.active:
             diagnostics.finish_tick(clock(),bridge.expected_physics()-clock(),complete=False)
         exc.dualrate_events=events
-        exc.dualrate_report=dict(step_owner=step_owner.receipt(),protocol=protocol,time_contract=builder.manifest['time_contract'],
+        exc.dualrate_report=dict(step_owner=step_owner.receipt() if step_owner is not None else None,protocol=protocol,time_contract=builder.manifest['time_contract'],
             realtime_valid=False,continuous_valid=False,success=False,
             error=f'{type(exc).__name__}: {exc}',events=events,
             owner_loop_diagnostics=diagnostics.snapshot(include_ticks=True))
