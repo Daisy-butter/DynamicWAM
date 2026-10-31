@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-31",
+  "kind": "publication_snapshot_not_policy_quality_acceptance",
+  "hosts": {
+    "host92": {
+      "training": {
+        "path": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-compact-v7-20261030",
+        "head": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+        "branch": "feat/dualrate-compact-v7-20261030",
+        "status": ""
+      },
+      "evaluation": {
+        "path": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v7-native-eval-20261031",
+        "head": "9f1055b70c4c6b92d0a906af7ceeb9848078318a",
+        "branch": "eval/native-v7-final-20261031",
+        "status": ""
+      },
+      "training_state_at_export": "phase_running",
+      "phase_at_export": "cross_time_joint",
+      "release_branch": "release/host92-native-domino-v7-20261031"
+    },
+    "host50": {
+      "training": {
+        "path": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v8-rtc-20261031",
+        "head": "355d4af324cf8cb2f4f4fe87b6237e5528bc8bfc",
+        "branch": "fix/dualrate-v8-rtc-training-20261031",
+        "status": ""
+      },
+      "evaluation": {
+        "path": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v8-continuous-eval-20261031",
+        "head": "919df6951d785851f5e877ab4ff3cffe383335ae",
+        "branch": "eval/dualrate-v8-continuous-final-20261031",
+        "status": ""
+      },
+      "training_state_at_export": "phase_running",
+      "phase_at_export": "cross_time_joint",
+      "release_branch": "release/host50-continuous-rtc-v8-20261031"
+    }
+  },
+  "server_source_changes": false,
+  "gpu_process_operations": false
+}

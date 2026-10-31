@@ -1,3 +1,9 @@
+# 10.12.208.50 · Continuous RTC V8 · 连续仿真
+
+当前分支：`release/host50-continuous-rtc-v8-20261031`。模型训练、最新部署修复与评测入口的对应关系见[两台服务器版本说明](docs/releases/LATEST_HOST_VERSIONS_20261031.md)。本页历史8.14%结果属于V4，不是本分支成绩。
+
+---
+
 > **2026-10-31 DualRate研究版本归档**：当前Compact V7仍在训练。
 > [代码级实现与调整说明](docs/releases/2026-10-31-dualrate-v7.md) ·
 > [历史版本索引](docs/releases/HISTORY.md) ·
