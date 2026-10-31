@@ -1,0 +1,16 @@
+{
+  "as_of_utc": "2026-10-31T02:30:48.246890+00:00",
+  "state": "phase_running",
+  "phase": "cross_time_joint",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/compact_v7_pipeline05_formal/cross_time_joint",
+  "source": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+  "training_complete": false,
+  "rank_count": 8,
+  "minimum_step": 5032,
+  "global_step": 16032,
+  "phase_steps": 20000,
+  "loss_range": [
+    0.3240360766649246,
+    1.0572488456964493
+  ]
+}

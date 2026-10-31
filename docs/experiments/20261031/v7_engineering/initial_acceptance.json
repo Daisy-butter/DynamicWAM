@@ -1,0 +1,102 @@
+{
+  "passed": true,
+  "snapshot_unix": 1793368059.9633465,
+  "elapsed_seconds": 310.2913696470205,
+  "state": "formal_warmup_running",
+  "controller": {
+    "pid": 3429161,
+    "state": "R",
+    "ppid": 3427666,
+    "pgrp": 3429161,
+    "session": 3429161,
+    "start_ticks": 175543988
+  },
+  "guard": {
+    "pid": 3429166,
+    "state": "S",
+    "ppid": 3429161,
+    "pgrp": 3429166,
+    "session": 3429166,
+    "start_ticks": 175543998
+  },
+  "worker": {
+    "pid": 3429205,
+    "state": "S",
+    "ppid": 3429166,
+    "pgrp": 3429205,
+    "session": 3429205,
+    "start_ticks": 175546238
+  },
+  "ranks": [
+    {
+      "rank": 0,
+      "pid": 3429206,
+      "step": 132,
+      "loss": 5.295509099960327,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 1,
+      "pid": 3429207,
+      "step": 132,
+      "loss": 4.299909353256226,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 2,
+      "pid": 3429208,
+      "step": 132,
+      "loss": 6.049017906188965,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 3,
+      "pid": 3429209,
+      "step": 132,
+      "loss": 4.2552490234375,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 4,
+      "pid": 3429210,
+      "step": 132,
+      "loss": 4.53086245059967,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 5,
+      "pid": 3429211,
+      "step": 132,
+      "loss": 4.738747239112854,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 6,
+      "pid": 3429212,
+      "step": 132,
+      "loss": 3.859610915184021,
+      "grad_norm": 10.7993745803833
+    },
+    {
+      "rank": 7,
+      "pid": 3429213,
+      "step": 132,
+      "loss": 5.55517053604126,
+      "grad_norm": 10.7993745803833
+    }
+  ],
+  "all_eight_guard_devices_open": true,
+  "kernel_unchanged": true,
+  "source_config_unchanged": true,
+  "source": {
+    "commit": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+    "source_sha256": "54a6908d646c26cd15b0fabf4a8f118cc5cdfa6c7540b324f5b4077223c5c1d1",
+    "guard_sha256": "53d2a0f0eb4fb3a7a18b5f6a520983c928d8e6e45edf2bceff0e2caf1db23303",
+    "supervisor_sha256": "f8adf9c7fb863c9e9a0b9b352df0c707120a92fdbd33a6626f54291a323892b4",
+    "distributed_supervisor_sha256": "c510f63c68ea25b54801edae3cc5226b8513695278505bb6cff9181b58f94a5c",
+    "scripts_sha256": "636cac1b5d46eda728cdc3399b5bcd54aacdefadc68386decd6219abe0479aa6"
+  },
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/training/compact_v7_pipeline05_formal/warmup",
+  "extra_observer_retained": false,
+  "training_complete": false
+}

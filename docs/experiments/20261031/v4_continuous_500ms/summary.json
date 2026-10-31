@@ -1,0 +1,59 @@
+{
+  "label": "dualrate_v4_final_500ms",
+  "protocol": "dualrate_v4_exposure_anchor_wall_release_fast_only_backlog500ms_v1",
+  "run_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_reference_acceptance_20261030/attempt02/formal50_01",
+  "complete": true,
+  "episodes": 700,
+  "tasks": 35,
+  "episodes_per_task": 20,
+  "successes": 57,
+  "success_rate_percent": 8.142857142857142,
+  "native_metrics": {
+    "total_episodes": 700,
+    "success_count": 57,
+    "success_rate": 8.142857142857144,
+    "manipulation_score_mean": 25.328458260872704,
+    "manipulation_score_std": 27.043750913371248,
+    "route_completion_mean": 32.7578936961302,
+    "route_completion_std": 26.85551882342465,
+    "penalty_clutter_collision_total": 0,
+    "penalty_out_of_bounds_total": 399
+  },
+  "stop_reasons": {
+    "action_budget_exhausted": 239,
+    "success": 57,
+    "out_of_bounds": 399,
+    "object_not_lifted": 5
+  },
+  "maximum_backlog_seconds": 0.1435007997788489,
+  "checkpoint_sha256": [
+    "8be3d67d3962d264e1883debec536888d71b7cb13e031d5463d17ec543522894"
+  ],
+  "source_sha256": [
+    "e61f4539d9d57a090bb99b55ef0599987bac4252384ef3e90312c765430c6b64"
+  ],
+  "suite_completed_sha256": "12514c32d92e9457d5d526c52e746778384a1181efc26a372a1ff756e9a1021c",
+  "all_videos_previously_fully_decoded": true,
+  "all_video_sizes_checked": true,
+  "all_workers_exit_zero": true,
+  "recomputed_from_episode_reports": true,
+  "deployment_evidence": {
+    "fast_graph_passed": true,
+    "fast_queries_during_slow": 46548,
+    "model_overlap_fast_queries": 48259,
+    "refreshed_reference_consumed": true,
+    "physics_steps_during_camera": 4831915,
+    "physics_steps_during_fast_inflight": 2069429
+  },
+  "benchmark_values": {
+    "action_interval_s": [
+      0.18000000854954123
+    ],
+    "max_backlog_limit_s": [],
+    "max_observation_age_s": []
+  },
+  "acceptance_sha256": "9cf7a1ca7550dc886da2c7724f52627dac8e39687cbc7d23c3cfb05d6625b845",
+  "source_commit": "5ec849b78e72c2dfa68c4a7db9905556c9797530",
+  "guard_closed": true,
+  "kernel_unchanged": true
+}

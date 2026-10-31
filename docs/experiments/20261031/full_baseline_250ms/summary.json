@@ -1,0 +1,61 @@
+{
+  "label": "official_full_continuous_250ms",
+  "protocol": "continuous_full_sync16_v4_grid180_linear_bootstrap_v2",
+  "run_root": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/full_baseline_hardtime_v4_20261027/formal09",
+  "complete": true,
+  "episodes": 700,
+  "tasks": 35,
+  "episodes_per_task": 20,
+  "successes": 178,
+  "success_rate_percent": 25.428571428571427,
+  "native_metrics": {
+    "total_episodes": 700,
+    "success_count": 178,
+    "success_rate": 25.428571428571427,
+    "manipulation_score_mean": 41.34925874875936,
+    "manipulation_score_std": 37.61047099989183,
+    "route_completion_mean": 46.336847513912595,
+    "route_completion_std": 35.312615699529246,
+    "penalty_clutter_collision_total": 0,
+    "penalty_out_of_bounds_total": 305
+  },
+  "stop_reasons": {
+    "success": 178,
+    "action_budget_exhausted": 211,
+    "out_of_bounds": 305,
+    "object_not_lifted": 6
+  },
+  "maximum_backlog_seconds": 0.16337903076782823,
+  "checkpoint_sha256": [
+    "7c0dfc44a785ea1f6bd1f833f09dcadc2e470dadb1ba5508fa98918e147671d7"
+  ],
+  "source_sha256": [
+    "f0c9ff3870edb552a6152ac7afcf779d70beedd5e675b89932840e1847439f6a"
+  ],
+  "suite_completed_sha256": "c7f2ed58b8f04a8ee391b0871af4cb3309ea8b46bbe4f5764930145c85db3071",
+  "all_videos_previously_fully_decoded": true,
+  "all_video_sizes_checked": true,
+  "all_workers_exit_zero": true,
+  "recomputed_from_episode_reports": true,
+  "deployment_evidence": {
+    "fast_graph_passed": null,
+    "fast_queries_during_slow": null,
+    "model_overlap_fast_queries": null,
+    "refreshed_reference_consumed": null,
+    "physics_steps_during_camera": null,
+    "physics_steps_during_fast_inflight": null
+  },
+  "benchmark_values": {
+    "action_interval_s": [
+      0.18000000854954123
+    ],
+    "max_backlog_limit_s": [
+      0.25
+    ],
+    "max_observation_age_s": [
+      0.24
+    ]
+  },
+  "guard_closed": true,
+  "kernel_unchanged": true
+}

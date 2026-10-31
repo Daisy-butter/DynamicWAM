@@ -1,0 +1,20 @@
+{
+  "fast.action_out.weight": {
+    "dtype": "torch.float32",
+    "max_difference": 0.004611562937498093,
+    "changed": 6272,
+    "elements": 6272
+  },
+  "fast.action_in.weight": {
+    "dtype": "torch.float32",
+    "max_difference": 0.008579462766647339,
+    "changed": 6272,
+    "elements": 6272
+  },
+  "fast.blocks.0.self_output.weight": {
+    "dtype": "torch.float32",
+    "max_difference": 0.008591433987021446,
+    "changed": 200704,
+    "elements": 200704
+  }
+}

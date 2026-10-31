@@ -1,3 +1,9 @@
+> **2026-10-31 DualRate研究版本归档**：当前Compact V7仍在训练。
+> [代码级实现与调整说明](docs/releases/2026-10-31-dualrate-v7.md) ·
+> [历史版本索引](docs/releases/HISTORY.md) ·
+> [已完成的V4 700回合结果与Full对照](docs/experiments/20261031/README.md)。
+> 下方原项目说明保留；本发布分支未改变当前训练代码。
+
 <div align="center">
 
 <img src="assets/dynamicwam-github-banner-light.png" width="820" alt="DynamicWAM">

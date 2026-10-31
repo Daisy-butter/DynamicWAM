@@ -1,0 +1,23 @@
+{
+  "state": "completed",
+  "supervisor": {
+    "pid": 460815,
+    "state": "R",
+    "ppid": 458728,
+    "pgrp": 460815,
+    "session": 460815,
+    "start_ticks": 171065780
+  },
+  "errors": [],
+  "guard_closed": true,
+  "no_retry": true,
+  "elapsed_seconds": 38722.51374844788,
+  "identity": {
+    "source_sha256": "e61f4539d9d57a090bb99b55ef0599987bac4252384ef3e90312c765430c6b64",
+    "config_sha256": "51703a2eeddb65cbaa4275337cf47ac41d525ba78283df33fd8c04d258a53871",
+    "manifest_sha256": "517b79f5af262699ac98e4b038fb5c8ea97f3e493ec941e35a04614dd54848a1",
+    "init_checkpoint_sha256": "7c0dfc44a785ea1f6bd1f833f09dcadc2e470dadb1ba5508fa98918e147671d7",
+    "device_type": "cuda",
+    "torch_version": "2.4.1+cu121"
+  }
+}

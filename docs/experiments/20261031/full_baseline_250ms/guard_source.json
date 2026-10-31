@@ -1,0 +1,8 @@
+{
+  "commit": "824460ceaa8cc69008750c895373c50347354216",
+  "source_sha256": "f0c9ff3870edb552a6152ac7afcf779d70beedd5e675b89932840e1847439f6a",
+  "guard_sha256": "53d2a0f0eb4fb3a7a18b5f6a520983c928d8e6e45edf2bceff0e2caf1db23303",
+  "supervisor_sha256": "f8adf9c7fb863c9e9a0b9b352df0c707120a92fdbd33a6626f54291a323892b4",
+  "distributed_supervisor_sha256": "b5f44e8063faadd2a2d196892fc483afcf2ec0d14cab1e8d392cb83b62832d41",
+  "scripts_sha256": "d944be52d86f28c9f366748bfc730955d83fd025c51ccf0f9a6be4d042319738"
+}

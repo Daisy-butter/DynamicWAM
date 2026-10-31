@@ -1,0 +1,285 @@
+{
+  "phases": [
+    {
+      "phase": "warmup",
+      "updates": 256,
+      "strict_reloads": 8,
+      "nonzero_continuation": 0,
+      "max_peak_bytes": 10126217216,
+      "guard_closed": true,
+      "kernel_unchanged": true
+    },
+    {
+      "phase": "small_age_joint",
+      "updates": 2,
+      "strict_reloads": 8,
+      "nonzero_continuation": 14,
+      "max_peak_bytes": 10124648448,
+      "guard_closed": true,
+      "kernel_unchanged": true
+    },
+    {
+      "phase": "cross_time_joint",
+      "updates": 2,
+      "strict_reloads": 8,
+      "nonzero_continuation": 15,
+      "max_peak_bytes": 10124648448,
+      "guard_closed": true,
+      "kernel_unchanged": true
+    }
+  ],
+  "deployment": [
+    {
+      "task": "adjust_bottle",
+      "diagnostic_driver": "autonomous_compact_student",
+      "scored": false,
+      "success": false,
+      "stop_reason": "action_budget_exhausted",
+      "commands": 400,
+      "queries": 200,
+      "fast_median": 0.04488909849897027,
+      "fast_max": 0.05154737108387053,
+      "slow_median": 0.32374196604359895,
+      "reference_reuses": 0,
+      "projection_invalidations": 200,
+      "all_integer_and_physical_joins_passed": true
+    },
+    {
+      "task": "place_empty_cup",
+      "diagnostic_driver": "autonomous_compact_student",
+      "scored": false,
+      "success": false,
+      "stop_reason": "out_of_bounds",
+      "commands": 126,
+      "queries": 63,
+      "fast_median": 0.04487598198466003,
+      "fast_max": 0.04673743899911642,
+      "slow_median": 0.3284066920168698,
+      "reference_reuses": 0,
+      "projection_invalidations": 63,
+      "all_integer_and_physical_joins_passed": true
+    },
+    {
+      "task": "adjust_bottle",
+      "diagnostic_driver": "Full_A10_test_only",
+      "scored": false,
+      "success": null,
+      "stop_reason": null,
+      "commands": 8,
+      "queries": 4,
+      "fast_median": 0.04473388846963644,
+      "fast_max": 0.04597937292419374,
+      "slow_median": 0.32625917601399124,
+      "reference_reuses": 1,
+      "projection_invalidations": 4,
+      "all_integer_and_physical_joins_passed": true
+    },
+    {
+      "task": "place_empty_cup",
+      "diagnostic_driver": "Full_A10_test_only",
+      "scored": false,
+      "success": null,
+      "stop_reason": null,
+      "commands": 8,
+      "queries": 4,
+      "fast_median": 0.04487097798846662,
+      "fast_max": 0.04636481706984341,
+      "slow_median": 0.32799298351164907,
+      "reference_reuses": 2,
+      "projection_invalidations": 4,
+      "all_integer_and_physical_joins_passed": true
+    }
+  ],
+  "passed": true,
+  "compact_acceptance": {
+    "passed": true,
+    "single_action_decoder": true,
+    "no_native_fast_motor": true,
+    "sensitivity": {
+      "observation_tokens": 0.06226611137390137,
+      "world_tokens": 0.07959549874067307,
+      "Z": 0.034705400466918945
+    },
+    "shifted_eager_graph_max_error": 0.0,
+    "graph": {
+      "enabled": true,
+      "sealed": true,
+      "shape_count": 1,
+      "passed": true,
+      "parity_passed": true,
+      "steps": [
+        10
+      ],
+      "atol": 2e-05,
+      "rtol": 2e-05,
+      "shapes": [
+        {
+          "steps": 10,
+          "device": "cuda:0",
+          "world_key_count": 301,
+          "parity_cases": [
+            {
+              "case": "original",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "prefix_0",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "prefix_1",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "prefix_2",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "prefix_3",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "slow_allowed_all_missing",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "current_allowed_all_missing",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "time_deviation_and_all_kv_changed",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "field_and_contact_masks_changed",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            },
+            {
+              "case": "future_entity_masks_missing",
+              "passed": true,
+              "max_absolute_error": 0.0,
+              "fields": {
+                "actions": 0.0,
+                "future": 0.0,
+                "contact_probability": 0.0,
+                "future_valid": 0.0,
+                "future_field_valid": 0.0,
+                "contact_valid": 0.0
+              }
+            }
+          ]
+        }
+      ],
+      "scope": "actual_cuda_eager_vs_graph_core; no deployment_or_task_quality_claim"
+    },
+    "timings": {
+      "384x6_control": {
+        "samples": 24,
+        "p50_seconds": 0.0423346939496696,
+        "p95_seconds": 0.04236156647093594,
+        "maximum_seconds": 0.04236531793139875,
+        "parameters": 20420898
+      },
+      "448x6_candidate": {
+        "samples": 24,
+        "p50_seconds": 0.04330871452111751,
+        "p95_seconds": 0.04335064679617062,
+        "maximum_seconds": 0.044371773954480886,
+        "parameters": 27694946
+      }
+    },
+    "ratios": {
+      "p50_seconds": 1.0230076204780385,
+      "p95_seconds": 1.0233485304636525
+    },
+    "latency_scope": "full sample_fast including latest observation encoder and condition preparation; warmed, same GPU, no simulator contention",
+    "prior_alignment": "integer command join, zero expired suffix, no gripper bias",
+    "teacher_alignment": "current query physical observation and command origin",
+    "fast_total_parameters": 27694946,
+    "performance_accepted": false
+  },
+  "native_exit_clean": true,
+  "kernel_unchanged": true,
+  "performance_accepted": false
+}

@@ -1,0 +1,18 @@
+{
+  "source": "4f3b91e66d61575b675d0d12dd9be1f2caaa46e2",
+  "unchanged_files": {
+    "src/dynamicwam/dualrate/slow.py": "a20e4396fdd4594ac54e65be6bd14aeaa38313873b8463db91a29ba4da83f934",
+    "src/dynamicwam/dualrate/producer.py": "ac7da51be5b91de583fa7c5a2bcaa96905355c22d4406f6af556991e183fc506",
+    "src/dynamicwam/dualrate/data.py": "8ebf76f2ad46f9f0d1b32e8ccfa56788da4b317be78fac998e5e17a1038bbab5",
+    "src/dynamicwam/dualrate/native_v6.py": "0aa92d23f46fa44e8a3cf601278b65386aeb40015788cf1f229c8170687bd3ea",
+    "src/dynamicwam/dualrate/native_v6_data.py": "5a6def3ee0a8904f325ecc1ab42941fac2f5c1c7f3f1357dc4ac1cb15c0e0405",
+    "src/dynamicwam/dualrate/online.py": "b57f693fe0bcef6085f9b6af1c285c07fad16b65277e746ba98bf542863f72b2",
+    "src/dynamicwam/dualrate/fast.py": "4805c66e72c4af70655c34a8c5d58073e6d4889938245c409bdf5c48d6d7872d",
+    "src/dynamicwam/dualrate/actuators.py": "b7c6e070c9e634af939bb88a6f18dead1e8afc08e041997daa6560586ba91fff",
+    "src/dynamicwam/dualrate/vision.py": "2afb688ef82dc6acec0f2bbc75ca1553c99d222125c9284676344a5ceff28ddc",
+    "src/dynamicwam/dualrate/native_data.py": "d5b101c3e253ea41d43374a7fc100e475e19723f705951cfbad0f21f71de4460"
+  },
+  "checkpoint_origin": "official Full; diagnostic student never formal initialization",
+  "native_protocol": "physical seconds + integer command events, no wall catchup",
+  "quality_accepted": false
+}
