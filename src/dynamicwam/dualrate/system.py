@@ -368,7 +368,7 @@ class DualRateSystem(nn.Module):
         center = self.action_center(batch, world) if hasattr(self, 'action_center') else torch.zeros_like(action)
         nf = nf + center
         fast_input=fm_input(action,sigmas[2],nf)
-        if getattr(self,'native_v5',None):
+        if getattr(self,'native_v5',None) or getattr(self,'continuous_v8',None):
             fast_input=torch.where(batch['fast_action_valid'][...,None],fast_input,nf)
         result = self.fast(fast_input, noisy_future, sigmas[2],
             action_known_mask=known_mask, known_actions=known_actions, **conditions)

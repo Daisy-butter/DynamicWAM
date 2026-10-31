@@ -125,7 +125,10 @@ def validate_phase_config(config):
         raise ValueError("invalid LR schedule")
     if not (float(config["fast_lr"]) > 0 and float(config["max_grad_norm"]) > 0):
         raise ValueError("positive fast LR and gradient norm required")
-    if config.get("native_v7"):
+    if config.get("continuous_v8"):
+        if float(config["slow_lr"]) != 0:
+            raise ValueError("continuous V8 first candidate freezes the Full slow system")
+    elif config.get("native_v7"):
         if float(config["slow_lr"]) != 0:
             raise ValueError("compact V7 requires a frozen Full teacher")
     elif config.get("native_v6"):
@@ -156,6 +159,7 @@ def phase_contract(config, identity):
     if config.get("native_v5"):contract["native_v5"]=config["native_v5"]
     if config.get("native_v6"):contract["native_v6"]=config["native_v6"]
     if config.get("native_v7"):contract["native_v7"]=config["native_v7"]
+    if config.get("continuous_v8"):contract["continuous_v8"]=config["continuous_v8"]
     return contract
 
 
@@ -163,10 +167,10 @@ def set_phase(system, phase):
     if phase not in PHASES:
         raise ValueError("unknown phase")
     system.train()
-    system.slow.requires_grad_(phase != "warmup" and not getattr(system,"native_v6",None))
+    system.slow.requires_grad_(phase != "warmup" and not getattr(system,"native_v6",None) and not getattr(system,"continuous_v8",None))
     if getattr(system,"native_v5",None) and hasattr(system.fast,"motor"):
         system.fast.motor.requires_grad_(phase != "warmup")
-    if phase == "warmup" or getattr(system,"native_v6",None):
+    if phase == "warmup" or getattr(system,"native_v6",None) or getattr(system,"continuous_v8",None):
         system.slow.eval()
 
 
@@ -342,6 +346,9 @@ def run_distributed(config, *, device="cuda", resume=None, authorization=None, s
             raise ValueError('training, data and measured event execution grids differ')
         if config['run_kind']=='formal_distributed_training' and events['kind']!='measured_parallel':
             raise ValueError('formal V4 training requires measured parallel event templates')
+    if config.get('continuous_v8'):
+        from .continuous_contract import validate_training_contract
+        validate_training_contract(config,manifest)
     base._validate_normalization(config, manifest)
     if base.file_sha256(config["init_checkpoint"]) != config["init_checkpoint_sha256"]:
         raise ValueError("official native initialization checksum differs")
@@ -478,7 +485,7 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
                 raise FloatingPointError("nonfinite gradient")
             if norm_value > 0:
                 gradients[owner[id(parameter)]] += 1
-        required = ("world_readout", "observation", "fast") if config["phase"] == "warmup" or config.get("native_v6") else tuple(gradients)
+        required = ("world_readout", "observation", "fast") if config["phase"] == "warmup" or config.get("native_v6") or config.get("continuous_v8") else tuple(gradients)
         if any(gradients[name] == 0 for name in required):
             raise RuntimeError(f"disconnected module in {config['phase']}: {gradients}")
         norm = optimizer.clip_accumulated_grad_norm_(float(config["max_grad_norm"]),

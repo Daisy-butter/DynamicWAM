@@ -42,6 +42,7 @@ class CapturedObservation:
     render_update_wall_seconds: float = 0.
     camera_submit_seconds: dict[str, float] = field(default_factory=dict)
     async_submit: bool = False
+    capture_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -339,7 +340,7 @@ class AsyncCameraCapture:
                                    selected.capture_wall_perf_s, submitted,
                                    started, ended, self._clock(), selected.camera_names, durations,
                                    selected.render_update_wall_seconds, dict(submit_durations),
-                                   selected.async_submit)
+                                   selected.async_submit, selected.capture_id)
 
     def drain(self, *, timeout: float | None = None) -> CapturedObservation | None:
         """Wait/consume before terminal teardown; never submits another render."""

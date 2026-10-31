@@ -41,7 +41,7 @@ def test_dispatch_camera_age_uses_training_numeric_epsilon(ticks,accepted):
     runtime=SimpleNamespace(due=lambda now:(True,False),store=SimpleNamespace(snapshot=lambda now:None),
         start_fast=lambda factory,**kwargs:calls.append(kwargs))
     builder=SimpleNamespace(max_observation_age=.24)
-    queue=SimpleNamespace(completed_execution_trace=lambda since,until:())
+    queue=SimpleNamespace(dt=DT,completed_execution_trace=lambda since,until:())
     dispatch_due_queries(runtime,builder,history,queue,now=now,initial=0.,vae=None,
         emit=lambda event:None,deferred=deferred,seen_references=set())
     assert bool(calls) is accepted

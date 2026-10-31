@@ -1,0 +1,26 @@
+{
+  "description": "Model fragment only. Requires audited continuous manifest and guarded launch configuration; not a training launcher.",
+  "architecture": {
+    "dim": 448,
+    "layers": 6,
+    "heads": 7,
+    "action_dim": 14,
+    "chunk_size": 16,
+    "future_dim": 134,
+    "future_tokens": 12,
+    "future_entities": 3,
+    "observation_dim": 448,
+    "world_dim": 448
+  },
+  "continuous_v8": {
+    "draft_max_age": 2.0,
+    "draft_dropout": 0.2,
+    "future_dropout": 0.2,
+    "action_mode": "residual",
+    "independent_future_gate": true
+  },
+  "slow_lr": 0.0,
+  "time_contract": "exposure_anchor_wall_release_v4",
+  "slow_refresh": "fixed_period_first",
+  "formal_training_ready": false
+}

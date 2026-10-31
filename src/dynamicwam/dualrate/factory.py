@@ -81,7 +81,13 @@ def build_system(config, device="cpu"):
         motion_mean=native.config.motion_feature_mean, motion_scale=native.config.motion_feature_scale,
         codec_id=config["codec_id"],future_field_support=config["future_field_support"],
         contact_field_support=config["contact_field_support"])
-    if config.get('native_v7'):
+    if config.get('continuous_v8'):
+        if any(config.get(k) for k in ('native_v5','native_v6','native_v7')):
+            raise ValueError('continuous V8 cannot combine native event-coordinate branches')
+        from .continuous_v8 import ContinuousResidualFast, configure
+        model.fast=ContinuousResidualFast(arch,independent_future_gate=config['continuous_v8']['independent_future_gate'])
+        configure(model,config['continuous_v8'])
+    elif config.get('native_v7'):
         from .native_v7 import CompactEventFast, configure
         from .native_v6 import EventWorldReadout
         model.fast=CompactEventFast(arch)
