@@ -185,6 +185,23 @@ def test_checkpoint_semantics_do_not_depend_only_on_parameter_shapes():
     with pytest.raises(ValueError):validate_policy_contract(cfg,{'continuous_v8':{'action_mode':'full'}})
 
 
+def test_shared_gate_control_variant_and_learned_zero_future_gate():
+    system,batch,world=fixture();system.eval()
+    for block in system.fast.blocks:
+        with torch.no_grad():block.future_gate.bias.fill_(-10)
+    altered=dict(world,world_tokens=world['world_tokens'].clone())
+    altered['world_tokens'][world['world_types']==1]+=100
+    a=system.sample_fast(batch,world,steps=2,generator=generator())
+    b=system.sample_fast(batch,altered,steps=2,generator=generator())
+    torch.testing.assert_close(a['actions'],b['actions'],atol=0,rtol=0)
+    system.fast=ContinuousResidualFast(system.fast.config,independent_future_gate=False)
+    configure(system,dict(draft_max_age=2.,draft_dropout=.2,future_dropout=.2,
+        action_mode='full',independent_future_gate=False))
+    system.eval()
+    result=system.sample_fast(batch,world,steps=2,generator=generator())
+    assert torch.isfinite(result['actions']).all()
+
+
 def test_guard_replay_is_one_worker_but_holds_eight_gpu_descriptors():
     import ast
     from pathlib import Path

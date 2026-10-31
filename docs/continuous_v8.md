@@ -117,3 +117,45 @@ The real fast-core probe uses synthetic contexts and random weights on GPU1,
 render/physics on GPU0. It tests actual 448x6 K10 eager/Graph parity and compute
 interference with the recorded commands; it excludes observation encoders, slow
 model, IPC and task quality. Do not label this an end-to-end latency or SR test.
+
+## First actual .50 acceptance results
+
+Numerical source: `ad1518e0ed35f16f9c4676d7c141a5c9a70610ab`;
+source SHA256 `a31f09dd64486ebd0be9e70e9dbff270ef635dd4914c99c8ac7b82857cb5b810`.
+Artifacts: `/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_continuous_v8_20261031`.
+
+| Real GPU diagnostic | Camera only (`replay02`) | Camera + fast core (`replay_core03`) |
+|---|---:|---:|
+| Actual physics steps / saved states | 1755 / 1756 | 1755 / 1756 |
+| Every saved state/timestamp vs old workers0 reference | byte-identical | byte-identical |
+| Physical duration | 7.020000333 s | 7.020000333 s |
+| Active wall duration | 7.024310206 s | 7.025567084 s |
+| Maximum backlog | 415.707 ms | 422.653 ms |
+| Published video frames | 34 | 33 |
+
+The two native MP4s decode successfully. Both guarded jobs completed, owned
+processes exited and all eight guard descriptors closed with unchanged kernel
+evidence. The new fast core has **27,749,602 parameters**; real K10 eager/Graph
+parity passed. Twenty background queries: median **36.765 ms**, max **47.486 ms**.
+These are core-only figures with fixed synthetic contexts, NOT closed-loop
+observation-to-action response. No performance/SR claim follows from them.
+Final selected CPU regression suite: **194 passed**, including the new policy,
+phase freezing, clock/queue, history, camera and launch/checkpoint contracts.
+
+This case needs the explicit 500 ms budget; it did not pass the old 250 ms limit.
+The capture counts differ under load. Although capture insertion is independent
+of queries and the physical state trace is invariant, async rendering can miss a
+scheduled slot. Therefore strict capture-log equivalence E1 is still **pending**;
+one must align real exposures and account for missing frames, not relabel ordinal
+frame IDs as fixed-time samples. No all-task, long-duration or full-model RTC
+deployment acceptance is claimed from these two short diagnostic replays.
+In particular, a >.4 s owner/physics stall can still threaten a .36 s RTC lease
+even with a <.05 s fast core. The replay does not commit model outputs, so it
+cannot clear that deadline gate. Full query completion/publication/activation
+traces and measured prefix-distribution coverage must pass before training.
+
+`replay01` is preserved as a failed pre-simulation launch: the imported guard's
+worker-count field incorrectly used eight (guarded adapters) instead of one
+(replay worker). This was repaired and regression-tested; no GPU recovery or
+automatic retry occurred. All diagnostic attempts and their cleanup receipts
+remain separate.
