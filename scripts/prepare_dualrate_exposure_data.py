@@ -51,7 +51,16 @@ def audit_wall_release(events,dt):
             ready=float(event['ready_wall_time']);published=float(event['commit_time'])
             owner=float(event['commit_wall_time']);start=starts[int(event['query_id'])]
             deadline=wall+float(start['protected_until'])-physical-float(start['submit_margin'])
-            if max(ready,owner)>=deadline:raise ValueError('measured fast query missed wall deadline')
+            if event.get('submission_contract','owner_v4')=='worker_receipt_v8':
+                matches=[e for e in events if e.get('event')=='fast_submitted' and e.get('query_id')==event['query_id']]
+                if len(matches)!=1:raise ValueError('exactly one worker receipt required')
+                receipt=matches[0];submitted=float(receipt['submitted_wall_time'])
+                if (submitted!=float(event['submitted_wall_time']) or not ready<=submitted<=owner
+                        or receipt['prefix_hash']!=start['prefix_hash'] or submitted>=deadline
+                        or published>=float(start['protected_until'])-float(start['submit_margin'])):
+                    raise ValueError('invalid actual receipt or physical activation deadline')
+                ready=submitted
+            elif max(ready,owner)>=deadline:raise ValueError('measured fast query missed wall deadline')
         else:continue
         if not all(math.isfinite(v) for v in (ready,published,owner)) or owner<ready or ready<wall:
             raise ValueError('invalid measured monotonic release timestamps')
@@ -133,7 +142,7 @@ def measured_templates(paths,dt):
         provenance='coupled actual reference/camera/query/prefix events; offline expert actions are not on-policy'))
 
 
-def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source):
+def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source,*,partial_fast_tail=False):
     """Keep source REAL exposures; all other conditions use the same translated axis."""
     times=np.asarray(times,dtype=np.float64)
     next_source=-float('inf')
@@ -157,19 +166,20 @@ def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source):
             template_id=(first+shift)%len(templates)
             row=validate_template(templates[template_id],dt)
             q=e+row['query_time'];start=e+row['fast_action_start']
-            if start+16*dt>times[-1]+NUMERIC_TIME_EPSILON:continue
+            needed=row['fast_prefix_rows']+2 if partial_fast_tail else 16
+            if start+needed*dt>times[-1]+NUMERIC_TIME_EPSILON:continue
             try:
                 frame_q=select_frame(times,e+row['query_rgb_time'],past_only=True,
                                     tolerance=CONDITION_FRAME_TOLERANCE_SECONDS)
                 if q-float(times[frame_q])>CONDITION_RGB_MAX_AGE_SECONDS+NUMERIC_TIME_EPSILON:continue
             except ValueError:continue
-            if not _action_targets_supported(times,start+np.arange(1,17)*dt).all():continue
+            if not _action_targets_supported(times,start+np.arange(1,needed+1)*dt).all():continue
             yield int(frame),template_id
             added+=1
             if added>=templates_per_source:break
 
 
-def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None):
+def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None,partial_fast_tail=False,train_fraction=1.):
     import h5py
     source=Path(source).resolve(strict=True);output=Path(output).resolve()
     if output.exists():raise FileExistsError('new dataset directory required')
@@ -187,12 +197,21 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
     if sha256_file(stat_path)!=m['source_file_stats_sha256']:raise ValueError('source stat identity changed')
     stats=json.loads(stat_path.read_text())['episodes'];rows={s:[] for s in parents}
     selected=episodes if max_episodes is None else episodes[:max_episodes]
+    if not 0<train_fraction<=1:raise ValueError('training episode fraction must be in (0,1]')
+    groups={}
+    for i,ep in enumerate(selected):
+        if ep['split']=='train':groups.setdefault('/'.join(ep['episode_uid'].split('/')[:-1]),[]).append(i)
+    chosen=set()
+    for values in groups.values():
+        values.sort(key=lambda i:hashlib.sha256(('v8-half:'+selected[i]['episode_uid']).encode()).hexdigest())
+        chosen.update(values[:max(1,math.ceil(len(values)*train_fraction))])
     # A diagnostic subset retains original episode ids and split identities.
     for episode_id,ep in enumerate(selected):
+        if ep['split']=='train' and episode_id not in chosen:continue
         verify_file_stat(ep['raw_path'],stats[ep['episode_uid']]['raw'])
         with h5py.File(ep['raw_path'],'r') as h:times=h['interception/sim_time_seconds'][:]
         rows[ep['split']].extend((episode_id,frame,t) for frame,t in eligible_rows(times,events['templates'],dt,stride,
-            ep['episode_uid'],templates_per_source))
+            ep['episode_uid'],templates_per_source,partial_fast_tail=partial_fast_tail))
         if (episode_id+1)%1000==0:
             print(json.dumps(dict(episodes=episode_id+1,rows={s:len(v) for s,v in rows.items()})),flush=True)
     if not all(rows.values()):raise ValueError('timing index must retain both original data splits')
@@ -217,6 +236,9 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
     audit['measured_no_reference_fraction']=len(missing_template_ids)/len(events['templates'])
     audit['indexed_no_reference_fraction']={split:no_reference_rows[split]/len(values) for split,values in rows.items()}
     audit['sampling_semantics']='uniform eligible indexed rows; event templates extended to expert trajectories; not exact measured-frequency equivalence'
+    audit.update(train_fraction=train_fraction,selected_train_episodes=len(chosen),validation_episodes_unchanged=True,
+                 training_statistics='original training split only; includes unselected training episodes',
+                 partial_fast_tail=partial_fast_tail)
     audit_path=output/'timing_audit.json';audit_path.write_text(json.dumps(audit,indent=2))
     result={}
     for split,parent in parents.items():
@@ -237,6 +259,7 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
             no_reference_rows=no_reference_rows[split],
             reference_availability_semantics='measured runtime availability; expired source remains slow-label-only',
             timing_quality='deterministic event/queue alignment; bounded demonstration resampling error')
+        if partial_fast_tail:new['continuous_tail_policy']='valid_prefix_and_two_free_rows'
         path=output/f'{split}.json';path.write_text(json.dumps(new,indent=2));result[split]=str(path)
     return dict(manifests=result,audit=audit)
 
@@ -248,12 +271,15 @@ def main():
     p.add_argument('--synthetic-engineering',action='store_true')
     p.add_argument('--templates-per-source',type=int,default=2)
     p.add_argument('--max-episodes',type=int)
+    p.add_argument('--partial-fast-tail',action='store_true')
+    p.add_argument('--train-fraction',type=float,default=1.)
     args=p.parse_args()
     if bool(args.trace)==bool(args.synthetic_engineering):p.error('choose measured traces OR explicit engineering fixture')
     dt=45*float(np.float32(.004))
     events=synthetic_templates(dt) if args.synthetic_engineering else measured_templates(args.trace,dt)
     print(json.dumps(build(args.source,args.output,events,stride=2*dt,
-        templates_per_source=args.templates_per_source,max_episodes=args.max_episodes)))
+        templates_per_source=args.templates_per_source,max_episodes=args.max_episodes,
+        partial_fast_tail=args.partial_fast_tail,train_fraction=args.train_fraction)))
 
 
 if __name__=='__main__':main()

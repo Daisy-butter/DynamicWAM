@@ -1,5 +1,5 @@
 # Current authorization: .50 Continuous RTC V8, 2026-10-31
-Only the isolated .50 dualrate-continuous-v8-20261031 worktree is writable.
+Only the isolated .50 dualrate-v8-rtc-20261031 worktree is writable. Previous V8 is preserved.
 Protect .92 training, .100, all older .50 worktrees/results and running jobs.
 Read docs/continuous_v8.md and its acceptance matrix before changes/launches.
 Reuse continuous physical stepping, async camera, exact queues and dual deadlines.

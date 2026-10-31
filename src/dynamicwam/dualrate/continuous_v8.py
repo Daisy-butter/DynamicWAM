@@ -132,7 +132,8 @@ def conditions(self,batch,world):
 
 
 def configure(model,settings):
-    if (set(settings) != {'draft_max_age','draft_dropout','future_dropout','action_mode','independent_future_gate'}
+    if (set(settings)-{'boundary_weight'} != {'draft_max_age','draft_dropout','future_dropout','action_mode','independent_future_gate'}
+            or not 0 <= settings.get('boundary_weight',0.) <= 1
             or not math.isfinite(settings['draft_max_age'])
             or not 0 < settings['draft_max_age'] <= 2.88
             or settings['action_mode'] not in ('full','residual')

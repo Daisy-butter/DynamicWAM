@@ -4,12 +4,36 @@ import json
 from pathlib import Path
 
 
+def validate_initialization_fixture(config,payload):
+    """A zero-step full-model diagnostic is never an accepted trained policy."""
+    from .train import source_identity
+    if (config.get('run_kind')!='domino_deployment_smoke' or not config.get('continuous_v8')
+            or payload.get('schema')!='dualrate-deployment-initialization-fixture-v1'
+            or payload.get('run_kind')!='deployment_engineering_fixture_not_formal_init'
+            or payload.get('phase')!='untrained_initialization'
+            or payload.get('phase_step')!=0 or payload.get('global_step')!=0
+            or payload.get('formal_training_ready') is not False
+            or payload.get('policy_quality_accepted') is not False):
+        raise ValueError('explicit untrained V8 diagnostic fixture required')
+    contract=payload['contract']
+    validate_policy_contract(config,contract)
+    for key in ('architecture','codec_id','init_checkpoint_sha256','action_normalization_sha256',
+                'motion_normalization_sha256','time_contract','action_interval_seconds'):
+        if contract.get(key)!=config[key]:raise ValueError('diagnostic contract differs: '+key)
+    if contract.get('source_sha256')!=source_identity():raise ValueError('diagnostic source changed')
+    return contract
+
+
 def validate_policy_contract(config, contract):
     """Parameter shapes alone cannot distinguish full/residual or gating modes."""
     if config.get('continuous_v8') != contract.get('continuous_v8'):
         raise ValueError('continuous V8 train/deploy policy semantics differ')
     if config.get('continuous_v8') and any(config.get(k) for k in ('native_v5','native_v6','native_v7')):
         raise ValueError('continuous V8 cannot use native event-coordinate policy')
+    if config.get('continuous_v8'):
+        runtime=config.get('deployment',{}).get('runtime',config.get('runtime'))
+        if runtime is None or runtime!=contract.get('runtime_contract'):
+            raise ValueError('continuous V8 train/deploy clock and query contracts differ')
 
 
 def validate_training_contract(config, manifest):

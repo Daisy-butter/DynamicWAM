@@ -95,13 +95,20 @@ def _load_system(config,device):
     from dynamicwam.dualrate.factory import build_system,place_inference_devices
     from dynamicwam.dualrate.train import _validate_normalization
     from dualrate_eval_worker import validate_checkpoint_payload,validate_source_compatibility,sha
-    if sha(config['checkpoint'])!=config['checkpoint_sha256']:
+    fixture=config.get('run_kind')=='domino_deployment_smoke' and config.get('continuous_v8')
+    checkpoint=config['deployment_checkpoint'] if fixture else config['checkpoint']
+    digest=config['deployment_checkpoint_sha256'] if fixture else config['checkpoint_sha256']
+    if sha(checkpoint)!=digest:
         raise ValueError('slow child final checkpoint hash mismatch')
     manifest=json.loads(Path(config['manifest']).read_text())
     _validate_normalization(config,manifest)
-    payload=torch.load(config['checkpoint'],map_location='cpu',weights_only=True,mmap=True)
-    contract=validate_checkpoint_payload(config,payload,manifest)
-    validate_source_compatibility(config,contract)
+    payload=torch.load(checkpoint,map_location='cpu',weights_only=True,mmap=True)
+    if fixture:
+        from dynamicwam.dualrate.continuous_contract import validate_initialization_fixture
+        contract=validate_initialization_fixture(config,payload)
+    else:
+        contract=validate_checkpoint_payload(config,payload,manifest)
+        validate_source_compatibility(config,contract)
     torch.cuda.set_device(device)
     system=build_system(config,device=device).eval().requires_grad_(False)
     system.load_state_dict(payload['model'],strict=True)

@@ -159,7 +159,9 @@ def phase_contract(config, identity):
     if config.get("native_v5"):contract["native_v5"]=config["native_v5"]
     if config.get("native_v6"):contract["native_v6"]=config["native_v6"]
     if config.get("native_v7"):contract["native_v7"]=config["native_v7"]
-    if config.get("continuous_v8"):contract["continuous_v8"]=config["continuous_v8"]
+    if config.get("continuous_v8"):
+        contract["continuous_v8"]=config["continuous_v8"]
+        contract["runtime_contract"]=config["runtime"]
     return contract
 
 

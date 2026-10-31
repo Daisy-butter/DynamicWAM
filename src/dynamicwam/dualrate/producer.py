@@ -854,7 +854,10 @@ class DominoPhysicalDataset(Dataset):
             source_known=torch.arange(16)<2;fast_known=torch.arange(16)<2
         source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+dt)
         fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
-        if not self.manifest.get('native_v5'):
+        if self.manifest.get('continuous_tail_policy')=='valid_prefix_and_two_free_rows':
+            needed=int(fast_known.sum())+2
+            _require(sv.all() and fv[:needed].all(),"continuous index lacks committed or executable targets")
+        elif not self.manifest.get('native_v5'):
             _require(sv.all() and fv.all(),"index promised complete action support")
         source_action=np.where(sv[:,None],source_action,0.)
         fast_action=np.where(fv[:,None],fast_action,0.)

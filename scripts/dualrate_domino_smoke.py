@@ -12,6 +12,7 @@ import pickle
 import sys
 import time
 import traceback
+from contextlib import ExitStack
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
@@ -40,7 +41,7 @@ def verify_deployment_artifacts(config, file_hash):
     return files
 
 
-def main():
+def run(stack):
     faulthandler.enable(all_threads=True)
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',required=True)
     p.add_argument('--device',choices=['cuda'],required=True);p.add_argument('--authorization',required=True)
@@ -97,6 +98,9 @@ def main():
     if file_sha256(checkpoint)!=config['deployment_checkpoint_sha256']:raise ValueError('deployment weights hash mismatch')
     payload=torch.load(checkpoint,map_location='cpu',weights_only=True,mmap=True)
     contract=payload.get('contract',{})
+    if config.get('continuous_v8'):
+        from dynamicwam.dualrate.continuous_contract import validate_initialization_fixture
+        validate_initialization_fixture(config,payload)
     from dynamicwam.dualrate.continuous_contract import validate_policy_contract
     validate_policy_contract(config,contract)
     for key in ('architecture','codec_id','init_checkpoint_sha256','action_normalization_sha256','motion_normalization_sha256'):
@@ -114,6 +118,10 @@ def main():
     stage('renderer_owner_bound',previous_cuda_device=previous_owner_device,
           renderer_cuda_device=torch.cuda.current_device(),inference_device_map=placement)
     checkpoint_meta={k:payload.get(k) for k in ('schema','phase','phase_step','global_step','run_kind')};del payload
+    if config.get('continuous_v8'):
+        from dualrate_slow_process import SlowProcessSystem
+        system=SlowProcessSystem(system,config,slow_device=device,receipt_path=output/'slow_process.json')
+        stack.callback(system.close)
     import yaml
     from dynamicwam.dualrate.online import OnlineBatchBuilder,load_cached_language
     from dynamicwam.dualrate.producer import episode_prompt,SCENE_PREFIX
@@ -260,6 +268,11 @@ def main():
         hardtime_acceptance_passed=bool(parallel_queries and model_overlap_queries and consumed_refresh and graph_parity),
         reference_versions=[r['reference_versions_consumed'] for r in results],reports=[str(output/r['task']/f"episode_{r['episode_index']:04d}/report.json") for r in results]))
     return 0
+
+
+def main():
+    with ExitStack() as stack:
+        return run(stack)
 
 
 if __name__=='__main__':

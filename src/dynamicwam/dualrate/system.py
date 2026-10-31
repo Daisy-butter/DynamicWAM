@@ -358,6 +358,8 @@ class DualRateSystem(nn.Module):
             raise ValueError("action_conditioned must be an explicit boolean [B] mode mask")
         # Only the declared auxiliary conditional-world mode sees clean suffixes.
         known_mask = batch["fast_known_mask"] | action_conditioned[:, None]
+        if getattr(self,'continuous_v8',None):
+            known_mask = known_mask & batch['fast_action_valid']
         known_actions = torch.where(action_conditioned[:, None, None], action, batch["fast_known_actions"])
         # Missing future labels must not become artificial clean zero states.
         noisy_future=torch.where(future_mask,fm_input(future,sigmas[2],nz),nz)
@@ -381,15 +383,17 @@ class DualRateSystem(nn.Module):
         ce = F.binary_cross_entropy_with_logits(result["contact_logits"].float(), contact.float(), reduction="none")
         losses["contact"] = masked_mean(ce, batch["contact_valid"])
         total = sum(getattr(cfg, name) * value for name, value in losses.items())
-        if getattr(self, 'native_v5', None):
+        if getattr(self, 'native_v5', None) or getattr(self,'continuous_v8',None):
             estimate=fm_input(action,sigmas[2],nf)-sigmas[2][:,None,None]*result['action_velocity']
             estimate=torch.where(known_mask[...,None],known_actions,estimate)
             valid=batch.get('fast_action_valid',torch.ones_like(known_mask))
             edge=valid[:,1:] & valid[:,:-1] & ~action_conditioned[:,None]
-            arm=torch.tensor([0,1,2,3,4,5,7,8,9,10,11,12],device=action.device)
+            arm=torch.tensor([i for i in range(action.shape[-1]) if action.shape[-1]!=14 or i not in (6,13)],device=action.device)
             delta=(estimate[:,1:]-estimate[:,:-1])-(action[:,1:]-action[:,:-1])
             boundary=masked_mean(delta.index_select(-1,arm).float().square(),edge[...,None])
-            total=total+self.native_v5['boundary_weight']*boundary
+            weight=(self.native_v5['boundary_weight'] if getattr(self,'native_v5',None)
+                    else self.continuous_v8.get('boundary_weight',0.))
+            total=total+weight*boundary
             losses['boundary']=boundary
         return {"loss": total, **losses}
 

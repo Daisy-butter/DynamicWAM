@@ -179,7 +179,8 @@ def test_each_phase_keeps_full_slow_frozen_and_fast_live():
 def test_checkpoint_semantics_do_not_depend_only_on_parameter_shapes():
     from dynamicwam.dualrate.continuous_contract import validate_policy_contract
     validate_policy_contract({}, {})
-    cfg={'continuous_v8':{'action_mode':'residual'}}
+    cfg={'continuous_v8':{'action_mode':'residual'},'runtime':{'submission_contract':'worker_receipt_v8'},
+         'runtime_contract':{'submission_contract':'worker_receipt_v8'}}
     validate_policy_contract(cfg,cfg)
     with pytest.raises(ValueError):validate_policy_contract(cfg,{})
     with pytest.raises(ValueError):validate_policy_contract(cfg,{'continuous_v8':{'action_mode':'full'}})

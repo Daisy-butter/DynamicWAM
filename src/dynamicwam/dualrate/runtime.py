@@ -15,6 +15,7 @@ import torch
 from .timing import (CompletedReferenceStore, ExecutionQueue, TimedPlan,
                      TimingError, DeadlineMiss, StalePlan, prefix_digest)
 from .physical_clock import WallPhysicsBridge
+from .submission import FastMailbox
 
 
 @contextmanager
@@ -38,8 +39,11 @@ class RuntimeConfig:
     fast_cuda_graph: bool = False
     min_query_budget_seconds: float = 0.
     max_protect_steps: int | None = None
+    submission_contract: str = 'owner_v4'
 
     def __post_init__(self):
+        if self.submission_contract not in ('owner_v4','worker_receipt_v8'):
+            raise ValueError('unknown fast submission contract')
         if (type(self.fast_cuda_graph) is not bool or
                 not math.isfinite(self.action_dt) or self.action_dt <= 0 or
                 min(self.fast_period_steps,self.slow_period_steps,self.protect_steps,self.sample_steps) < 1 or
@@ -111,9 +115,11 @@ class DualRateRuntime:
         self._failure = None
         self._cancelled_queries = set()
         self._discarded_jobs = []
+        self._accepted_jobs = []
         # CPU store owns defensive copies. This separate ready device payload
         # avoids owner-thread GPU copies; each fast worker clones it on its stream.
         self._published_device_world = None
+        self._mailbox = FastMailbox(self.wall_clock,clock_bridge) if config.submission_contract=='worker_receipt_v8' else None
 
     def fast_graph_receipt(self):
         if self.fast_graph is None:
@@ -251,6 +257,7 @@ class DualRateRuntime:
             protect_steps=protection,submit_margin=self.config.submit_margin,
             reference_version=reference.version if reference else -1)
         self.last_fast_tick=math.floor((query-self.queue.origin)/self.queue.dt+1e-9)
+        if self._mailbox is not None:self._mailbox.register(lease)
         budget['effective_protect_steps']=len(lease.prefix.actions)
         self.record(dict(event='fast_started',query_id=lease.query_id,query_time=query,
             request_wall_time=requested_wall,
@@ -300,13 +307,22 @@ class DualRateRuntime:
                                lease.base_queue_version+1,query,lease)
                 # Include host plan construction in readiness; it is not free.
                 ready_wall=self.wall_clock()
-                return plan,output,ready_wall,dict(wall_seconds=ready_wall-requested_wall,
+                result=plan,output,ready_wall,dict(wall_seconds=ready_wall-requested_wall,
                     worker_started_wall_time=worker_started_wall,model_started_wall_time=model_started_wall,
                     gpu_done_wall_time=gpu_done_wall)
+                if self._mailbox is not None:
+                    receipt=self._mailbox.submit(lease,result)
+                    self.record(dict(event='fast_submitted',query_id=lease.query_id,
+                        submitted_wall_time=receipt.submitted_wall,ready_wall_time=ready_wall,
+                        earliest_physical_time=receipt.earliest_physical_time,
+                        protected_until=lease.protected_until,prefix_hash=lease.prefix_hash,
+                        submission_contract=self.config.submission_contract))
+                return result
         try:
             self.fast_job=(self.pool.submit(work),lease)
         except BaseException:
             self.queue.cancel_query(lease)
+            if self._mailbox is not None:self._mailbox.finish(lease)
             raise
 
     def _fast_query_protection(self,query,requested_wall):
@@ -340,20 +356,31 @@ class DualRateRuntime:
     def _cancel_fast(self, lease):
         if lease.query_id not in self._cancelled_queries:
             self.queue.cancel_query(lease)
+            if self._mailbox is not None:self._mailbox.finish(lease)
             self._cancelled_queries.add(lease.query_id)
 
     def poll(self):
         """Caller invokes alongside continuous physics; never waits on unfinished work."""
         if self._failure is not None:
             raise TimingError('runtime has failed; close owned workers before continuing') from self._failure
+        receipt = None
+        for accepted in tuple(self._accepted_jobs):
+            if accepted.done():
+                try:accepted.result()
+                except BaseException as exc:
+                    self._failure=exc
+                    raise
+                self._accepted_jobs.remove(accepted)
         # A deadline is a limit on execution, not merely a check when a worker
         # eventually returns. Fail before issuing the old uncommitted tail.
         if self.fast_job is not None and (self.clock_bridge is None or self.clock_bridge.active):
             _,lease=self.fast_job
             try:
+                if self._mailbox is not None:
+                    receipt=self._mailbox.check_pending(lease)
                 if float(self.clock()) >= lease.protected_until-lease.submit_margin:
                     raise DeadlineMiss('in-flight query exceeded physical submission deadline')
-                if self.clock_bridge is not None:
+                if self.clock_bridge is not None and self._mailbox is None:
                     self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin)
             except BaseException as exc:
                 self._cancel_fast(lease)
@@ -361,6 +388,8 @@ class DualRateRuntime:
                 self.record(dict(event='fast_rejected',query_id=lease.query_id,error=type(exc).__name__,
                                  reason='inflight_deadline',worker_done=self.fast_job[0].done()))
                 raise
+        elif self.fast_job is not None and self._mailbox is not None:
+            receipt=self._mailbox.peek(self.fast_job[1])
         if self.slow_job is not None and self.slow_job[0].done():
             job,source,prefix,version=self.slow_job
             world,device_world,ready_wall,metrics=job.result()
@@ -381,21 +410,27 @@ class DualRateRuntime:
                 self.record(dict(event="slow_completed",source_time=source,completed_time=completed,
                     published_time=completed,publication_wall_time=self.wall_clock(),
                     version=version,accepted=accepted,**metrics))
-        if self.fast_job is not None and self.fast_job[0].done():
+        if self.fast_job is not None and (receipt is not None or self.fast_job[0].done()):
             job,lease=self.fast_job
             submitted=False
             try:
-                plan,output,ready_wall,metrics=job.result()
+                plan,output,ready_wall,metrics=receipt.result if receipt is not None else job.result()
+                if self._mailbox is not None and receipt is None:
+                    raise TimingError('completed fast job lacks its on-time submission receipt')
                 if not isinstance(metrics,dict):
                     metrics=dict(wall_seconds=metrics)  # legacy CPU fixture
                 if self.clock_bridge is not None:
-                    self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
-                    if not self.clock_bridge.ready(ready_wall,float(self.clock())):
+                    if receipt is None:
+                        self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
+                    release_wall=ready_wall if receipt is None else receipt.submitted_wall
+                    if not self.clock_bridge.ready(release_wall,float(self.clock())):
                         return None
                 discarded=self.queue.replace(plan,now=float(self.clock()))
                 submitted=True
-                if self.clock_bridge is not None:
+                if self.clock_bridge is not None and receipt is None:
                     self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)
+                if self._mailbox is not None:self._mailbox.finish(lease)
+                if receipt is not None:self._accepted_jobs.append(job)
                 self.fast_job=None
             except BaseException as exc:
                 self.fast_job=None
@@ -411,6 +446,8 @@ class DualRateRuntime:
                              protected_until=lease.protected_until,submit_margin=lease.submit_margin,query_time=lease.query_time,
                              commit_time=float(self.clock()),observation_time=lease.observation_time,
                              commit_wall_time=self.wall_clock(),ready_wall_time=ready_wall,
+                             submitted_wall_time=ready_wall if receipt is None else receipt.submitted_wall,
+                             submission_contract=self.config.submission_contract,
                              reference_version=lease.reference_version,**metrics))
             return output
         return None
@@ -421,6 +458,10 @@ class DualRateRuntime:
         self.closed=True
         self.pool.shutdown(wait=True,cancel_futures=False)
         errors=[]
+        for job in self._accepted_jobs:
+            try:job.result()
+            except BaseException as exc:errors.append(exc)
+        self._accepted_jobs.clear()
         remaining=list(self._discarded_jobs)
         if self.slow_job is not None:
             remaining.append(('slow',self.slow_job,dict(reason='episode_closed_before_publication')))
@@ -456,6 +497,7 @@ class DualRateRuntime:
             self._cancel_fast(self.fast_job[1]);self.fast_job=None
         self.slow_job=None
         self._discarded_jobs.clear()
+        if self._mailbox is not None:self._mailbox.close()
         if self.fast_graph is not None and getattr(self.system,'_fast_graph_sampler',None) is self.fast_graph:
             self.system._fast_graph_sampler=None
         if errors:
