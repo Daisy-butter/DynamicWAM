@@ -385,6 +385,22 @@ def resample_actions(times, values, targets, *, max_gap=INTERPOLATION_GAP):
     return np.asarray(out), np.asarray(valid), np.asarray(errors)
 
 
+def resample_interval_commands(times, values, starts, dt, *, max_gap=INTERPOLATION_GAP):
+    """Endpoint arm targets plus causal interval-start absolute gripper commands.
+
+    The continuous executor interpolates arms across the interval, but applies
+    grippers from its first tick. Sampling grippers at the end would anticipate
+    recorded opening/closing events by one control interval.
+    """
+    starts=np.asarray(starts,dtype=np.float64)
+    end,valid,error=resample_actions(times,values,starts+dt,max_gap=max_gap)
+    begin,begin_valid,begin_error=resample_actions(times,values,starts,max_gap=max_gap)
+    end[:,[6,13]]=begin[:,[6,13]]
+    valid=valid & begin_valid
+    end[~valid]=0.
+    return end,valid,np.maximum(error,begin_error)
+
+
 def validate_completion_distribution(value, *, verify_evidence=True):
     """A declared latency distribution, never a disguised clipped timestamp."""
     _require(isinstance(value,dict),'explicit completion distribution required')
@@ -852,8 +868,12 @@ class DominoPhysicalDataset(Dataset):
             if self.manifest.get('native_v6'):
                 s=float(t[source_frame]);q=float(t[query_frame]);completed=s
             source_known=torch.arange(16)<2;fast_known=torch.arange(16)<2
-        source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+dt)
-        fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
+        if self.manifest.get('continuous_gripper_sampling')=='interval_start_previous_event':
+            source_action,sv,_=resample_interval_commands(t,raw_actions.numpy(),starts,dt)
+            fast_action,fv,_=resample_interval_commands(t,raw_actions.numpy(),fast_starts,dt)
+        else:
+            source_action,sv,_=resample_actions(t,raw_actions.numpy(),starts+dt)
+            fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
         if self.manifest.get('continuous_tail_policy')=='valid_prefix_and_two_free_rows':
             needed=int(fast_known.sum())+2
             _require(sv.all() and fv[:needed].all(),"continuous index lacks committed or executable targets")

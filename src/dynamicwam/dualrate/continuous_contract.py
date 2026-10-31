@@ -41,13 +41,14 @@ def validate_policy_contract(config, contract):
 
 def validate_training_contract(config, manifest):
     expected = dict(version='continuous_rtc_v8',clock='physical_seconds',
-        action_semantics='fixed_interval_endpoint_arm_absolute_gripper',
+        action_semantics='fixed_interval_endpoint_arm_start_gripper',
         action_interval_seconds=config['action_interval_seconds'],
         history_endpoint_seconds=.72,source='sampled_slow_prediction',
         labels='same_absolute_physical_interval',prefix='actual_committed_values_and_intervals')
     if (config.get('time_contract')!='exposure_anchor_wall_release_v4'
             or manifest.get('time_contract')!=config['time_contract']
             or manifest.get('continuous_rtc_contract')!=expected
+            or manifest.get('continuous_gripper_sampling')!='interval_start_previous_event'
             or any(config.get(k) for k in ('native_v5','native_v6','native_v7'))):
         raise ValueError('V8 requires audited continuous physical-time labels/prefixes, not native event data')
     if config['run_kind']=='formal_distributed_training':

@@ -28,6 +28,10 @@ advances time. Wall origin is immutable; backlog budget is .500+.005 s.
   supervision can only reveal a contiguous valid action prefix.
 * Arm boundary loss matches expert action increments, including the splice.
   It does not penalize all motion toward zero; grippers are excluded. Weight .1.
+* Dataset commands use arm targets at interval END and absolute gripper commands
+  held causally from interval START, matching the actual actuator. Endpoint
+  gripper labels previously anticipated opening/closing by up to one row.
+  This is V8-only; native/TOPP datasets retain their own action semantics.
 * New recipe metadata replaces old evaluation's hardcoded 1k/10k/20k gate.
   Formal deployment must match its actual completed phases and exact source.
 
@@ -44,8 +48,9 @@ cache dropout .1, boundary weight .1. No extra distillation or invented Z labels
 
 Proposed phases: warmup 500, small_age_joint 4000, cross_time_joint 8000 updates.
 Global batch32 = 8 ranks x micro2 x accumulation2. AdamW fast LR1e-4, final phase
-5e-5, cosine floor .1, max grad norm1. Keep complete optimizer/RNG/cursor state
-between stages. Actual smoke must establish finite gradients and full reload on
+5e-5, cosine floor .1, max grad norm1. Keep model/masters/Adam across stages;
+reset phase RNG/cursor/LR for its curriculum, restore all on within-phase resume.
+Actual smoke must establish finite gradients and full reload on
 all eight ranks. Reduce batch only via a fresh accepted smoke/profile.
 
 Use deterministic half of training episodes stratified by task/style; preserve
