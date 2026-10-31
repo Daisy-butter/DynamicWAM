@@ -2,6 +2,18 @@
 import math
 
 
+def submission_wall(event,start,events):
+    if event.get('submission_contract','owner_v4')=='owner_v4':return event['commit_wall_time']
+    if event['submission_contract']!='worker_receipt_v8':raise ValueError('unknown RTC receipt contract')
+    matches=[e for e in events if e.get('event')=='fast_submitted' and e.get('query_id')==event['query_id']]
+    if len(matches)!=1:raise ValueError('exactly one actual mailbox receipt required')
+    receipt=matches[0];when=float(receipt['submitted_wall_time'])
+    if (when!=event['submitted_wall_time'] or receipt['prefix_hash']!=start['prefix_hash']
+            or not event['ready_wall_time']<=when<=event['commit_wall_time']):
+        raise ValueError('mailbox receipt identity or monotonic order differs')
+    return when
+
+
 def validate_reference_leases(events, config, activation):
     """Every active query consumes the latest causally published reference.
 
@@ -26,6 +38,15 @@ def validate_reference_leases(events, config, activation):
         elif active and kind == 'fast_started':
             version, query = event['reference_version'], event['query_time']
             reference = published.get(version)
+            if version==-1 and config.get('continuous_v8'):
+                current=published.get(latest)
+                if (event['query_id'] in started or
+                        not event['request_wall_time']<aw+event['protected_until']-ap-event['submit_margin']):
+                    raise ValueError('duplicate or late missing-reference query')
+                if current is not None and query<current['source_time']+ttl:
+                    raise ValueError('missing-reference query skipped a valid latest reference')
+                started[event['query_id']]=event;count+=1
+                continue
             if (version < 1 or version != latest or reference is None
                     or not reference['source_time'] <= reference['completed_time'] <= query
                     or not query < reference['source_time'] + ttl
@@ -43,10 +64,11 @@ def validate_reference_leases(events, config, activation):
             if start is None or any(event[k] != start[k] for k in keys):
                 raise ValueError('commit differs from its captured query lease')
             deadline = event['protected_until']-event['submit_margin']
+            submitted=submission_wall(event,start,events)
             if (not start['request_wall_time'] <= event['ready_wall_time'] <= event['commit_wall_time']
-                    or not event['commit_wall_time'] < aw+deadline-ap
+                    or not submitted < aw+deadline-ap
                     or not event['query_time'] <= event['commit_time'] < deadline
-                    or event['commit_time']+1e-7 < ap+event['ready_wall_time']-aw):
+                    or event['commit_time']+1e-7 < ap+(submitted if event.get('submission_contract')=='worker_receipt_v8' else event['ready_wall_time'])-aw):
                 raise ValueError('commit violated strict deadline or wall release')
             commits += 1
     return dict(active_reference_queries=count, active_commits=commits)

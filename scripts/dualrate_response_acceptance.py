@@ -69,7 +69,9 @@ def episode_response(report):
             raise ValueError('hold/underrun/rejected plan present')
         if active and kind == 'fast_started':
             qid = event['query_id']; q = event['query_time']
-            require(qid not in starts and event['reference_version'] >= 1, 'duplicate query/missing reference')
+            receipt_mode=any(e.get('submission_contract')=='worker_receipt_v8' for e in events)
+            require(qid not in starts and (event['reference_version'] >= 1 or
+                    (receipt_mode and event['reference_version']==-1)), 'duplicate query/missing reference')
             n = event['effective_protect_steps']
             require(type(n) is int and n in (2,3), 'prefix outside trained two/three rows')
             start = ap + math.floor((q-ap)/dt + 1e-9)*dt
@@ -83,7 +85,8 @@ def episode_response(report):
                 for k in ('query_time','observation_time','protected_until','submit_margin','reference_version'):
                     require(event[k] == q[k], 'commit changed captured lease: '+k)
                 deadline = event['protected_until']-event['submit_margin']
-                wm = aw+deadline-ap-event['commit_wall_time']
+                from dualrate_continuous_acceptance import submission_wall
+                wm = aw+deadline-ap-submission_wall(event,q,events)
                 pm = deadline-event['commit_time']
                 require(math.isfinite(wm) and math.isfinite(pm) and wm > 0 and pm > 0,
                         'actual two-clock deadline missed')

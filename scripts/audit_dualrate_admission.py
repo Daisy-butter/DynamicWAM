@@ -51,7 +51,9 @@ def audit(reports, reserve=.30):
             if required == 2:
                 eligible += 1
                 available = 2 * dt - phase - lag - margin
-                if float(e['commit_wall_time']) - request >= available:
+                from dualrate_continuous_acceptance import submission_wall
+                arrived=submission_wall(e,q,events)
+                if arrived - request >= available:
                     late += 1
                     if len(late_examples) < 10:
                         late_examples.append({'path': str(path), 'query_id': e['query_id'],
