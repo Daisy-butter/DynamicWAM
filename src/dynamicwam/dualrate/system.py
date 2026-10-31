@@ -359,7 +359,8 @@ class DualRateSystem(nn.Module):
         # Only the declared auxiliary conditional-world mode sees clean suffixes.
         known_mask = batch["fast_known_mask"] | action_conditioned[:, None]
         if getattr(self,'continuous_v8',None):
-            known_mask = known_mask & batch['fast_action_valid']
+            available_prefix=batch['fast_action_valid'].long().cumprod(1).bool()
+            known_mask = batch['fast_known_mask'] | (action_conditioned[:,None] & available_prefix)
         known_actions = torch.where(action_conditioned[:, None, None], action, batch["fast_known_actions"])
         # Missing future labels must not become artificial clean zero states.
         noisy_future=torch.where(future_mask,fm_input(future,sigmas[2],nz),nz)

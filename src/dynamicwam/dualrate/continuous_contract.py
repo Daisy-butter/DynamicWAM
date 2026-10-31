@@ -7,7 +7,10 @@ from pathlib import Path
 def validate_initialization_fixture(config,payload):
     """A zero-step full-model diagnostic is never an accepted trained policy."""
     from .train import source_identity
-    if (config.get('run_kind')!='domino_deployment_smoke' or not config.get('continuous_v8')
+    mode=(config.get('run_kind')=='domino_deployment_smoke' or
+          (config.get('run_kind')=='dualrate_eval_suite' and config.get('stage')=='smoke'
+           and config.get('engineering_initialization_only') is True))
+    if (not mode or not config.get('continuous_v8')
             or payload.get('schema')!='dualrate-deployment-initialization-fixture-v1'
             or payload.get('run_kind')!='deployment_engineering_fixture_not_formal_init'
             or payload.get('phase')!='untrained_initialization'

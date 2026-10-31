@@ -1,4 +1,6 @@
 import time
+import threading
+from dataclasses import replace
 import pytest
 import torch
 from dynamicwam.dualrate.physical_clock import WallPhysicsBridge
@@ -109,3 +111,26 @@ def test_partial_tail_keeps_real_executable_targets_without_fabricating_full_chu
     for f,i in tail:
         t=validate_template(templates[i],DT)
         assert times[f]+t['fast_action_start']+(t['fast_prefix_rows']+2)*DT<=times[-1]+1e-6
+
+
+def test_terminal_cancels_unneeded_delivery_without_fake_late_failure_or_commit():
+    runtime,p,w,events,batch=make();entered=threading.Event();release=threading.Event()
+    def delayed(*args):
+        entered.set();assert release.wait(3);return batch(*args)
+    runtime.start_fast(delayed,observation_time=0.);assert entered.wait(3)
+    w[0]=101.
+    timer=threading.Timer(.03,release.set);timer.start()
+    runtime.close();timer.join()
+    assert any(e['event']=='fast_cancelled_at_terminal' for e in events)
+    assert not any(e['event']=='fast_committed' for e in events)
+    assert runtime.queue.action_at(.4)==(0.,)
+
+
+def test_new_frame_mode_never_requeries_same_image_or_relables_its_time():
+    runtime,p,w,_,batch=make()
+    runtime.config=replace(runtime.config,fast_requires_new_observation=True,fast_period_steps=1)
+    try:
+        runtime.start_fast(batch,observation_time=0.);wait(runtime);runtime.poll()
+        assert runtime.last_fast_observation==0.
+        with pytest.raises(StalePlan,match='real exposure'):runtime.start_fast(batch,observation_time=0.)
+    finally:runtime.close()

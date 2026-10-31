@@ -15,7 +15,7 @@ import torch
 from .timing import (CompletedReferenceStore, ExecutionQueue, TimedPlan,
                      TimingError, DeadlineMiss, StalePlan, prefix_digest)
 from .physical_clock import WallPhysicsBridge
-from .submission import FastMailbox
+from .submission import FastMailbox, SubmissionCancelled
 
 
 @contextmanager
@@ -40,11 +40,12 @@ class RuntimeConfig:
     min_query_budget_seconds: float = 0.
     max_protect_steps: int | None = None
     submission_contract: str = 'owner_v4'
+    fast_requires_new_observation: bool = False
 
     def __post_init__(self):
         if self.submission_contract not in ('owner_v4','worker_receipt_v8'):
             raise ValueError('unknown fast submission contract')
-        if (type(self.fast_cuda_graph) is not bool or
+        if (type(self.fast_cuda_graph) is not bool or type(self.fast_requires_new_observation) is not bool or
                 not math.isfinite(self.action_dt) or self.action_dt <= 0 or
                 min(self.fast_period_steps,self.slow_period_steps,self.protect_steps,self.sample_steps) < 1 or
                 not 0 <= self.submit_margin < self.protect_steps*self.action_dt or
@@ -112,6 +113,7 @@ class DualRateRuntime:
         self.closed = False
         self.last_fast_tick = self.last_slow_tick = -10**12
         self.last_slow_source = -math.inf
+        self.last_fast_observation = -math.inf
         self._failure = None
         self._cancelled_queries = set()
         self._discarded_jobs = []
@@ -246,6 +248,8 @@ class DualRateRuntime:
     def start_fast(self,batch_factory,*,observation_time):
         if self.closed or self.fast_job is not None:
             raise TimingError("fast slot unavailable")
+        if self.config.fast_requires_new_observation and observation_time<=self.last_fast_observation:
+            raise StalePlan('fast query requires a newly available real exposure')
         requested_wall=self.wall_clock()
         query=float(self.clock())
         protection,budget=self._fast_query_protection(query,requested_wall)
@@ -257,6 +261,7 @@ class DualRateRuntime:
             protect_steps=protection,submit_margin=self.config.submit_margin,
             reference_version=reference.version if reference else -1)
         self.last_fast_tick=math.floor((query-self.queue.origin)/self.queue.dt+1e-9)
+        self.last_fast_observation=float(observation_time)
         if self._mailbox is not None:self._mailbox.register(lease)
         budget['effective_protect_steps']=len(lease.prefix.actions)
         self.record(dict(event='fast_started',query_id=lease.query_id,query_time=query,
@@ -311,7 +316,11 @@ class DualRateRuntime:
                     worker_started_wall_time=worker_started_wall,model_started_wall_time=model_started_wall,
                     gpu_done_wall_time=gpu_done_wall)
                 if self._mailbox is not None:
-                    receipt=self._mailbox.submit(lease,result)
+                    try:receipt=self._mailbox.submit(lease,result)
+                    except SubmissionCancelled:
+                        self.record(dict(event='fast_cancelled_at_terminal',query_id=lease.query_id,
+                                         ready_wall_time=ready_wall,discarded=True))
+                        return result
                     self.record(dict(event='fast_submitted',query_id=lease.query_id,
                         submitted_wall_time=receipt.submitted_wall,ready_wall_time=ready_wall,
                         earliest_physical_time=receipt.earliest_physical_time,
@@ -456,6 +465,7 @@ class DualRateRuntime:
         if self.closed:
             return
         self.closed=True
+        if self._mailbox is not None:self._mailbox.close()
         self.pool.shutdown(wait=True,cancel_futures=False)
         errors=[]
         for job in self._accepted_jobs:

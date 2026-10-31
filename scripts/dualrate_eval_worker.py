@@ -70,6 +70,12 @@ def environment_groups(config):
 
 
 def validate_source_compatibility(config, checkpoint_contract=None):
+    if config.get('continuous_v8'):
+        current=source_hash(ROOT/'src/dynamicwam')
+        if (config.get('training_source_sha256')!=current or
+                (checkpoint_contract is not None and checkpoint_contract.get('source_sha256')!=current)):
+            raise ValueError('V8 requires the exact frozen training/deployment source')
+        return dict(mode='identical_frozen_v8_source',training_source_sha256=current,evaluation_source_sha256=current)
     path = Path(config['source_compatibility_receipt']).resolve(strict=True)
     if sha(path) != config['source_compatibility_sha256']:
         raise ValueError('training/evaluation compatibility receipt changed')
@@ -115,6 +121,17 @@ def validate_checkpoint_payload(config, payload, manifest):
     """CPU metadata gate for the exact completed 1k/10k/20k formal sequence."""
     expected = dict(schema='dualrate-distributed-checkpoint-v1', run_kind='formal_distributed_training',
                     phase='cross_time_joint', phase_step=20000, configured_steps=20000, global_step=31000)
+    if config.get('engineering_initialization_only'):
+        from dynamicwam.dualrate.continuous_contract import validate_initialization_fixture
+        return validate_initialization_fixture(config,payload)
+    if config.get('continuous_v8'):
+        recipe=config.get('training_recipe',[])
+        if ([r.get('phase') for r in recipe]!=['warmup','small_age_joint','cross_time_joint'] or
+                any(type(r.get('steps')) is not int or r['steps']<1 for r in recipe) or
+                payload.get('contract',{}).get('training_recipe')!=recipe):
+            raise ValueError('V8 evaluation requires its exact completed three-phase recipe')
+        expected.update(phase_step=recipe[-1]['steps'],configured_steps=recipe[-1]['steps'],
+                        global_step=sum(r['steps'] for r in recipe))
     for name, value in expected.items():
         if payload.get(name) != value:
             raise ValueError('final checkpoint metadata differs: ' + name)
@@ -213,7 +230,11 @@ def validate_config(config):
         raise ValueError('episode count must be 1..20')
     if config['stage'] == 'formal' and (len(tasks) != 35 or config['episodes'] != 20 or config.get('action_limit') is not None):
         raise ValueError('formal evaluation requires 35 x 20 complete native episodes')
-    if config['stage'] == 'smoke' and (len(tasks) != 2 or config['episodes'] != 2 or config.get('action_limit') is not None):
+    engineering=config.get('engineering_initialization_only') is True
+    if engineering and (not config.get('continuous_v8') or config['stage']!='smoke'
+            or len(tasks)!=35 or config['episodes']!=1 or config.get('action_limit')!=32):
+        raise ValueError('V8 initial engineering suite must be explicitly unscored 35 x 1 x 32 rows')
+    if config['stage'] == 'smoke' and not engineering and (len(tasks) != 2 or config['episodes'] != 2 or config.get('action_limit') is not None):
         raise ValueError('smoke requires two environments x two complete native episodes')
     if config.get('instruction_mode', 'episode_complete_template') != 'episode_complete_template':
         raise ValueError('paired evaluation uses the common complete episode template')
@@ -602,6 +623,7 @@ def _run_worker(resources):
                 control_scope=lambda: passive_force_scope(env.robot, enabled=config.get('passive_force_dedup', False)),
                 on_failure=lambda exc: publish_runtime_failure(output, cohort, args.task, episode, exc))
             report.update(task=args.task, episode_index=episode, seed=descriptor['seed'],
+                engineering_initialization_only=bool(config.get('engineering_initialization_only',False)),
                 requested_seed=descriptor['requested_seed'], checkpoint_sha256=config['checkpoint_sha256'],
                 prepared_sha256=config['prepared_sha256'], config_sha256=canonical_hash(config),
                 source_sha256=receipt['identity']['source_sha256'], video_required=True,

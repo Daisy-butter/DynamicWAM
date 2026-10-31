@@ -9,6 +9,10 @@ import threading
 from .timing import TimingError, StalePlan
 
 
+class SubmissionCancelled(TimingError):
+    """Owner ended the episode before this mailbox delivery; never execute it."""
+
+
 @dataclass(frozen=True)
 class FastReceipt:
     lease: object
@@ -33,7 +37,8 @@ class FastMailbox:
 
     def submit(self,lease,result):
         with self.lock:
-            if self.closed or self.lease!=lease or self.receipt is not None:
+            if self.closed:raise SubmissionCancelled('episode closed before delivery')
+            if self.lease!=lease or self.receipt is not None:
                 raise StalePlan('duplicate, cancelled or old-episode submission')
             if result[0].lease != lease:
                 raise StalePlan('submitted plan and lease differ')
@@ -71,4 +76,4 @@ class FastMailbox:
     def close(self):
         with self.lock:
             self.closed=True
-            self.lease=self.receipt=None
+            # Keep identity until the owner cancels the queue lease after join.

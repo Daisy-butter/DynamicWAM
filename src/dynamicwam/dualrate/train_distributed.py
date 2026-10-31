@@ -128,6 +128,12 @@ def validate_phase_config(config):
     if config.get("continuous_v8"):
         if float(config["slow_lr"]) != 0:
             raise ValueError("continuous V8 first candidate freezes the Full slow system")
+        recipe=config.get('training_recipe',[])
+        if ([r.get('phase') for r in recipe]!=list(PHASES) or
+                any(type(r.get('steps')) is not int or r['steps']<1 for r in recipe)):
+            raise ValueError('V8 requires an explicit three-phase training recipe')
+        if config['run_kind']=='formal_distributed_training' and config['steps']!=next(r['steps'] for r in recipe if r['phase']==phase):
+            raise ValueError('formal phase budget differs from the checkpoint-bound recipe')
     elif config.get("native_v7"):
         if float(config["slow_lr"]) != 0:
             raise ValueError("compact V7 requires a frozen Full teacher")
@@ -162,6 +168,7 @@ def phase_contract(config, identity):
     if config.get("continuous_v8"):
         contract["continuous_v8"]=config["continuous_v8"]
         contract["runtime_contract"]=config["runtime"]
+        contract["training_recipe"]=config.get("training_recipe")
     return contract
 
 

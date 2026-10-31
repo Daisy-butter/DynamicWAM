@@ -338,6 +338,9 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                      for f,v in zip(endpoints,matched)]))
     for route,due in (('fast',fast_due),('slow',slow_due)):
         if not due:continue
+        if (route=='fast' and getattr(getattr(runtime,'config',None),'fast_requires_new_observation',False)
+                and snapshot[-1].exposure<=runtime.last_fast_observation):
+            continue
         if not fresh:
             if route not in deferred:
                 deferred[route]=now

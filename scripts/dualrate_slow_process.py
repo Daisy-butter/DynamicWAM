@@ -95,9 +95,11 @@ def _load_system(config,device):
     from dynamicwam.dualrate.factory import build_system,place_inference_devices
     from dynamicwam.dualrate.train import _validate_normalization
     from dualrate_eval_worker import validate_checkpoint_payload,validate_source_compatibility,sha
-    fixture=config.get('run_kind')=='domino_deployment_smoke' and config.get('continuous_v8')
-    checkpoint=config['deployment_checkpoint'] if fixture else config['checkpoint']
-    digest=config['deployment_checkpoint_sha256'] if fixture else config['checkpoint_sha256']
+    fixture=bool(config.get('continuous_v8')) and (config.get('run_kind')=='domino_deployment_smoke'
+                or config.get('engineering_initialization_only') is True)
+    standalone=config.get('run_kind')=='domino_deployment_smoke'
+    checkpoint=config['deployment_checkpoint'] if standalone else config['checkpoint']
+    digest=config['deployment_checkpoint_sha256'] if standalone else config['checkpoint_sha256']
     if sha(checkpoint)!=digest:
         raise ValueError('slow child final checkpoint hash mismatch')
     manifest=json.loads(Path(config['manifest']).read_text())
