@@ -120,6 +120,13 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     desired=torch.where(replay[:,None,None],teacher,a)
     radius=self.fast.correction_radius
     reachable=prior+(desired-prior).clamp(-radius,radius)
+    # A clipped expert action target no longer describes the expert future.
+    # Mask those Z/contact labels rather than train contradictory A/Z pairs.
+    changed=(reachable-desired).abs().amax(-1)>1e-5
+    prefix_changed=changed.long().cumsum(1)>0
+    compatible=(~prefix_changed[:,torch.tensor([0,1,3,7],device=a.device)]).repeat(1,self.fast.config.future_entities)
+    zv=zv & compatible[...,None]
+    cv=batch['contact_valid'] & compatible[...,None]
     sigma=torch.rand(len(a),device=a.device,generator=generator)*.98+.01
     na=torch.randn(a.shape,device=a.device,dtype=a.dtype,generator=generator)
     nz=torch.randn(z.shape,device=z.device,dtype=z.dtype,generator=generator)
@@ -137,11 +144,12 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
         (av[:,1:]&av[:,:-1])[...,None])
     ze=(out['future_velocity']-(nz-z)).float().square();vd=self.loss_config.visual_dim
     visual=masked_mean(ze[...,:vd],zv[...,:vd]);geometry=masked_mean(ze[...,vd:],zv[...,vd:])
-    contact=masked_mean(F.binary_cross_entropy_with_logits(out['contact_logits'],torch.where(batch['contact_valid'],batch['contact'],0.),reduction='none'),batch['contact_valid'])
+    contact=masked_mean(F.binary_cross_entropy_with_logits(out['contact_logits'],torch.where(cv,batch['contact'],0.),reduction='none'),cv)
     loss=main+.1*endpoint+.05*boundary+self.loss_config.future_visual*visual+self.loss_config.future_geometry*geometry+self.loss_config.contact*contact
     return dict(loss=loss,fast_action=main,teacher_endpoint=endpoint,boundary=boundary,
         future_visual=visual,future_geometry=geometry,contact=contact,
-        target_clipped_fraction=((desired-prior).abs()>radius).float().mean().detach())
+        target_clipped_fraction=((desired-prior).abs()>radius).float().mean().detach(),
+        z_action_compatible_fraction=compatible.float().mean().detach())
 
 
 def configure(model,settings,supervision):

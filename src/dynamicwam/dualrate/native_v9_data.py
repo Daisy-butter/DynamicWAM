@@ -39,7 +39,7 @@ class NativeReplayDataset:
     def __getitem__(self,index):
         if index<len(self.expert_indices):
             row=self.expert[int(self.expert_indices[index])]
-            row['native_replay']=torch.tensor(False);row['source_inflight']=torch.tensor(False)
+            row['native_replay']=torch.tensor(False);row['source_inflight']=torch.tensor(False);row['executed_deviation']=torch.tensor(0.)
             return row
         r=self.replay[index-len(self.expert_indices)]
         payload=torch.load(r['path'],map_location='cpu',weights_only=True)

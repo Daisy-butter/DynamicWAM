@@ -16,7 +16,8 @@ parity required). Missing reference rows cannot be executed. This bounds change;
 it does not prove a task-success lower bound, especially with stale A10.
 
 History and predicted-future M use separately normalized cross-attention and
-separate gates. A10 is not a generic M attention token. A/Z still interact within
+separate gates. The future gate sees measured executed-command deviation from
+the source plan, joined by command identity (not future ground truth). A10 is not a generic M attention token. A/Z still interact within
 the same transformer. Future Z is the existing three supervised roles x four
 command events, with no invented support/occlusion labels.
 
@@ -54,7 +55,9 @@ the same functions/contracts as online; legacy cache timestamp matches alone are
 not trusted. Original Full normalization is retained. Raw cache parity must be
 tested on identical frames and real endpoints.
 
-Stage 1: fresh-source expert bootstrap, fitting bounded corrections and Z. Stage
+Stage 1: fresh-source expert bootstrap, fitting bounded corrections and Z.
+If bounding a target changes the expert action prefix, the corresponding expert
+Z/contact labels are masked; incompatible futures are never presented as labels. Stage
 2/3: actual native rollout snapshots with their jointly recorded source/query
 times, source prefix, publication time and command offset. Fresh Full endpoints at
 the recorded current state supervise corrections. Replay Z/contact labels are

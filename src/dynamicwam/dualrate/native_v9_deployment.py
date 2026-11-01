@@ -31,7 +31,7 @@ class NativeResidualPolicy:
         self.sensors=NativePhysicalHistory(on_capture=self._capture)
         self.pending=deque();self.command_index=0;self.world=None;self.source=None
         self.records=[];self.env=None;self.current_target=None;self.last_request=-1e30;self.last_request_index=-100
-        self.record_query=record_query;self.consumed=set();self.version=0;self.completed=None;self.bootstrap_checked=False
+        self.record_query=record_query;self.consumed=set();self.version=0;self.completed=None;self.bootstrap_checked=False;self.executed_targets=[]
 
     def _time(self,env):return float(env._scene_step_clock.snapshot().time_seconds)
 
@@ -114,6 +114,13 @@ class NativeResidualPolicy:
                 fast_known_actions=batch['state'].new_zeros(1,16,14),
                 fast_known_mask=torch.zeros(1,16,dtype=torch.bool,device=self.builder.device),
                 future_times=torch.full((1,12),float('nan'),dtype=torch.float64,device=self.builder.device))
+            source_index=int(self.world['native_source_index'][0])
+            past=self.executed_targets[source_index:self.command_index]
+            deviation=0.
+            if past:
+                actual=(torch.tensor(np.stack(past),device=self.builder.device)-self.builder.mean.to(self.builder.device))/self.builder.scale.to(self.builder.device)
+                deviation=(actual-self.world['reference_actions'][0,:len(past)]).abs().mean()
+            batch['executed_deviation']=torch.as_tensor(deviation,device=self.builder.device).reshape(1)
             a10,valid=draft(self.world,batch,self.system.native_v9['reference_ttl'])
             if not bool(valid[:,:1].all()):raise RuntimeError('uncovered execution prefix')
             t=time.monotonic();overlap=self.service.future is not None
@@ -129,6 +136,7 @@ class NativeResidualPolicy:
                 reference_age=now-float(self.world['source_time'][0]),wait_reason=wait_reason,
                 world_context_fresh=now-float(self.world['source_time'][0])<=self.system.native_v9['reference_ttl']+1e-8,
                 prior_row_offset=self.command_index-int(self.world['native_source_index'][0]),
+                executed_plan_deviation=float(batch['executed_deviation'][0]),
                 slow_inflight_at_fast_start=overlap,fast_start_wall=t,fast_end_wall=time.monotonic(),fast_seconds=time.monotonic()-t,query_seconds=time.monotonic()-begin,
                 prefix_rows=0,reference_reused=self.version in self.consumed,
                 raw_correction_max=float(((sample['actions']-a10)[0,:1].cpu()*self.builder.scale).abs().max()),
@@ -139,6 +147,7 @@ class NativeResidualPolicy:
         before=len(self.sensors.capture_events)
         action_wall=time.monotonic()
         with self.sensors.during_action(env):env.take_action(self.current_target,action_type='qpos')
+        self.executed_targets.append(self.current_target.copy())
         self.current_target=None;self.command_index+=1
         if self.command_index!=env.take_action_cnt:raise RuntimeError('TOPP command count mismatch')
         self.records.extend(dict(e,kind='native_history_capture') for e in self.sensors.capture_events[before:])
