@@ -17,17 +17,43 @@ def graph_acceptance(system,c):
         world=system.world_readout(system.predict_reference(b));world['native_available']=torch.ones(1,device='cuda:0',dtype=torch.bool)
         gen=torch.Generator(device='cuda:0').manual_seed(42)
         eager=system.sample_fast(b,world,generator=gen)
-        prior,valid=draft(world,b,1.44)
+        prior,valid=draft(world,b,c['native_v9']['reference_ttl'])
         zero=not bool(system.fast.action_out.weight.any() or system.fast.action_out.bias.any())
         if zero:torch.testing.assert_close(eager['actions'][valid],prior[valid],atol=2e-6,rtol=0)
         engine=system.enable_fast_graph();gen.manual_seed(42)
         actual=system.sample_fast(b,world,generator=gen)
         for k in eager:torch.testing.assert_close(actual[k],eager[k],atol=2e-5,rtol=2e-5)
         changed=dict(world,reference_actions=world['reference_actions']+.125)
+        gen.manual_seed(42)
         altered=system.sample_fast(b,changed,generator=gen)
         if zero:torch.testing.assert_close(altered['actions'][valid],prior[valid]+.125,atol=2e-6,rtol=0)
+        if float((altered['actions']-actual['actions']).abs().max())<.01:raise ValueError('direct A10 input is disconnected')
+        sensitivities={}
+        for name in ('latest_observation','world'):
+            bb=dict(b,rgb=b['rgb']*.5) if name=='latest_observation' else b
+            ww=dict(world,world_tokens=world['world_tokens']*.5) if name=='world' else world
+            gen.manual_seed(42);changed_output=system.sample_fast(bb,ww,generator=gen)
+            delta=float((changed_output['future']-actual['future']).abs().max())
+            if not delta>1e-7:raise ValueError(name+' is disconnected from the joint future path')
+            sensitivities[name]=dict(future_max_difference=delta,action_max_difference=float((changed_output['actions']-actual['actions']).abs().max()))
+        # Test A <- Z directly at a nonzero diagnostic decoder while restoring
+        # every production parameter; a zero decoder intentionally hides Z in A.
+        weight=system.fast.action_out.weight.detach().clone()
+        system.fast.action_out.weight.copy_(torch.linspace(-.003,.003,weight.numel(),device=weight.device).reshape_as(weight))
+        condition=system.conditions(b,world);noise=torch.randn_like(actual['actions']);z=torch.randn_like(actual['future']);sigma=noise.new_tensor([.4])
+        first=system.fast(noise,z,sigma,**condition)['action_clean']
+        second=system.fast(noise,z*.5,sigma,**condition)['action_clean']
+        sensitivities['Z_to_A']=float((first-second).abs().max())
+        system.fast.action_out.weight.copy_(weight)
+        if not sensitivities['Z_to_A']>1e-9:raise ValueError('Z is disconnected from action generation')
+        # Parameter version changes invalidate captures: rebuild the unchanged
+        # production graph, then compare again against the original eager result.
+        system._fast_graph_sampler=None;del engine
+        engine=system.enable_fast_graph();gen.manual_seed(42)
+        restored=system.sample_fast(b,world,generator=gen)
+        for k in eager:torch.testing.assert_close(restored[k],eager[k],atol=2e-5,rtol=2e-5)
         receipt=engine.seal(expected_shapes=1)
-    return dict(passed=receipt['passed'],graph=receipt,zero_correction_parity=zero,changed_draft_checked=True)
+    return dict(passed=receipt['passed'],graph=receipt,zero_correction_parity=zero,changed_draft_checked=True,sensitivities=sensitivities)
 
 
 class ReplayRecorder:

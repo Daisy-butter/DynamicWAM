@@ -45,6 +45,39 @@ def main():
         acceptance=runner.read_json(Path(config['output'])/'deployment_acceptance.json')
         if guard.get('state')!='completed' or not guard.get('guard_closed') or not acceptance.get('passed'):raise RuntimeError(name+' acceptance/exit failed')
         return acceptance
+    def initial_training_acceptance(child,name,configs):
+        # Finite CPU-only check, then stop observing. The existing guards remain
+        # responsible for the run; this adds no CUDA context or recovery action.
+        import math
+        started=None;first=None;launch=time.monotonic()
+        files=[Path(configs[0]['output'])/f'rank_{rank}.jsonl' for rank in range(8)]
+        def latest(path):
+            try:
+                data=path.read_bytes().splitlines()
+                return json.loads(data[-1]) if data else None
+            except (FileNotFoundError,ValueError):return None
+        while True:
+            if child.poll() is not None:raise RuntimeError('formal sequence exited before initial stability acceptance')
+            rows=[latest(path) for path in files]
+            if started is None and all(rows):started=time.monotonic();first=rows
+            if started is not None and time.monotonic()-started>=300:break
+            if time.monotonic()-launch>1800:raise RuntimeError('formal training did not reach initial stability in 30 minutes')
+            time.sleep(5.)
+        for rank,row in enumerate(rows):
+            if row['rank']!=rank or row['step']<=first[rank]['step'] or not math.isfinite(row['grad_norm']) or not all(math.isfinite(v) for v in row['losses'].values()):
+                raise RuntimeError('initial eight-rank progress/finite check failed')
+            if time.time()-files[rank].stat().st_mtime>120:raise RuntimeError('initial training rank stalled')
+        guardroot=root/name/'warmup';auth=runner.read_json(guardroot/'authorization.json');owner=auth['external_guard']
+        if proc_identity(owner['pid'])['start_ticks']!=owner['start_ticks']:raise RuntimeError('guard identity changed')
+        held={os.readlink(f) for f in Path(f"/proc/{owner['pid']}/fd").iterdir()}
+        if len(owner['device_paths'])!=8 or not set(owner['device_paths'])<=held:raise RuntimeError('guard lost device lifetime descriptors')
+        from guarded_dualrate_smoke import kernel_evidence
+        before=runner.read_json(guardroot/'kernel_before.json')
+        if kernel_evidence()!=before['lines'] or Path('/proc/sys/kernel/random/boot_id').read_text().strip()!=before['boot_id']:raise RuntimeError('kernel/boot changed')
+        if runner.frozen_source(repo)!=source:raise RuntimeError('source changed during initial training')
+        atomic(root/'initial_training_acceptance.json',dict(passed=True,seconds=time.monotonic()-started,
+            first_steps=[r['step'] for r in first],steps=[r['step'] for r in rows],guard_device_descriptors=8,kernel_unchanged=True,
+            source=source,observation_finished=True))
     def sequence(configs,kind,name):
         rows=[]
         for phase,c in zip(PHASES,configs):
@@ -52,7 +85,9 @@ def main():
             rows.append(dict(phase=phase,config=str(path),config_sha256=file_sha256(path),max_runtime_seconds=86400*7))
         path=root/(name+'.json');atomic(path,dict(run_kind=kind,sequence_id=configs[0]['sequence_id'],gpu_uuids=a.gpus,phases=rows))
         child=start([sys.executable,str(repo/'scripts/dualrate_training_sequence.py'),'--sequence',str(path),'--run-dir',str(root/name)],name)
-        status(name,child_pid=child.pid);wait(child,name)
+        status(name,child_pid=child.pid)
+        if kind=='formal_distributed_training':initial_training_acceptance(child,name,configs)
+        wait(child,name)
         if runner.read_json(root/name/'status.json')['state']!='completed':raise RuntimeError(name+' incomplete')
     try:
         # Training scenes use a separate seed range. Never use scored scenes as
