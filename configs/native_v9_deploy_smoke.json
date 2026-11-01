@@ -2020,5 +2020,6 @@
     "fast_replan_commands": 1,
     "slow_refresh_commands": 4
   },
-  "collect_native_replay": true
+  "collect_native_replay": true,
+  "action_interval_seconds": 0.18
 }

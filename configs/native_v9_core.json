@@ -1861,5 +1861,6 @@
     "native_replay_required": true,
     "fast_replan_commands": 1,
     "slow_refresh_commands": 4
-  }
+  },
+  "action_interval_seconds": 0.18
 }
