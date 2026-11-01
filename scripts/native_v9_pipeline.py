@@ -38,7 +38,8 @@ def main():
     def rollout(config,name,devices):
         path=root/(name+'.json');atomic(path,config)
         child=start([sys.executable,str(repo/'scripts/guarded_dualrate_run.py'),'--config',str(path),
-            '--run-dir',str(root/(name+'_guard')),'--gpus',','.join(devices),'--max-runtime','86400'],name)
+            '--run-dir',str(root/(name+'_guard')),'--gpus',','.join(devices),'--max-runtime',
+            str(7*86400 if config.get('purpose')=='formal_native_evaluation' else 86400)],name)
         return child
     def check_rollout(name,config):
         guard=runner.read_json(root/(name+'_guard')/'status.json')
