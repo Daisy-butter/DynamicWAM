@@ -66,14 +66,17 @@ class ReplayRecorder:
             path=folder/f'query_{number:04d}.pt'
             torch.save(dict(schema='native-v9-actual-replay-v1',row=row,language=str(language),language_sha256=file_sha256(language)),path)
             entries.append(dict(path=str(path),sha256=file_sha256(path),task=task,seed=seed,command_index=q,
-                source_index=event['source_command_index'],physical_age=event['reference_age'],source_inflight=bool(source['source_inflight'][0])))
+                source_index=event['source_command_index'],physical_age=event['reference_age'],source_has_committed_waypoint=bool(source['source_has_committed_waypoint'][0])))
         self.rows.clear();return entries
 
 
 def audit(events):
     count=0;end=0.;sources={};queries=[]
     for e in events:
-        if e['kind']=='slow_request':sources[e['version']]=e
+        if e['kind']=='slow_request':
+            if e['source_index']!=count or abs(e['source_time']-end)>1e-7:raise ValueError('slow source is not a command boundary')
+            if e['committed_rows'] not in (0,1):raise ValueError('invalid slow commitment')
+            sources[e['version']]=e
         if e['kind']=='slow_publish':
             r=sources[e['version']]
             if r['source_index']!=e['source_index'] or r['source_time']!=e['source_time']:raise ValueError('source identity changed')

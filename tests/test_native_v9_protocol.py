@@ -26,7 +26,12 @@ def test_reject_shifted_clock_or_event(field,value):
 
 
 def test_actual_model_overlap_not_merely_inflight_flag():
-    e=events();e.insert(3,dict(kind='slow_request',version=2,source_index=0,source_time=.3,committed_rows=1))
-    e.insert(4,dict(kind='slow_publish',version=2,source_index=0,source_time=.3,complete_physical=.5,consumed_at_physical=1.9,
+    e=events();e.insert(3,dict(kind='slow_request',version=2,source_index=0,source_time=0.,committed_rows=1))
+    e.insert(4,dict(kind='slow_publish',version=2,source_index=0,source_time=0.,complete_physical=.5,consumed_at_physical=1.9,
         model_start_wall=100.2,model_end_wall=100.7))
     assert audit(e)['model_execution_overlap']==1
+
+
+def test_reject_partial_topp_source():
+    e=events();e[0]["source_time"]=.3
+    with pytest.raises(ValueError,match="command boundary"):audit(e)

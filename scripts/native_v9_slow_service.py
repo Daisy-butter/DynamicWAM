@@ -42,7 +42,7 @@ def child(sock,config,parent_pid,parent_session):
             if request['committed'] is not None:
                 source['source_known_actions'][0,0]=torch.as_tensor(request['committed'],device='cuda:1')
                 source['source_known_mask'][0,0]=True
-            source['source_inflight']=torch.tensor([request['committed'] is not None],device='cuda:1')
+            source['source_has_committed_waypoint']=torch.tensor([request['committed'] is not None],device='cuda:1')
             source['frozen_source_seed']=torch.tensor([request['seed']],device='cuda:1')
             with torch.no_grad():
                 model_start=time.monotonic()

@@ -32,7 +32,7 @@
     "future_visual": 0.25,
     "future_geometry": 1.0,
     "contact": 0.1,
-    "action_conditioned_probability": 0.0,
+    "action_conditioned_probability": 0.25,
     "cache_dropout": 0.0
   },
   "slow_lr": 0.0,

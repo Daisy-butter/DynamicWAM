@@ -98,8 +98,8 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     from .system import DualRateSystem
     DualRateSystem._validate_clocks(batch)
     if batch['fast_known_mask'].any():raise ValueError('native boundary queries have zero hard prefix')
-    allowed=torch.zeros_like(batch['source_known_mask']);allowed[:,0]=batch.get('source_inflight',torch.zeros(len(allowed),device=allowed.device,dtype=torch.bool))
-    if not torch.equal(allowed,batch['source_known_mask']):raise ValueError('slow commitment must be the actual in-flight waypoint')
+    allowed=torch.zeros_like(batch['source_known_mask']);allowed[:,0]=batch.get('source_has_committed_waypoint',torch.zeros(len(allowed),device=allowed.device,dtype=torch.bool))
+    if not torch.equal(allowed,batch['source_known_mask']):raise ValueError('slow commitment must be the actually committed waypoint')
     if not torch.allclose(batch['rgb_times'],batch['query_time'][:,None].expand_as(batch['rgb_times']),atol=1e-7,rtol=0):raise ValueError('native query exposure mismatch')
     self.slow.eval()
     # Actual native-replay samples and offline demonstration samples remain
@@ -145,9 +145,20 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     ze=(out['future_velocity']-(nz-z)).float().square();vd=self.loss_config.visual_dim
     visual=masked_mean(ze[...,:vd],zv[...,:vd]);geometry=masked_mean(ze[...,vd:],zv[...,vd:])
     contact=masked_mean(F.binary_cross_entropy_with_logits(out['contact_logits'],torch.where(cv,batch['contact'],0.),reduction='none'),cv)
-    loss=main+.1*endpoint+.05*boundary+self.loss_config.future_visual*visual+self.loss_config.future_geometry*geometry+self.loss_config.contact*contact
+    auxiliary=a.new_zeros(())
+    # Preserve long-horizon Z supervision without attaching an expert future to
+    # a different clipped action. This explicit TRAIN-ONLY conditional-world
+    # branch supplies the actual expert actions to the SAME A/Z network.
+    if not bool(replay.any()) and bool(torch.rand((),device=a.device,generator=generator)<self.loss_config.action_conditioned_probability):
+        labels=batch['future_loss_valid']
+        aux_z=torch.where(self.future_field_support[None],torch.where(labels,fm_input(z,sigma,nz),nz),0.)
+        aux=self.fast(a,aux_z,sigma,action_known_mask=torch.ones_like(av),known_actions=a,**cond)
+        ae=(aux['future_velocity']-(nz-z)).float().square()
+        auxiliary=self.loss_config.future_visual*masked_mean(ae[...,:vd],labels[...,:vd])+self.loss_config.future_geometry*masked_mean(ae[...,vd:],labels[...,vd:])
+        auxiliary=auxiliary+self.loss_config.contact*masked_mean(F.binary_cross_entropy_with_logits(aux['contact_logits'],torch.where(batch['contact_valid'],batch['contact'],0.),reduction='none'),batch['contact_valid'])
+    loss=main+.1*endpoint+.05*boundary+self.loss_config.future_visual*visual+self.loss_config.future_geometry*geometry+self.loss_config.contact*contact+auxiliary
     return dict(loss=loss,fast_action=main,teacher_endpoint=endpoint,boundary=boundary,
-        future_visual=visual,future_geometry=geometry,contact=contact,
+        future_visual=visual,future_geometry=geometry,contact=contact,conditional_expert_future=auxiliary,
         target_clipped_fraction=((desired-prior).abs()>radius).float().mean().detach(),
         z_action_compatible_fraction=compatible.float().mean().detach())
 
@@ -157,7 +168,7 @@ def configure(model,settings,supervision):
     if set(settings)!=expected or settings['motion_sampling']!='raw_frames_v1' or settings['native_replay_required'] is not True:
         raise ValueError('explicit V9 timing/motion/replay contract required')
     if settings['reference_ttl']!=4.0 or settings['fast_replan_commands']!=1 or settings['slow_refresh_commands']!=4 or not 0<settings['arm_radius_radians']<=.15 or not 0<settings['gripper_radius']<=.1:
-        raise ValueError('bounded physical correction and existing TTL required')
+        raise ValueError('bounded physical correction and explicit V9 cadence/TTL required')
     configure_v6(model,supervision)
     model.native_v9=dict(settings)
     model.fast.reference_ttl=settings['reference_ttl']

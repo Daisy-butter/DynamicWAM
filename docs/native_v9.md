@@ -28,16 +28,20 @@ only consumes immutable observations. Fast sampling pauses physics, as native
 DOMINO does; slow computation overlaps TOPP and fast computation. No wall-clock
 catch-up, clock scaling, fixed-duration TOPP fiction, or deadline-based row skip.
 
-During TOPP, existing real 60ms physical captures can request slow refresh once per four completed
-command events. At most one request runs; no FIFO of old requests.
-If an action is in progress, its final waypoint is the one-row slow hard prefix.
-Fast queries at completed-command boundaries have zero hard prefix. Both use the
-same completed-command counter. Completed M is atomically published with original
-source exposure and observed completion physical time. Source identities cannot
-go backwards. Fast normally consumes the latest complete valid reference and
-executes one original TOPP command. Bootstrap/uncovered A10 explicitly
-pauses native physics for a fresh reference; it never uses an invalid suffix.
-Exceptional waits and reference reuse/overlap are measured separately.
+The fast loop queries every completed TOPP command. The slow loop refreshes once
+per four command events, on its independent process. Its source observation is a
+real command-boundary observation, not a partial TOPP frame. After fast chooses
+its next waypoint, that irrevocably selected waypoint becomes the one-row slow
+prefix; slow starts in the background while TOPP executes it. This avoids an
+untrained fractional remaining-action interpretation in the frozen Full model.
+Intermediate real 60ms captures still maintain physical motion history, but do
+not become new slow sources. At most one slow request runs; there is no FIFO of
+old requests. Fast normally reads the latest complete M and never waits for an
+ordinary refresh. Bootstrap or exhausted A10 command coverage pauses native
+physics for a fresh reference. Every exceptional wait is counted. Atomic M keeps
+original exposure, actual availability physical time and integer command origin.
+Fast boundary queries have zero hard prefix; slow's one-row prefix is the exact
+executor target, not a speculative plan row.
 
 Wall time measures compute, transport and publication delay only. Physical time
 selects observations, motion endpoints and predicted-world TTL (4.0s in this newly trained contract). Integer command identity
@@ -62,7 +66,11 @@ Z/contact labels are masked; incompatible futures are never presented as labels.
 times, source prefix, publication time and command offset. Fresh Full endpoints at
 the recorded current state supervise corrections. Replay Z/contact labels are
 masked unless labels were actually collected on that trajectory; no expert suffix
-is attached to an intervened trajectory. Actual replay is mandatory, and stage
+is attached to an intervened trajectory. A separate 25% training-only conditional
+world objective feeds the actual expert action sequence to the SAME A/Z network
+and supervises its real expert Z/contact labels. This retains long-horizon Z
+supervision even when the bounded main action target differs; it is not a second
+action policy or a deployment input. Actual replay is mandatory, and stage
 selection is by explicit data domain, not synthetic elapsed-time relabelling.
 
 Proposed quick-iteration budget: 1000/3000/5000 updates, global batch16 (8 ranks,

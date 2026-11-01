@@ -30,7 +30,10 @@ def main():
         child=subprocess.Popen(command,cwd=repo,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         log.close();children.append((child,proc_identity(child.pid)['start_ticks']));return child
     def wait(child,name):
-        if child.wait():raise RuntimeError(name+' failed; no retry')
+        while child.poll() is None:
+            if any(other.poll() not in (None,0) for other,_ in children):raise RuntimeError('parallel guarded phase failed; no retry')
+            time.sleep(1.)
+        if child.returncode:raise RuntimeError(name+' failed; no retry')
         children[:]=[x for x in children if x[0] is not child]
     def rollout(config,name,devices):
         path=root/(name+'.json');atomic(path,config)

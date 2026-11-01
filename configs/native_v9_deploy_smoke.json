@@ -32,7 +32,7 @@
     "future_visual": 0.25,
     "future_geometry": 1.0,
     "contact": 0.1,
-    "action_conditioned_probability": 0.0,
+    "action_conditioned_probability": 0.25,
     "cache_dropout": 0.0
   },
   "slow_lr": 0.0,
@@ -43,7 +43,7 @@
   "save_every": 500,
   "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/native_v9_20261101/expert_raw01/train.json",
   "storage_root": "/SSD_DISK/users/wuruihan",
-  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v9_20261101/smoke02",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v9_20261101/smoke03",
   "min_free_bytes": 85899345920,
   "codec_id": "wan22_first_plus_four_causal_native_v2",
   "future_field_support": [
@@ -2001,7 +2001,7 @@
     ],
     "episodes": 1,
     "instruction_mode": "native_instruction",
-    "result_stamp": "native_v9_smoke02"
+    "result_stamp": "native_v9_smoke03"
   },
   "native_v6": {
     "teacher_weight": 0.1,

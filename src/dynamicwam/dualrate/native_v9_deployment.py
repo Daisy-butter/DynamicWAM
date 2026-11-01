@@ -61,7 +61,7 @@ class NativeResidualPolicy:
         self.source=source;self.version=result['request_id']
         self.records.append(dict(kind='slow_publish',version=self.version,source_index=index,source_time=s,
             complete_physical=complete,consumed_at_physical=now,complete_wall=result['complete_wall'],
-            compute_wall_seconds=result['compute_wall_seconds'],model_start_wall=result.get('model_start_wall'),model_end_wall=result.get('model_end_wall'),source_inflight=bool(source['source_inflight'][0])))
+            compute_wall_seconds=result['compute_wall_seconds'],model_start_wall=result.get('model_start_wall'),model_end_wall=result.get('model_end_wall'),source_has_committed_waypoint=bool(source['source_has_committed_waypoint'][0])))
 
     def _request(self,frames,*,force=False):
         now=self._time(self.env)
@@ -85,7 +85,6 @@ class NativeResidualPolicy:
         # No model forward, IPC wait, extra scene step or extra render here.
         completed=self.service.poll()
         if completed is not None:self.completed=completed
-        self._request(frames)
 
     def _usable(self,now):
         if self.world is None:return False
@@ -145,6 +144,7 @@ class NativeResidualPolicy:
             if self.record_query is not None:self.record_query(batch,self.source,frames,self.records[-1])
         self.current_target=self.pending.popleft()
         before=len(self.sensors.capture_events)
+        self._request(frames)  # boundary snapshot plus irrevocably selected next waypoint
         action_wall=time.monotonic()
         with self.sensors.during_action(env):env.take_action(self.current_target,action_type='qpos')
         self.executed_targets.append(self.current_target.copy())
