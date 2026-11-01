@@ -87,6 +87,8 @@ class QueryContext:
     time_features: Tensor
     action_deviation: Tensor
     future_valid: Tensor
+    draft_actions: Tensor | None = None
+    draft_valid: Tensor | None = None
 
 
 class _JointBlock(nn.Module):

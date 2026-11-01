@@ -1,3 +1,15 @@
+# Current authorization: .92 native V9, 2026-11-01
+User authorizes a new native noncontinuous DOMINO revision: independent background
+slow updates, bounded corrections around aligned Full A10, raw-frame motion parity,
+and native timing replay before retraining/evaluation. This scope supersedes older
+V7 no-change/no-Full-output rules ONLY in this isolated tree. Original results,
+checkpoints, .50/.100 and other users remain protected. Read docs/native_v9.md.
+Do not fabricate TOPP times or replay future labels. Formal stage2/3 require real
+native replay. CPU tests are not GPU acceptance. Freeze source/config for every
+run; owned-process cleanup, no driver recovery, no automatic retry; all artifacts
+under the verified .92 SSD wuruihan directory. Training starts from official Full.
+
+---
 # Current scope: .92 V7 deployment history repair, 2026-10-31
 
 Only this independent deployment checkout may change. The active V7 Stage3

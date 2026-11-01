@@ -661,7 +661,7 @@ def _cache_pair_matches(flow_cache, end_index, start_time, end_time):
 
 
 def _flow_features(handle, times, frame, flow_cache, flow_contract, *, return_flow_rgb=False,
-                   interval_seconds=12*RAW_FRAME_SECONDS):
+                   interval_seconds=12*RAW_FRAME_SECONDS, use_cache=True):
     """Time-matched raw numeric history plus freshly computed spatial flow, CPU only."""
     from dynamicwam.absolute_motion import (compute_flow_observation, build_motion_features,
         compute_dense_flow, filter_flow_by_forward_backward_consistency)
@@ -677,7 +677,7 @@ def _flow_features(handle, times, frame, flow_cache, flow_contract, *, return_fl
         both.append(ok)
         agree.append(ok and _cache_pair_matches(
             flow_cache, indices[end_slot], values[indices[start_slot]], values[indices[end_slot]]))
-    if all(agree[i] or not both[i] for i in range(len(slots))):
+    if use_cache and all(agree[i] or not both[i] for i in range(len(slots))):
         returned = agree[1:]
         selected = np.asarray(indices[2:], dtype=np.int64)
         numeric = torch.from_numpy(flow_cache['motion_features'][selected].copy())
@@ -874,8 +874,8 @@ class DominoPhysicalDataset(Dataset):
             except ValueError:visual_frames.append(-1)
         with h5py.File(ep['raw_path'],'r') as h:
             sm,smv,sma,smi,_,_,_,source_flow_rgb=_flow_features(
-                h,t,source_frame,flow,self.manifest['flow_contract'],return_flow_rgb=True,interval_seconds=4*dt)
-            motion,mv,ma,mi,spatial,spatial_valid,spatial_times,query_flow_rgb=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'],interval_seconds=4*dt,return_flow_rgb=True)
+                h,t,source_frame,flow,self.manifest['flow_contract'],return_flow_rgb=True,interval_seconds=4*dt,use_cache=self.manifest.get('motion_sampling')!='raw_frames_v1')
+            motion,mv,ma,mi,spatial,spatial_valid,spatial_times,query_flow_rgb=_flow_features(h,t,query_frame,flow,self.manifest['flow_contract'],interval_seconds=4*dt,return_flow_rgb=True,use_cache=self.manifest.get('motion_sampling')!='raw_frames_v1')
             query_condition=np.stack([cv2.resize(image,(320,384)) for image in query_flow_rgb]+[_composite(h,query_frame,(384,320))])
             rgb,pixelvalid=zip(*[_letterbox(_rgb(h,query_frame,c),tuple(self.manifest['rgb_size']),tuple(self.manifest['rgb_view_sizes'][v])) for v,c in enumerate(CAMERAS)])
             condition=np.stack([cv2.resize(image,(320,384)) for image in source_flow_rgb]+[_composite(h,source_frame,(384,320))])

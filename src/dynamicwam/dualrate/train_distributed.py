@@ -77,9 +77,10 @@ class DistributedEpochCursor:
         self._order_epoch, self._order = None, None
 
 
-def selected_rows(dataset, query_age_seconds):
+def selected_rows(dataset, query_age_seconds, training_domains=None):
     """Select existing physical-age rows; never relabel timestamps or targets."""
     import numpy as np
+    if hasattr(dataset,"select_domains"):return dataset.select_domains(training_domains)
     allowed = tuple(float(age) for age in query_age_seconds)
     if getattr(dataset,'exposure_anchored',False):
         # rows[:,2] is an event-template id, not an independent age id.
@@ -125,7 +126,7 @@ def validate_phase_config(config):
         raise ValueError("invalid LR schedule")
     if not (float(config["fast_lr"]) > 0 and float(config["max_grad_norm"]) > 0):
         raise ValueError("positive fast LR and gradient norm required")
-    if config.get("native_v7"):
+    if config.get("native_v7") or config.get("native_v9"):
         if float(config["slow_lr"]) != 0:
             raise ValueError("compact V7 requires a frozen Full teacher")
     elif config.get("native_v6"):
@@ -156,6 +157,7 @@ def phase_contract(config, identity):
     if config.get("native_v5"):contract["native_v5"]=config["native_v5"]
     if config.get("native_v6"):contract["native_v6"]=config["native_v6"]
     if config.get("native_v7"):contract["native_v7"]=config["native_v7"]
+    if config.get("native_v9"):contract["native_v9"]=config["native_v9"]
     return contract
 
 
@@ -390,7 +392,7 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
     for key in ("active_entity_roles", "visual_target_semantics", "visual_validity_semantics"):
         if not config.get(key) or config[key] != dataset.manifest.get(key):
             raise ValueError(f"training/manifest {key} differs")
-    eligible = selected_rows(dataset, config["query_age_seconds"])
+    eligible = selected_rows(dataset, config["query_age_seconds"],config.get("training_domains"))
     base.validate_row(dataset[int(eligible[0])])
     seed = int(config["seed"])
     # Identical initialization across ranks; RNG becomes rank-specific only
@@ -406,7 +408,7 @@ def _train(config, target, output, rank, world, identity, dependencies, probe, r
     new = [p for p in system.parameters() if id(p) not in slow_ids and p.requires_grad]
     # Fixed optimizer groups across phases preserve fast moments and slow masters.
     groups=[dict(params=slow,lr=config["slow_lr"],name="slow")]
-    if (config.get("native_v5") or config.get("native_v6")) and not config.get("native_v7"):
+    if (config.get("native_v5") or config.get("native_v6")) and not (config.get("native_v7") or config.get("native_v9")):
         motor=list(system.fast.motor.parameters());motor_ids={id(p) for p in motor}
         new=[p for p in new if id(p) not in motor_ids]
         groups.append(dict(params=motor,lr=config["motor_lr"],name="motor"))

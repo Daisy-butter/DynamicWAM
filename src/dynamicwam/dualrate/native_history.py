@@ -29,9 +29,10 @@ def capture_rendered_rgb(env):
 
 
 class NativePhysicalHistory:
-    def __init__(self, *, capture=capture_rendered_rgb):
+    def __init__(self, *, capture=capture_rendered_rgb, on_capture=None):
         self.history = ObservationHistory(max_frames=128)
         self.capture = capture
+        self.on_capture = on_capture
         self.origin = None
         self.next_sample = 1
         self.clock = None
@@ -96,6 +97,7 @@ class NativePhysicalHistory:
                     requested_exposure=due, physics_step_seconds=dt,
                     capture_wall_seconds=time.monotonic()-start))
                 self.next_sample += 1
+                if self.on_capture is not None:self.on_capture(self.history.snapshot(now))
             return result
 
         owner._update_render = render_and_capture

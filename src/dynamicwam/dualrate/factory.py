@@ -81,7 +81,17 @@ def build_system(config, device="cpu"):
         motion_mean=native.config.motion_feature_mean, motion_scale=native.config.motion_feature_scale,
         codec_id=config["codec_id"],future_field_support=config["future_field_support"],
         contact_field_support=config["contact_field_support"])
-    if config.get('native_v7'):
+    if config.get('native_v9'):
+        from .native_v9 import ResidualEventFast,configure
+        from .native_v6 import EventWorldReadout
+        manifest=json.loads(Path(config['manifest']).read_text())
+        scale=torch.tensor(manifest['action_statistics']['std'])
+        radius=torch.full((14,),config['native_v9']['arm_radius_radians'])
+        radius[[6,13]]=config['native_v9']['gripper_radius']
+        model.fast=ResidualEventFast(arch,radius/scale)
+        model.world_readout=EventWorldReadout(latent_channels=48,action_dim=14,world_dim=arch.world_dim,native_hidden_dim=2048)
+        configure(model,config['native_v9'],config['native_v6'])
+    elif config.get('native_v7'):
         from .native_v7 import CompactEventFast, configure
         from .native_v6 import EventWorldReadout
         model.fast=CompactEventFast(arch)

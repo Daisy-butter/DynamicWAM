@@ -43,6 +43,8 @@ _CONTEXT_FIELDS = ('current_allowed', 'slow_allowed', 'time_features',
 def _flatten(a, z, known, mask, context, fields, contacts):
     values = dict(a=a, z=z, known=known, mask=mask, fields=fields, contacts=contacts)
     values.update({name: getattr(context, name) for name in _CONTEXT_FIELDS})
+    for name in ('draft_actions','draft_valid'):
+        if getattr(context,name,None) is not None:values[name]=getattr(context,name)
     for layer, group in enumerate(context.kv):
         for item, value in enumerate(group):
             values[f'kv_{layer}_{item}'] = value
@@ -56,7 +58,7 @@ def _context(template, values):
     return replace(template, inputs={}, versions={},
         kv=tuple(tuple(values[f'kv_{i}_{j}'] for j in range(len(group)))
                  for i, group in enumerate(template.kv)),
-        **{name: values[name] for name in _CONTEXT_FIELDS})
+        **{name: values[name] for name in (*_CONTEXT_FIELDS,'draft_actions','draft_valid') if name in values})
 
 
 def _layout(values, steps):
