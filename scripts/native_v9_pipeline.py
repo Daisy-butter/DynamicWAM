@@ -31,11 +31,16 @@ def main():
         log.close();children.append((child,proc_identity(child.pid)['start_ticks']));return child
     def wait(child,name):
         while child.poll() is None:
-            if any(other.poll() not in (None,0) for other,_ in children):raise RuntimeError('parallel guarded phase failed; no retry')
+            if any(root.glob('cohort_*/abort.json')) or any(other.poll() not in (None,0) for other,_ in children):raise RuntimeError('parallel guarded phase failed; no retry')
             time.sleep(1.)
         if child.returncode:raise RuntimeError(name+' failed; no retry')
         children[:]=[x for x in children if x[0] is not child]
     def rollout(config,name,devices):
+        if name.startswith('collect_') or name.startswith('formal_eval_'):
+            group='collect' if name.startswith('collect_') else 'eval';directory=root/('cohort_'+group)
+            if not directory.exists():
+                directory.mkdir();atomic(directory/'manifest.json',dict(members=[str(i) for i in range(4)]))
+            config['parallel_guard_cohort']=dict(directory=str(directory),member=name.rsplit('_',1)[1])
         path=root/(name+'.json');atomic(path,config)
         child=start([sys.executable,str(repo/'scripts/guarded_dualrate_run.py'),'--config',str(path),
             '--run-dir',str(root/(name+'_guard')),'--gpus',','.join(devices),'--max-runtime',

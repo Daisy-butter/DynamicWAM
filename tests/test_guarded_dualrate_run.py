@@ -80,5 +80,7 @@ def test_all_ranks_must_consume_same_receipt(tmp_path):
 def test_lifetime_order_in_fixed_supervisor():
     source = (SCRIPTS/"guarded_dualrate_run.py").read_text()
     assert source.index("guard.open()") < source.index('base.telemetry(devices, out, "preflight")') < source.index("proc = subprocess.Popen(command")
-    assert source.index("remaining = base.cleanup_owned") < source.index('base.telemetry(devices, out, "postflight")') < source.index("guard.close()")
+    body=source.split("def supervise(",1)[1]
+    assert body.index('cohort.barrier("ready"') < body.index("proc = subprocess.Popen(command")
+    assert body.index("remaining = base.cleanup_owned") < body.index('cohort.barrier("drained"') < body.index("postflight_idle(devices, out, selected)") < body.index("guard.close()")
     assert "shell=True" not in source and "nvidia-smi -r" not in source

@@ -48,3 +48,38 @@ def test_replay_manifest_accepts_json_string_paths_and_checks_hash(tmp_path):
     assert result['samples']==1 and result['tasks']==['x']
     shard.write_bytes(b'changed')
     with pytest.raises(ValueError,match='shard mismatch'):build_manifest(expert,[tmp_path],tmp_path/'changed/train.json')
+
+
+def test_parallel_guards_share_start_and_drain_barriers(tmp_path):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from parallel_guard_cohort import ParallelGuardCohort
+    (tmp_path/'manifest.json').write_text(json.dumps(dict(members=['0','1'])))
+    gates=[ParallelGuardCohort(dict(directory=str(tmp_path),member=str(i)),tmp_path) for i in range(2)]
+    with ThreadPoolExecutor(2) as pool:
+        futures=[pool.submit(g.barrier,'ready',timeout=3.) for g in gates]
+        for f in futures:f.result(timeout=5)
+        gates[0].abort('owned worker failed')
+        with pytest.raises(RuntimeError,match='aborted'):gates[1].barrier('ready',timeout=1.)
+        futures=[pool.submit(g.barrier,'drained',timeout=3.,honor_abort=False) for g in gates]
+        for f in futures:f.result(timeout=5)
+    assert len(list((tmp_path/'drained').glob('*.json')))==2
+
+
+def test_native_only_rejects_exact_infeasible_grasp_candidate():
+    from dynamicwam.runtime.domino_rt.domino_session import _accept_expert_seed
+    class Env:
+        plan_success=True
+        def __init__(self,message):self.message=message;self.seeds=[];self.closed=0
+        def setup_demo(self,**kw):self.seeds.append(kw['seed'])
+        def play_once(self):
+            if len(self.seeds)==1:raise AssertionError(self.message)
+            return dict(info='native expert')
+        def close_env(self):self.closed+=1
+        def check_success(self):return True
+    e=Env('target_pose cannot be None for move action.')
+    assert _accept_expert_seed(e,dict(render_freq=1),7,LookupError)==8
+    assert e.seeds==[7,8] and e.closed==2
+    e=Env('unrelated assertion')
+    with pytest.raises(AssertionError,match='unrelated'):_accept_expert_seed(e,dict(render_freq=1),7,LookupError)
+    assert e.seeds==[7] and e.closed==1

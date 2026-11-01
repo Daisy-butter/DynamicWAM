@@ -600,6 +600,16 @@ def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstabl
             env.close_env()  # Cleanup failure must abort, not try another GPU scene.
             seed += 1
             continue
+        except AssertionError as exc:
+            args["render_freq"] = render_freq
+            env.close_env()
+            # Native expert planner explicitly reports no feasible grasp pose.
+            # Only this exact planning outcome is a rejected candidate scene;
+            # other assertions and all renderer/CUDA/runtime failures stay fatal.
+            if str(exc) != "target_pose cannot be None for move action.":raise
+            print(f"reject infeasible expert seed {seed}: {exc}", flush=True)
+            seed += 1
+            continue
         except Exception:
             args["render_freq"] = render_freq
             try:

@@ -174,6 +174,7 @@ def supervise(args, repo, out):
     errors, locks = [], []
     guard = proc = before = boot = source = config = identity = binding = selected = None
     closed, outcome, leader_ticks = True, "failed", None
+    cohort = None
     began = time.monotonic()
 
     def status(state, **extra):
@@ -195,6 +196,9 @@ def supervise(args, repo, out):
         if mode not in MODES:
             raise ValueError("explicit supported run_kind required")
         storage = Path(config["storage_root"]).resolve(strict=True)
+        if config.get("parallel_guard_cohort"):
+            from parallel_guard_cohort import ParallelGuardCohort
+            cohort = ParallelGuardCohort(config["parallel_guard_cohort"], storage)
         base.storage_directory(out, storage)
         output = base.storage_directory(Path(config["output"]), storage)
         resume = args.resume.resolve(strict=True) if args.resume is not None else None
@@ -263,6 +267,7 @@ def supervise(args, repo, out):
             if config.get("deployment", {}).get("device_roles") != roles:
                 raise ValueError("three-device deployment must explicitly bind renderer0/fast1/slow2")
             receipt["device_roles"] = roles
+        if cohort is not None:cohort.barrier("ready", timeout=300.)
         authorization = out / "authorization.json"
         base.atomic(authorization, receipt)
         command = worker_command(repo, config, frozen, authorization, resume)
@@ -280,6 +285,7 @@ def supervise(args, repo, out):
         outcome = "completed"
     except BaseException as exc:
         errors.append(repr(exc))
+        if cohort is not None:cohort.abort(repr(exc))
         status("failed_cleaning")
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
@@ -303,6 +309,9 @@ def supervise(args, repo, out):
                         pass
                     time.sleep(1.)
             base.atomic(out / "owned_exit.json", dict(owned_pgid=proc.pid, remaining=[], returncode=proc.poll()))
+        if cohort is not None:
+            try:cohort.barrier("drained", timeout=args.max_runtime+300., honor_abort=False)
+            except BaseException as exc:errors.append(f"parallel drain unconfirmed: {exc!r}")
         if guard is not None:
             if len(guard.handles) == len(devices) and proc is not None:
                 try:
