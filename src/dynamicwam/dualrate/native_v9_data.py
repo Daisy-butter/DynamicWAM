@@ -22,7 +22,7 @@ class NativeReplayDataset:
         self.rows[len(self.expert_indices):,2]=1
         if verify_hash:
             for r in self.replay:
-                if sha256_file(r['path'])!=r['sha256']:raise ValueError('native replay shard changed')
+                if sha256_file(Path(r['path']))!=r['sha256']:raise ValueError('native replay shard changed')
 
     def __len__(self):return len(self.rows)
 
@@ -45,7 +45,7 @@ class NativeReplayDataset:
         payload=torch.load(r['path'],map_location='cpu',weights_only=True)
         if payload['schema']!='native-v9-actual-replay-v1':raise ValueError('unknown replay semantics')
         row=payload['row']
-        if sha256_file(payload['language'])!=payload['language_sha256']:raise ValueError('replay language changed')
+        if sha256_file(Path(payload['language']))!=payload['language_sha256']:raise ValueError('replay language changed')
         language=torch.load(payload['language'],map_location='cpu',weights_only=True)
         for key in ('source_text','teacher_text','text'):row[key]=language['context']
         if not bool(row['native_replay']) or bool(row['future_loss_valid'].any()) or bool(row['contact_valid'].any()):
@@ -66,7 +66,7 @@ def build_manifest(expert_manifest,replay_roots,output):
             identity=(item['task'],item['seed'],item['command_index'])
             if identity in identities:raise ValueError('duplicate native sample')
             identities.add(identity)
-            if sha256_file(item['path'])!=item['sha256']:raise ValueError('replay shard mismatch')
+            if sha256_file(Path(item['path']))!=item['sha256']:raise ValueError('replay shard mismatch')
             entries.append(item)
     m.update(native_v9_dataset=True,expert_manifest=str(expert_manifest),expert_manifest_sha256=sha256_file(expert_manifest),
         motion_sampling='raw_frames_v1',native_replay_samples=entries,

@@ -35,3 +35,16 @@ def test_actual_model_overlap_not_merely_inflight_flag():
 def test_reject_partial_topp_source():
     e=events();e[0]["source_time"]=.3
     with pytest.raises(ValueError,match="command boundary"):audit(e)
+
+
+def test_replay_manifest_accepts_json_string_paths_and_checks_hash(tmp_path):
+    import json,hashlib
+    from dynamicwam.dualrate.native_v9_data import build_manifest
+    expert=tmp_path/'expert.json';expert.write_text(json.dumps(dict(motion_sampling='raw_frames_v1')))
+    shard=tmp_path/'row.pt';shard.write_bytes(b'hash-bound native sample')
+    proof=dict(passed=True,samples=[dict(path=str(shard),sha256=hashlib.sha256(shard.read_bytes()).hexdigest(),task='x',seed=3,command_index=4)])
+    (tmp_path/'replay_acceptance.json').write_text(json.dumps(proof))
+    result=build_manifest(expert,[tmp_path],tmp_path/'out/train.json')
+    assert result['samples']==1 and result['tasks']==['x']
+    shard.write_bytes(b'changed')
+    with pytest.raises(ValueError,match='shard mismatch'):build_manifest(expert,[tmp_path],tmp_path/'changed/train.json')
