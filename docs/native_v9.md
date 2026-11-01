@@ -27,20 +27,23 @@ only consumes immutable observations. Fast sampling pauses physics, as native
 DOMINO does; slow computation overlaps TOPP and fast computation. No wall-clock
 catch-up, clock scaling, fixed-duration TOPP fiction, or deadline-based row skip.
 
-During TOPP, existing real 60ms physical captures can request slow refresh no more
-often than 0.36 physical seconds. At most one request runs; no FIFO of old requests.
+During TOPP, existing real 60ms physical captures can request slow refresh once per four completed
+command events. At most one request runs; no FIFO of old requests.
 If an action is in progress, its final waypoint is the one-row slow hard prefix.
 Fast queries at completed-command boundaries have zero hard prefix. Both use the
 same completed-command counter. Completed M is atomically published with original
 source exposure and observed completion physical time. Source identities cannot
 go backwards. Fast normally consumes the latest complete valid reference and
-executes two original TOPP commands. Bootstrap/expired/uncovered A10 explicitly
+executes one original TOPP command. Bootstrap/uncovered A10 explicitly
 pauses native physics for a fresh reference; it never uses an invalid suffix.
 Exceptional waits and reference reuse/overlap are measured separately.
 
 Wall time measures compute, transport and publication delay only. Physical time
-selects observations, motion endpoints and TTL (1.44s). Integer command identity
+selects observations, motion endpoints and predicted-world TTL (4.0s in this newly trained contract). Integer command identity
 selects action rows and Z events. Unknown future TOPP end times are not timestamps.
+A10 validity is remaining integer command coverage, as in Full chunk execution;
+world-feature expiry does not silently delete still-covered A10 rows. Both ages
+and their separate masks are exposed in training and deployment.
 The metadata .18s sampling interval remains an offline expert convention, not a
 claim about native execution duration.
 

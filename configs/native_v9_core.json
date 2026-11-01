@@ -1854,10 +1854,12 @@
     "execute_weight": 4.0
   },
   "native_v9": {
-    "reference_ttl": 1.44,
+    "reference_ttl": 4.0,
     "arm_radius_radians": 0.06,
     "gripper_radius": 0.05,
     "motion_sampling": "raw_frames_v1",
-    "native_replay_required": true
+    "native_replay_required": true,
+    "fast_replan_commands": 1,
+    "slow_refresh_commands": 4
   }
 }

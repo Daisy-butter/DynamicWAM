@@ -80,13 +80,16 @@ def audit(events):
             if not e['source_time']<=e['complete_physical']<=e['consumed_at_physical']+1e-8:raise ValueError('publication clocks')
         if e['kind']=='fast_query':
             if e['command_index']!=count or abs(e['query_physical_time']-end)>1e-7:raise ValueError('fast command/clock ledger')
-            if e['prefix_rows'] or e['source_command_index']>count or e['reference_age']>1.440001:raise ValueError('invalid native reference')
+            if e['prefix_rows'] or not 0<=count-e['source_command_index']<16 or e['reference_age']<0:raise ValueError('invalid native reference')
             queries.append(e)
         if e['kind']=='native_topp_execute':
             if e['command_index']!=count or abs(e['physical_start']-end)>1e-7 or e['physical_end']<end:raise ValueError('TOPP clock ledger')
             count+=1;end=e['physical_end']
     if not queries:raise ValueError('no fast queries')
-    return dict(passed=True,commands=count,queries=len(queries),overlapped=sum(x['slow_inflight_at_fast_start'] for x in queries),
+    model_intervals=[(e['model_start_wall'],e['model_end_wall']) for e in events if e['kind']=='slow_publish' and e.get('model_start_wall') is not None]
+    executing=[(e['execute_start_wall'],e['execute_end_wall']) for e in events if e['kind']=='native_topp_execute' and 'execute_start_wall' in e]
+    actual_overlap=sum(any(max(a,c)<min(b,d) for c,d in executing) for a,b in model_intervals)
+    return dict(passed=True,model_execution_overlap=actual_overlap,commands=count,queries=len(queries),overlapped=sum(x['slow_inflight_at_fast_start'] for x in queries),
         reused=sum(x['reference_reused'] for x in queries),exceptional_waits=sum(x['wait_reason']=='no_valid_reference' for x in queries),
         partial_sources=sum(x.get('committed_rows',0)>0 for x in events if x['kind']=='slow_request'))
 
@@ -119,6 +122,10 @@ def main():
     if c.get('checkpoint'):
         if file_sha256(c['checkpoint'])!=c['checkpoint_sha256']:raise ValueError('checkpoint mismatch')
         payload=torch.load(c['checkpoint'],map_location='cpu',weights_only=True,mmap=True)
+        if payload['identity']['source_sha256']!=source_identity() or payload['identity']['manifest_sha256']!=file_sha256(c['manifest']):raise ValueError('trained source/data contract differs')
+        for key in ('architecture','native_v6','native_v9','time_contract','codec_id'):
+            if payload['contract'][key]!=c[key]:raise ValueError('trained model contract differs: '+key)
+        if not payload.get('phase_complete') or payload.get('phase')!='cross_time_joint':raise ValueError('final complete phase required')
         system.load_state_dict(payload['model'],strict=True);del payload
     save(out/'model_acceptance.json',graph_acceptance(system,c))
     from dynamicwam.dualrate.online import OnlineBatchBuilder
@@ -136,12 +143,32 @@ def main():
     service=NativeSlowService(c);reports=[];samples=[]
     try:
       for task in c['deployment']['tasks']:
-       metrics=[]
+       metrics=[];next_seed=c['deployment']['seed'];references=None
+       if c.get('prepared'):
+        from dualrate_eval_worker import load_frozen_task
+        references=load_frozen_task(dict(c,seed=c['deployment']['seed'],episodes=c['deployment']['episodes']),task)
        for ep in range(c['deployment']['episodes']):
         env=None;d=out/task/f'episode_{ep:04d}';d.mkdir(parents=True,exist_ok=False)
         try:
+            descriptor=motion=None;replay=None
+            if references:
+                descriptor,motion,_=references[ep];next_seed=descriptor['seed']
+                replay=dict(seed=descriptor['seed'],instruction=descriptor['instruction'],saved_motion=motion['saved_motion'])
             with SapienInitLock():env,prepared=prepare_level1_env(domino,task_name=task,task_config=c['deployment']['task_config'],
-                start_seed=c['deployment']['seed']+ep,instruction_type=c['deployment']['instruction_type'],native_protocol=True)
+                start_seed=next_seed,instruction_type=c['deployment']['instruction_type'],native_protocol=True,replay=replay)
+            next_seed=prepared['seed']+1
+            if descriptor:
+                import numpy as np
+                env._rt_episode_info=motion['episode_info']
+                if descriptor['arm_tag']:
+                    from envs.utils.action import ArmTag
+                    env.arm_tag=ArmTag(descriptor['arm_tag'])
+                for key in ('seed','instruction','stop_on_contact','check_z_threshold'):
+                    if prepared[key]!=descriptor[key]:raise ValueError('frozen native scene changed: '+key)
+                for key,value in dict(initial_target_position=np.asarray(env._eval_target_actor.actor.get_pose().p),initial_state=env.robot.get_left_arm_jointState()+env.robot.get_right_arm_jointState(),physics_dt_s=float(env.scene.get_timestep())).items():
+                    if not np.allclose(value,descriptor[key],atol=1e-8,rtol=0):raise ValueError('frozen native initial state changed: '+key)
+                if env.step_lim!=descriptor['native_action_limit']:raise ValueError('native task budget changed')
+                save(d/'manifest.json',descriptor)
             if prepared['velocity'] is not None:raise ValueError('native motion converted')
             prompt=SCENE_PREFIX+prepared['instruction'];language=language_for(c,m,prompt);env.set_instruction(instruction=prompt)
             builder=OnlineBatchBuilder(m,action_mean=m['action_statistics']['mean'],action_scale=m['action_statistics']['std'],language=language,device='cuda:0')
@@ -162,7 +189,8 @@ def main():
             policy.finish();checks=audit(policy.records)
             report=dict(protocol=PROTOCOL,task=task,episode_index=ep,seed=prepared['seed'],success=success,stop_reason=reason,
                 action_count=env.take_action_cnt,action_limit=env.step_lim,physical_end=policy._time(env),wall_seconds=time.monotonic()-start,
-                events=policy.records,clock_audit=checks,native_motion_unmodified=True,performance_accepted=False)
+                events=policy.records,clock_audit=checks,native_motion_unmodified=True,performance_accepted=False,
+                purpose=c.get('purpose','engineering_smoke'),checkpoint_sha256=c.get('checkpoint_sha256'),config_sha256=canonical_hash(c))
             native=out/'eval_result'/task/'native_v9'/c['deployment']['task_config']/'candidate'/c['deployment']['result_stamp']
             report.update(video.finalize(native/f'episode{ep}.mp4',episode_end_physics_s=policy._time(env)))
             if not validate_video_artifacts(report):raise ValueError('native MP4 decode failed')
@@ -177,7 +205,7 @@ def main():
             if env is not None:env.close_env();env.release_episode_resources()
     finally:service.close()
     checks=[r['clock_audit'] for r in reports]
-    if not sum(x['overlapped'] for x in checks) or not sum(x['partial_sources'] for x in checks):raise ValueError('independent slow/fast path unexercised')
+    if not sum(x['model_execution_overlap'] for x in checks) or not sum(x['reused'] for x in checks) or not sum(x['partial_sources'] for x in checks):raise ValueError('independent slow/fast path unexercised')
     save(out/'deployment_acceptance.json',dict(passed=True,protocol=PROTOCOL,episodes=len(reports),checks=checks,slow_child_exitcode=service.process.exitcode))
     if c.get('collect_native_replay'):save(out/'replay_acceptance.json',dict(passed=True,samples=samples,labels='fresh-state Full teacher; Z/contact masked'))
 

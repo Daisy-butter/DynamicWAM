@@ -30,6 +30,10 @@ class NativeReplayDataset:
         if not domains or not set(domains)<={'expert_bootstrap','native_replay'}:raise ValueError('explicit training domains required')
         if 'native_replay' in domains and not self.replay:raise ValueError('actual native replay is missing')
         wanted=[0 if d=='expert_bootstrap' else 1 for d in domains]
+        if set(wanted)=={0,1}:
+            expert=np.flatnonzero(self.rows[:,2]==0);replay=np.flatnonzero(self.rows[:,2]==1)
+            chosen=np.random.RandomState(20261101).choice(expert,min(len(expert),len(replay)),replace=False)
+            return np.concatenate((chosen,replay))
         return np.flatnonzero(np.isin(self.rows[:,2],wanted))
 
     def __getitem__(self,index):

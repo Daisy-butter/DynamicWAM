@@ -61,7 +61,7 @@ class CompactEventFast(FastJointWAM):
         cv=torch.cat((observation_valid,previous_valid),1)
         hist=world_types==0;pred=world_types==1
         start,end=world_intervals.unbind(-1)
-        eligible=world_valid & native_available[:,None] & (age[:,None]<=1.44+1e-8)
+        eligible=world_valid & native_available[:,None] & (age[:,None]<=getattr(self,"reference_ttl",1.44)+1e-8)
         allowed=eligible[:,None] & ((hist[:,None] & (end[:,None]<=query_time[:,None,None]+1e-8)) |
             (pred[:,None] & (targets[...,None]>=start[:,None]) & (targets[...,None]<=end[:,None])))
         readable=allowed.any(1)

@@ -48,4 +48,6 @@ def test_partial_slow_commitment_uses_next_command_and_real_physical_age():
     a,valid=draft(world,batch,1.44)
     assert a[0,0,0]==1 and valid.sum()==15 and not valid[0,-1]
     batch['query_time']+=.5
+    assert draft(world,batch,1.44)[1].sum()==15  # A10 is command-covered, M expiry is separate.
+    batch['native_query_index']=torch.tensor([23])
     assert not draft(world,batch,1.44)[1].any()

@@ -43,7 +43,7 @@
   "save_every": 500,
   "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/native_v9_20261101/expert_raw01/train.json",
   "storage_root": "/SSD_DISK/users/wuruihan",
-  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v9_20261101/smoke01",
+  "output": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v9_20261101/smoke02",
   "min_free_bytes": 85899345920,
   "codec_id": "wan22_first_plus_four_causal_native_v2",
   "future_field_support": [
@@ -2001,7 +2001,7 @@
     ],
     "episodes": 1,
     "instruction_mode": "native_instruction",
-    "result_stamp": "native_v9_smoke01"
+    "result_stamp": "native_v9_smoke02"
   },
   "native_v6": {
     "teacher_weight": 0.1,
@@ -2012,11 +2012,13 @@
     "execute_weight": 4.0
   },
   "native_v9": {
-    "reference_ttl": 1.44,
+    "reference_ttl": 4.0,
     "arm_radius_radians": 0.06,
     "gripper_radius": 0.05,
     "motion_sampling": "raw_frames_v1",
-    "native_replay_required": true
+    "native_replay_required": true,
+    "fast_replan_commands": 1,
+    "slow_refresh_commands": 4
   },
   "collect_native_replay": true
 }

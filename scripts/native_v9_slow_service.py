@@ -45,12 +45,14 @@ def child(sock,config,parent_pid,parent_session):
             source['source_inflight']=torch.tensor([request['committed'] is not None],device='cuda:1')
             source['frozen_source_seed']=torch.tensor([request['seed']],device='cuda:1')
             with torch.no_grad():
+                model_start=time.monotonic()
                 reference=system.predict_reference(source)
+                torch.cuda.synchronize(1);model_end=time.monotonic()
                 # V9 never consumes native video K/V; do not transfer megabytes of unused caches.
                 reference['native_video_cache']={}
                 result=_cpu_tree(reference);batch=_cpu_tree(source)
             _send(sock,dict(kind='result',request_id=request['request_id'],reference=result,source=batch,
-                compute_wall_seconds=time.monotonic()-started),time.monotonic()+60)
+                compute_wall_seconds=time.monotonic()-started,model_start_wall=model_start,model_end_wall=model_end),time.monotonic()+60)
     except BaseException as exc:
         import traceback
         try:_send(sock,dict(kind='error',error=repr(exc),traceback=traceback.format_exc()),time.monotonic()+5)

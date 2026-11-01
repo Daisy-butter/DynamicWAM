@@ -82,7 +82,8 @@ class ResidualEventFast(CompactEventFast):
 def draft(world,batch,ttl):
     actions,valid=align_plan(world['reference_actions'],world['native_source_index'],batch['native_query_index'])
     age=batch['query_time']-world['source_time']
-    valid=valid & (age[:,None]<=ttl+1e-8) & world.get('native_available',torch.ones_like(age,dtype=torch.bool))[:,None]
+    if (age<0).any():raise ValueError('future source used as action draft')
+    valid=valid & world.get('native_available',torch.ones_like(age,dtype=torch.bool))[:,None]
     return actions,valid
 
 
@@ -108,7 +109,7 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     world['native_available']=torch.ones_like(batch['native_query_index'],dtype=torch.bool)
     cond=self.conditions(batch,world)
     prior,pv=cond['draft_actions'],cond['draft_valid']
-    if not bool(pv[:,:2].all()):raise ValueError('training row has no executable aligned draft')
+    if not bool(pv[:,:1].all()):raise ValueError('training row has no executable aligned draft')
     teacher_batch=current_source(batch)
     if 'teacher_seed' in batch:teacher_batch['frozen_source_seed']=batch['teacher_seed']
     teacher=self.predict_reference(teacher_batch,generator=generator)['reference_actions'].detach()
@@ -125,7 +126,7 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     x=fm_input(reachable,sigma,na)
     zz=torch.where(self.future_field_support[None],torch.where(zv,fm_input(z,sigma,nz),nz),0.)
     out=self.fast(x,zz,sigma,**cond);clean=out['action_clean']
-    weight=a.new_ones((1,16,1));weight[:,:2]=self.native_v6['execute_weight']
+    weight=a.new_ones((1,16,1));weight[:,:1]=self.native_v6['execute_weight']
     main=masked_mean(((clean-reachable)/radius).square()*weight,av[...,None])
     agreement=torch.exp(-((teacher-a).square().mean(-1).detach())/self.native_v6['teacher_scale'])
     endpoint=masked_mean(F.smooth_l1_loss(clean,teacher,reduction='none')*agreement[...,None],av[...,None])
@@ -144,13 +145,14 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
 
 
 def configure(model,settings,supervision):
-    expected={'reference_ttl','arm_radius_radians','gripper_radius','motion_sampling','native_replay_required'}
+    expected={'reference_ttl','arm_radius_radians','gripper_radius','motion_sampling','native_replay_required','fast_replan_commands','slow_refresh_commands'}
     if set(settings)!=expected or settings['motion_sampling']!='raw_frames_v1' or settings['native_replay_required'] is not True:
         raise ValueError('explicit V9 timing/motion/replay contract required')
-    if settings['reference_ttl']!=1.44 or not 0<settings['arm_radius_radians']<=.15 or not 0<settings['gripper_radius']<=.1:
+    if settings['reference_ttl']!=4.0 or settings['fast_replan_commands']!=1 or settings['slow_refresh_commands']!=4 or not 0<settings['arm_radius_radians']<=.15 or not 0<settings['gripper_radius']<=.1:
         raise ValueError('bounded physical correction and existing TTL required')
     configure_v6(model,supervision)
     model.native_v9=dict(settings)
+    model.fast.reference_ttl=settings['reference_ttl']
     model.predict_reference=MethodType(reference,model)
     model.conditions=MethodType(conditions,model)
     model.training_loss=MethodType(training_loss,model)
