@@ -136,6 +136,7 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     weight=a.new_ones((1,16,1));weight[:,:1]=self.native_v6['execute_weight']
     main=masked_mean(((clean-reachable)/radius).square()*weight,av[...,None])
     agreement=torch.exp(-((teacher-a).square().mean(-1).detach())/self.native_v6['teacher_scale'])
+    agreement=torch.where(replay[:,None],torch.ones_like(agreement),agreement)
     endpoint=masked_mean(F.smooth_l1_loss(clean,teacher,reduction='none')*agreement[...,None],av[...,None])
     # Preserve baseline's joint trajectory; smooth changes to it, not gripper events.
     correction=(clean-prior)/radius
