@@ -14,14 +14,14 @@ PHASES=('warmup','small_age_joint','cross_time_joint')
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--core',required=True)
-    p.add_argument('--cpu-acceptance',required=True);p.add_argument('--not-before',required=True)
+    p.add_argument('--cpu-acceptance',required=True);p.add_argument('--manual-start',action='store_true',required=True)
     p.add_argument('--deployment',required=True);p.add_argument('--gpus',required=True);p.add_argument('--prepared-eval',required=True)
     a=p.parse_args();root=Path(a.root).resolve();repo=Path(__file__).resolve().parents[1]
     sys.path.insert(0,str(repo/'src'))
     if not str(root).startswith('/SSD_DISK/users/wuruihan/'):raise ValueError('verified SSD scope required')
     root.mkdir(parents=True,exist_ok=False);base=runner.read_json(a.core);deploy=runner.read_json(a.deployment)
-    from bounded_feedback_launch import wait_and_validate
-    wait_and_validate(a,repo,root,base,deploy)
+    from bounded_feedback_launch import validate_before_manual_launch
+    validate_before_manual_launch(a,repo,root,base,deploy)
     gpus=a.gpus.split(',')
     if len(gpus)!=8 or len(set(gpus))!=8:raise ValueError('eight distinct reserved GPUs required')
     source=runner.frozen_source(repo);children=[];began=time.monotonic()
@@ -163,11 +163,9 @@ def main():
             source_contract=runner.source_contract(source),profiles={p:runner.profile_sha256(c) for p,c in zip(PHASES,configs)},
             evidence=evidence,native_deployment=acceptance,quality_accepted=False)
         ap=root/'acceptance.json';atomic(ap,receipt)
-        from datetime import datetime
-        if time.time()<datetime.fromisoformat(a.not_before).timestamp():raise RuntimeError('formal training attempted before user time')
         atomic(root/'formal_checklist.json',dict(passed=True,cpu_acceptance_sha256=file_sha256(Path(a.cpu_acceptance)),
             gpu_acceptance_sha256=file_sha256(ap),world_size=8,all_three_phases_restored=True,
-            actual_native_replay=True,native_topp_mp4_accepted=True,not_before=a.not_before,
+            actual_native_replay=True,native_topp_mp4_accepted=True,start_mode='manual',
             formal_weights_from_official_full=True,smoke_weights_never_initialize_formal=True,
             policy_quality_proven=False,no_retry=True))
         formal=[]

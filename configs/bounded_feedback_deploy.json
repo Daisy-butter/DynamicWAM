@@ -39,7 +39,7 @@
   "fast_lr": 0.0001,
   "steps": 2,
   "batch_size": 1,
-  "seed": 20261101,
+  "seed": 20261102,
   "save_every": 500,
   "manifest": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/datasets/bounded_feedback_v10_20261102/expert_half_r1/train.json",
   "storage_root": "/SSD_DISK/users/wuruihan",
@@ -2001,7 +2001,7 @@
     ],
     "episodes": 1,
     "instruction_mode": "native_instruction",
-    "result_stamp": "native_v9_smoke03"
+    "result_stamp": "bounded_feedback_v10"
   },
   "native_v6": {
     "teacher_weight": 0.1,

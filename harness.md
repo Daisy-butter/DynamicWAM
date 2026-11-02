@@ -1,3 +1,13 @@
+# Latest user instruction: manual launch only, 2026-11-02
+
+The user cancelled all scheduled launches. The CPU waiter and Codex automation
+were cancelled before GPU use. Only provide a manual launch script; do not start
+training in this turn. This supersedes the earlier 02:00 scheduling instruction.
+All numerical, native TOPP, three-review and GPU acceptance requirements remain.
+Formal warmup starts from official DynamicWAM_full.pt plus newly initialized fast
+modules; later phases retain the preceding formal phase state, never smoke weights.
+
+---
 # Current authorization: .92 dual-rate bounded feedback, 2026-11-02
 
 Continue branch `feat/native-v9-residual-async-20261101`; commits distinguish iterations.

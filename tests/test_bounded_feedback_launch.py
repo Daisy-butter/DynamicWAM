@@ -40,23 +40,21 @@ def test_changed_data_config_profile_or_failed_iteration_refuse_launch(tmp_path,
     with pytest.raises(ValueError,match='iteration'):launch.verify(r,tmp_path,c,d)
 
 
-def test_not_before_wait_is_cpu_only_and_does_not_claim_formal_ready(tmp_path,monkeypatch):
+def test_manual_gate_does_not_wait_or_claim_formal_ready(tmp_path,monkeypatch):
     r,c,d,_,_=setup(tmp_path,monkeypatch);rp=tmp_path/'receipt.json';rp.write_text(json.dumps(r))
-    args=SimpleNamespace(core=str(c),deployment=str(d),cpu_acceptance=str(rp),not_before='2026-11-03T02:00:00+08:00')
-    deadline=launch.datetime.fromisoformat(args.not_before).timestamp();now=[deadline-61];sleeps=[]
-    def sleep(n):sleeps.append(n);now[0]+=n
-    launch.wait_and_validate(args,tmp_path,tmp_path,dict(bounded_feedback={'contract':'x'}),dict(bounded_feedback={'contract':'x'}),clock=lambda:now[0],sleep=sleep)
+    args=SimpleNamespace(core=str(c),deployment=str(d),cpu_acceptance=str(rp),manual_start=True)
+    launch.validate_before_manual_launch(args,tmp_path,tmp_path,dict(bounded_feedback={'contract':'x'}),dict(bounded_feedback={'contract':'x'}))
     status=json.loads((tmp_path/'status.json').read_text())
-    assert sleeps==[30.,30.,1.] and not status['formal_training_started'] and not status['gpu_context_created']
+    assert status['start_mode']=='manual' and not status['formal_training_started'] and not status['gpu_context_created']
     assert status['state']=='gpu_acceptance_pending'
 
 
-def test_wrong_timezone_or_train_deploy_contract_refuses(tmp_path,monkeypatch):
+def test_missing_manual_start_or_train_deploy_contract_refuses(tmp_path,monkeypatch):
     r,c,d,_,_=setup(tmp_path,monkeypatch);rp=tmp_path/'receipt.json';rp.write_text(json.dumps(r))
-    a=SimpleNamespace(core=str(c),deployment=str(d),cpu_acceptance=str(rp),not_before='2026-11-03T02:00:00')
-    with pytest.raises(ValueError,match='offset'):launch.wait_and_validate(a,tmp_path,tmp_path,{}, {})
-    a.not_before='2026-11-03T02:00:00+08:00'
-    with pytest.raises(ValueError,match='contract'):launch.wait_and_validate(a,tmp_path,tmp_path,{'bounded_feedback':1},{'bounded_feedback':2})
+    a=SimpleNamespace(core=str(c),deployment=str(d),cpu_acceptance=str(rp),manual_start=False)
+    with pytest.raises(ValueError,match='manual'):launch.validate_before_manual_launch(a,tmp_path,tmp_path,{}, {})
+    a.manual_start=True
+    with pytest.raises(ValueError,match='contract'):launch.validate_before_manual_launch(a,tmp_path,tmp_path,{'bounded_feedback':1},{'bounded_feedback':2})
 
 
 def test_sampling_contract_changes_checkpoint_lineage(tmp_path):

@@ -1,8 +1,6 @@
-"""CPU-only, one-shot not-before gate. Never claims CPU checks are GPU checks."""
-from datetime import datetime
+"""CPU-only manual-launch gate. Never claims CPU checks are GPU checks."""
 import json
 from pathlib import Path
-import time
 from guarded_dualrate_smoke import atomic,file_sha256 as _path_sha256
 import guarded_dualrate_run as runner
 
@@ -34,23 +32,12 @@ def verify(receipt,repo,core,deploy):
         raise ValueError('three explicit passing iteration records required')
 
 
-def wait_and_validate(args,repo,root,core,deploy,*,clock=time.time,sleep=time.sleep):
-    target=datetime.fromisoformat(args.not_before)
-    if target.tzinfo is None:raise ValueError('not-before must specify Asia/Shanghai UTC offset')
-    if target.isoformat()!='2026-11-03T02:00:00+08:00':raise ValueError('unauthorized scheduled start')
+def validate_before_manual_launch(args,repo,root,core,deploy):
+    if getattr(args,'manual_start',False) is not True:raise ValueError('explicit manual start required')
     receipt=json.loads(Path(args.cpu_acceptance).read_text())
     verify(receipt,repo,args.core,args.deployment)
     if core.get('bounded_feedback')!=deploy.get('bounded_feedback') or not core.get('bounded_feedback'):
         raise ValueError('train and deploy feedback contract mismatch')
-    deadline=target.timestamp()
-    atomic(root/'status.json',dict(state='waiting_not_before',not_before=target.isoformat(),
-        formal_training_started=False,gpu_context_created=False,no_retry=True))
-    while clock()<deadline:sleep(min(30.,deadline-clock()))
-    try:
-        verify(receipt,repo,args.core,args.deployment)
-        atomic(root/'status.json',dict(state='gpu_acceptance_pending',not_before=target.isoformat(),
-            formal_training_started=False,gpu_context_created=False,no_retry=True,
-            next='existing guarded pipeline checks idle GPUs then actual deployment/DDP/reload'))
-    except BaseException as exc:
-        atomic(root/'status.json',dict(state='blocked',error=repr(exc),formal_training_started=False,no_retry=True))
-        raise
+    atomic(root/'status.json',dict(state='gpu_acceptance_pending',start_mode='manual',
+        formal_training_started=False,gpu_context_created=False,no_retry=True,
+        next='existing guarded pipeline checks idle GPUs then actual deployment/DDP/reload'))
