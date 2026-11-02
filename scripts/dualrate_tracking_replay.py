@@ -34,7 +34,7 @@ def validate_config(c):
     for case in c['cases']:
         if case['label'] in labels or '/' in case['label']:raise ValueError('unique simple label required')
         labels.add(case['label'])
-        if case['controller'] not in ('c2','linear') or type(case['disable_robot_contacts']) is not bool:
+        if case['controller'] not in ('c2','linear','projected_c2') or type(case['disable_robot_contacts']) is not bool:
             raise ValueError('explicit replay controller/contact mode required')
         if sha(case['report'])!=case['report_sha256']:raise ValueError('recorded controls changed')
         j=read(case['report']);manifest=read(Path(case['report']).parent/'manifest.json')
@@ -79,6 +79,23 @@ def run_case(c,case,out,deadline):
     from dualrate_physics_optimization import passive_force_scope
     j=read(case['report']);task=j['task'];desc,motion,_=load_frozen_task(c,task)[j['episode_index']]
     rows=[e for e in j['events'] if e.get('event')=='execute'][:c['max_commands']]
+    projection=None
+    if case['controller']=='projected_c2':
+        # Pure executor ablation: SAME recorded Full commands and initial state,
+        # changing only to the currently implemented causal C2 projection.
+        # This is not a new closed-loop policy rollout or a scored episode.
+        from dynamicwam.dualrate.c2_executor import project_numpy
+        original=np.asarray([e['target'] for e in rows],np.float32)[None]
+        known=np.zeros(original.shape[:2],bool);known[:,:2]=True
+        if not np.array_equal(original[:,0],original[:,1]):raise ValueError('two original bootstrap holds required')
+        settings=c['residual_v10']
+        projected,valid=project_numpy(original,original,known,mean=np.zeros(14,np.float32),scale=np.ones(14,np.float32),
+            dt=settings['action_dt'],bounds=settings['bounds'],limits=settings['limits'])
+        if not valid.all():raise ValueError('Full replay projection infeasible')
+        projection=dict(original=original[0].tolist(),projected=projected[0].tolist(),
+            max_command_change=float(np.abs(projected-original).max()),settings=settings,
+            mode='offline recorded Full command executor ablation, not closed-loop')
+        rows=[dict(e,target=value.tolist()) for e,value in zip(rows,projected[0])]
     env=cache=None;disabled=[]
     try:
         with SapienInitLock():
@@ -121,7 +138,7 @@ def run_case(c,case,out,deadline):
                     v0=(target-previous)/adt;previous=target.copy();target=np.asarray(rows[tick//45]['target'],np.float64)
                     env.take_action_cnt=int(getattr(env,'take_action_cnt',0))+1
                 frac=(tick%45+1)/45
-                if case['controller']=='c2':q,v,_=evaluate(previous,target,v0,adt,frac*adt)
+                if case['controller'] in ('c2','projected_c2'):q,v,_=evaluate(previous,target,v0,adt,frac*adt)
                 else:q=previous+(target-previous)*frac;v=(target-previous)/adt
                 q[[6,13]]=target[[6,13]];v[[6,13]]=0
                 with passive_force_scope(robot,enabled=True):
@@ -139,6 +156,7 @@ def run_case(c,case,out,deadline):
                 if reason and (not terminal or terminal[-1]['reason']!=reason):terminal.append(dict(time=now,reason=reason))
         r=dict(complete=True,diagnostic_only=True,no_score=True,task=task,seed=desc['seed'],case=case,
             command_count=len(rows),physics_dt=dt,actuator_tracking=audit.receipt(),contacts=contacts,
+            projection_ablation=projection,
             disabled_shapes=disabled,terminal_events=terminal,wall_pacing=False,model_calls=0,
             controller_limits_do_not_guarantee_tracking=True,
             gains={side:{key:getattr(robot,side+'_'+key) for key in ('joint_stiffness','joint_damping')}
