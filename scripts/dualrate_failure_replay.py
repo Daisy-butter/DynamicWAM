@@ -186,12 +186,12 @@ def validate_config(config):
     return output,trace,descriptor,motion
 
 
-def authorize(config,path):
+def authorize(config,path,*,mode=MODE):
     path=Path(path).resolve(strict=True);r=read(path)
     expected=dict(source_sha256=source_hash(ROOT/'src/dynamicwam'),config_sha256=canonical_hash(config),
                   init_checkpoint_sha256=config['init_checkpoint_sha256'])
     visibility=','.join(config['gpu_uuids'])
-    if (r.get('mode')!=MODE or r.get('authorized') is not True or r.get('world_size')!=1
+    if (r.get('mode')!=mode or r.get('authorized') is not True or r.get('world_size')!=1
             or any(r.get('identity',{}).get(k)!=v for k,v in expected.items())
             or r.get('source',{}).get('scripts_sha256')!=source_hash(ROOT/'scripts')
             or r.get('gpu_uuids')!=config['gpu_uuids'] or r.get('cuda_visible_devices')!=visibility

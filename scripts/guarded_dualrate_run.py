@@ -19,7 +19,7 @@ import time
 import guarded_dualrate_smoke as base
 
 TRAIN_MODES = {"distributed_training_smoke", "formal_distributed_training"}
-MODES = TRAIN_MODES | {"domino_deployment_smoke", "dualrate_eval_suite", "dualrate_failure_replay"}
+MODES = TRAIN_MODES | {"domino_deployment_smoke", "dualrate_eval_suite", "dualrate_failure_replay", "dualrate_tracking_replay"}
 OPERATIONAL_FIELDS = {"run_kind", "output", "steps", "sequence_id", "acceptance_receipt",
     "acceptance_receipt_sha256", "stage_init_checkpoint", "stage_init_checkpoint_sha256", "resume"}
 
@@ -69,6 +69,10 @@ def read_json(path):
 
 
 def validate_acceptance(config, source):
+    if config["run_kind"] == "dualrate_tracking_replay":
+        from dualrate_tracking_replay import validate_config
+        validate_config(config)
+        return None
     if config["run_kind"] == "dualrate_failure_replay":
         from dualrate_failure_replay import validate_config
         validate_config(config)
@@ -130,7 +134,7 @@ def selected_uuids(value, devices, mode):
     if not selected or len(set(selected)) != len(selected) or any(
             re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", u) is None or u not in devices for u in selected):
         raise ValueError("distinct exact inventory GPU UUIDs required")
-    if mode in TRAIN_MODES | {'dualrate_eval_suite','dualrate_failure_replay'} and (len(selected) != 8 or set(selected) != set(devices)):
+    if mode in TRAIN_MODES | {'dualrate_eval_suite','dualrate_failure_replay','dualrate_tracking_replay'} and (len(selected) != 8 or set(selected) != set(devices)):
         raise ValueError("training requires exactly all eight adapters; no single-rank substitute")
     if mode == "domino_deployment_smoke" and len(selected) not in (1, 2, 3):
         raise ValueError("deployment smoke requires one to three explicitly pinned GPUs")
@@ -139,6 +143,8 @@ def selected_uuids(value, devices, mode):
 
 def worker_command(repo, config, frozen, authorization, resume=None):
     mode = config["run_kind"]
+    if mode == "dualrate_tracking_replay":
+        return [sys.executable,str(repo/"scripts/dualrate_tracking_replay.py"),"--config",str(frozen),"--authorization",str(authorization)]
     if mode == "dualrate_failure_replay":
         return [sys.executable,str(repo/"scripts/dualrate_failure_replay.py"),"--config",str(frozen),"--authorization",str(authorization)]
     common = ["--config", str(frozen), "--device", "cuda", "--authorization", str(authorization)]
@@ -232,7 +238,7 @@ def supervise(args, repo, out):
         if base.kernel_evidence() != before:
             raise RuntimeError("new driver evidence during initial telemetry")
         env = base.worker_environment(repo, out, ",".join(selected), binding, config=config)
-        if mode in {"domino_deployment_smoke", "dualrate_eval_suite", "dualrate_failure_replay"}:
+        if mode in {"domino_deployment_smoke", "dualrate_eval_suite", "dualrate_failure_replay", "dualrate_tracking_replay"}:
             render_config = dict(config, run_kind='domino_deployment_smoke')
             env.update(base.renderer_helpers().renderer_environment(render_config, env))
             base.atomic(out / "renderer_runtime_before.json", config["renderer_runtime"])
@@ -339,7 +345,7 @@ def supervise(args, repo, out):
                     base.atomic(out / "dependencies_after.json", final)
                     if final != binding:
                         errors.append("dependency overlay changed during job")
-                if config is not None and config.get("run_kind") in {"domino_deployment_smoke", "dualrate_eval_suite", "dualrate_failure_replay"}:
+                if config is not None and config.get("run_kind") in {"domino_deployment_smoke", "dualrate_eval_suite", "dualrate_failure_replay", "dualrate_tracking_replay"}:
                     renderer = base.renderer_helpers().validate_renderer_runtime(config)
                     base.atomic(out / "renderer_runtime_after.json", renderer)
             except BaseException as exc:
