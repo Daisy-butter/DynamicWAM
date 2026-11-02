@@ -1,9 +1,10 @@
 """Deterministic residual A/Z controller with an exact zero-correction baseline.
 
 This is not an action flow sampler. One shared compact transformer predicts a
-bounded clean correction and compact future. Baseline means the aligned Full
-plan under the SAME causal fixed-duration C2 feasibility projection, not an SR
-guarantee relative to a different executor or to a fresh Full query.
+bounded clean correction and compact future. With phase_c2, zero correction
+preserves aligned Full endpoints under native joint limits, not an SR guarantee
+relative to a different executor or to a fresh Full query. Legacy projected C2
+is retained only for reproducibility of the rejected diagnostic candidate.
 """
 from types import MethodType
 import torch
@@ -47,6 +48,11 @@ def baseline(self,batch,world):
 
 def project(self,action,batch,center=None):
     s=self.residual_v10
+    if s.get('executor')=='phase_c2':
+        from .reference_executor import bound_endpoints
+        return bound_endpoints(action,batch['fast_known_actions'],batch['fast_known_mask'],
+            mean=self.action_mean_v10,scale=self.action_scale_v10,bounds=s['bounds'],
+            center=center,radius=None if center is None else self.radius_raw_v10)
     if not torch.is_grad_enabled() and action.device.type=='cuda':
         # A 16x14 causal projector is launch-bound on CUDA. Keep the identical
         # arithmetic on CPU at deployment, including the measured copy cost.
@@ -76,7 +82,16 @@ def predict(self,batch,world,*,expert_actions=None):
     expected=origin+offsets[None]
     if not torch.allclose(batch['future_times'],expected,atol=1e-7,rtol=0):
         raise ValueError('V10 future labels must use the first mutable physical interval')
-    cond=self.conditions(batch,world)
+    # V10 already has the exact aligned draft above. Do not recompute/validate it
+    # through the older V8 conditions path (including repeated CUDA host fences).
+    cond=DualRateSystem.conditions(self,batch,world)
+    cond['future_allowed']=batch.get('world_future_allowed',torch.ones_like(batch['query_time'],dtype=torch.bool))
+    if self.residual_v10.get('tracking_token'):
+        from .reference_executor import measured_reference_discrepancy
+        discrepancy,available=measured_reference_discrepancy(batch,world)
+        token=self.fast.tracking_projection(discrepancy)
+        cond['observation_tokens']=torch.cat((cond['observation_tokens'],token[:,None]),1)
+        cond['observation_valid']=torch.cat((cond['observation_valid'],available[:,None]),1)
     trace('conditions_enqueued')
     cond.setdefault('future_valid',(self.future_field_support.any(-1)|self.contact_field_support.any(-1))[None].expand(len(base),-1))
     cond['action_draft']=base;cond['draft_valid']=valid
@@ -163,7 +178,11 @@ def future_queue_augmentation(self,batch,generator):
     first=known[:,0]*scale+mean;second=known[:,1]*scale+mean
     idx=torch.tensor(ARMS,device=known.device);dt=self.residual_v10['action_dt']
     bounds=known.new_tensor(self.residual_v10['bounds'])
-    lo,hi,feasible=displacement_interval(first[:,idx],(first-previous)[:,idx]/dt,dt,bounds[idx,0],bounds[idx,1],self.residual_v10['limits'])
+    if self.residual_v10.get('executor')=='phase_c2':
+        lo,hi=bounds[idx,0]-first[:,idx],bounds[idx,1]-first[:,idx]
+        feasible=torch.ones_like(lo,dtype=torch.bool)
+    else:
+        lo,hi,feasible=displacement_interval(first[:,idx],(first-previous)[:,idx]/dt,dt,bounds[idx,0],bounds[idx,1],self.residual_v10['limits'])
     noise=(torch.rand(b,len(ARMS),device=known.device,generator=generator)*2-1)*self.residual_v10['queue_perturb_radius']
     proposal=second[:,idx]+noise
     proposal=torch.maximum(torch.minimum(proposal,first[:,idx]+hi),first[:,idx]+lo)
@@ -225,6 +244,12 @@ def loss(self,batch,generator=None,action_conditioned=None):
     weights=torch.ones_like(mask,dtype=action.dtype)
     first=batch['fast_known_mask'].long().sum(-1)
     weights=weights.scatter(1,first[:,None],self.residual_v10['execute_weight'])
+    # Upweight informative, expert/teacher-agreeing corrections rather than
+    # rewarding sensitivity to arbitrary image changes or noise.
+    teacher_delta=(teacher_desired-base).detach()/radius
+    agreement=(teacher_delta*target.detach()).sum(-1)>0
+    informative=teacher_delta.abs().amax(-1).clamp(0,1)*agreement*teacher_valid
+    weights=weights*(1+self.residual_v10.get('reaction_weight',0.)*informative)
     # Supervise the CLEAN head too: a hard feasibility clamp must not erase the
     # gradient needed to bring an initially saturated proposal back into range.
     head_error=F.smooth_l1_loss(raw['normalized_correction'],target.detach(),reduction='none')
@@ -255,8 +280,14 @@ def loss(self,batch,generator=None,action_conditioned=None):
 
 def configure(model,settings,mean,scale):
     required={'action_dt','bounds','limits','arm_radius','gripper_radius','execute_weight','preserve_tolerance','future_anchor','deterministic','teacher_weight','queue_perturb_probability','queue_perturb_radius'}
-    if set(settings)!=required or settings['future_anchor']!='first_mutable_start' or settings['deterministic'] is not True:
+    if set(settings)-{'executor','tracking_token','reaction_weight'}!=required or settings['future_anchor']!='first_mutable_start' or settings['deterministic'] is not True:
         raise ValueError('explicit V10 residual/executor/clock contract required')
+    if settings.get('executor') not in (None,'phase_c2'):
+        raise ValueError('unsupported residual executor')
+    if settings.get('executor')=='phase_c2':
+        if settings.get('tracking_token') is not True or not 0<=settings.get('reaction_weight',-1)<=4:
+            raise ValueError('explicit current-state feedback and bounded reaction weighting required')
+        model.fast.tracking_projection=nn.Linear(29,model.fast.config.observation_dim)
     if not 0<settings['arm_radius']<=.15 or not 0<settings['gripper_radius']<=.1:raise ValueError('bounded raw correction radius required')
     if not 0<=settings['queue_perturb_probability']<=1 or not 0<settings['queue_perturb_radius']<=settings['arm_radius']:
         raise ValueError('future queue augmentation must fit the trained residual range')
@@ -273,6 +304,19 @@ def configure(model,settings,mean,scale):
 @torch.no_grad()
 def verify_projection_parity(model,batch,world):
     if batch['fast_known_actions'].device.type!='cuda':raise ValueError('actual CUDA projection parity required')
+    if model.residual_v10.get('executor')=='phase_c2':
+        from .reference_executor import bound_endpoints
+        base,_=baseline(model,batch,world);s=model.residual_v10;cases=[]
+        for amplitude in (0.,1.,-1.):
+            proposal=base+amplitude*torch.sin(torch.arange(base.numel(),device=base.device).reshape_as(base))*model.radius_raw_v10/model.action_scale_v10
+            args=(proposal,batch['fast_known_actions'],batch['fast_known_mask'])
+            kwargs=dict(mean=model.action_mean_v10,scale=model.action_scale_v10,bounds=s['bounds'],center=base,radius=model.radius_raw_v10)
+            gpu,gv=bound_endpoints(*args,**kwargs)
+            cpu,cv=bound_endpoints(*(x.cpu() for x in args),**{k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in kwargs.items()})
+            torch.testing.assert_close(gpu.cpu(),cpu,atol=1e-5,rtol=1e-5)
+            if not torch.equal(gv.cpu(),cv):raise ValueError('endpoint limiter CPU/CUDA decisions differ')
+            cases.append(dict(amplitude=amplitude,max_absolute_error=float((gpu.cpu()-cpu).abs().max())))
+        return dict(passed=True,actual_cuda=True,cases=cases,scope='native joint bounds/residual radius only; no velocity projection')
     base,_=baseline(model,batch,world);s=model.residual_v10;device=base.device
     kw=dict(mean=model.action_mean_v10,scale=model.action_scale_v10,dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
             center=base,radius=model.radius_raw_v10)

@@ -58,7 +58,11 @@ def prepare(source,output,config):
                 candidates.append(row);q.append(values[-1,list(ARMS)]);v.append((values[-1,list(ARMS)]-values[-2,list(ARMS)])/dt)
             if candidates:
                 bounds=torch.tensor(s['bounds'],dtype=torch.float64)[list(ARMS)]
-                _,_,ok=displacement_interval(torch.tensor(np.asarray(q)),torch.tensor(np.asarray(v)),dt,bounds[:,0],bounds[:,1],s['limits'])
+                if s.get('executor')=='phase_c2':
+                    values=torch.tensor(np.asarray(q))
+                    ok=torch.isfinite(values)&(values>=bounds[:,0])&(values<=bounds[:,1])
+                else:
+                    _,_,ok=displacement_interval(torch.tensor(np.asarray(q)),torch.tensor(np.asarray(v)),dt,bounds[:,0],bounds[:,1],s['limits'])
                 valid=ok.all(-1).numpy();keep.extend(np.asarray(candidates)[valid]);tested+=len(candidates)
                 reasons['infeasible_recorded_prefix']+=int((~valid).sum())
         if not keep:raise ValueError('no feasible windows remain')

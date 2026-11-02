@@ -572,7 +572,7 @@ def _run_worker(resources):
     runtime_config = RuntimeConfig(**effective_runtime_settings(config))
     if abs(runtime_config.action_dt - config['action_dt']) > 1e-10 or not runtime_config.fast_cuda_graph:
         raise ValueError('runtime grid/CUDA Graph differs from accepted V4 configuration')
-    if config['protocol'] != protocol_for_backlog(float(config['max_backlog']),residual_v10=bool(config.get('residual_v10'))):
+    if config['protocol'] != protocol_for_backlog(float(config['max_backlog']),residual_v10=bool(config.get('residual_v10')),executor=config.get('residual_v10',{}).get('executor')):
         raise ValueError('runtime protocol differs from configuration')
     from dynamicwam.runtime.domino_rt.domino_session import DominoLevel1Session, prepare_level1_env
     from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture, validate_native_rgb_conversion

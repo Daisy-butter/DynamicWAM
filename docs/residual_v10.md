@@ -1,5 +1,10 @@
 # Continuous RTC residual V10 — candidate, 2026-11-02
 
+**Current revision:** see [phase-C2 correction](residual_v10_phase_c2.md).
+The per-joint derivative projector described below was REJECTED by real contact
+replay. Production phase_c2 preserves endpoints/path and does not apply those
+velocity/acceleration/jerk clamps. Historical description below is not acceptance.
+
 Status: implementation and acceptance in progress. Formal training is NOT yet
 authorized by a passing acceptance receipt. Worktree/branch remain the .50 V8
 training route. Old checkpoint/results are retained; archive tag:

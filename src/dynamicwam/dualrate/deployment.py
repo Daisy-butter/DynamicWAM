@@ -20,11 +20,11 @@ from .producer import NUMERIC_TIME_EPSILON
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
 
-def protocol_for_backlog(max_backlog, *, residual_v10=False):
+def protocol_for_backlog(max_backlog, *, residual_v10=False, executor=None):
     if max_backlog not in (.25,.5):
         raise ValueError('explicit nominal250ms or500ms evaluation backlog required')
     result=PROTOCOL if max_backlog==.25 else PROTOCOL+'_backlog500ms_v1'
-    return result+'_fixed_c2_v10' if residual_v10 else result
+    return result+('_phase_c2_v10' if executor=='phase_c2' else '_fixed_c2_v10') if residual_v10 else result
 
 
 class BoundedArmSmoothing:
@@ -415,7 +415,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     Target rows are endpoints over [.18i,.18(i+1)); arms interpolate linearly from
     the preceding committed endpoint, grippers keep native command semantics.
     """
-    protocol=protocol_for_backlog(float(max_backlog),residual_v10=bool(getattr(system,'residual_v10',None)))
+    settings=getattr(system,'residual_v10',None)
+    protocol=protocol_for_backlog(float(max_backlog),residual_v10=bool(settings),executor=(settings or {}).get('executor'))
     if not getattr(builder,'hardtime',False):
         raise ValueError('deployment requires exposure_anchor_wall_release_v4 data contract')
     frame_period=runtime_config.action_dt if frame_period is None else float(frame_period)
@@ -485,7 +486,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         actual=np.asarray(projection.serialized_bounds,dtype=np.float64)
         if actual.shape!=(14,2) or not np.allclose(actual,np.asarray(c2_settings['bounds']),atol=1e-6,rtol=0):
             raise ValueError('V10 trained bounds differ from actual SAPIEN actuator limits')
-        emit(dict(event='fixed_c2_executor_contract',settings=c2_settings,
+        emit(dict(event='phase_c2_executor_contract' if c2_settings.get('executor')=='phase_c2' else 'fixed_c2_executor_contract',settings=c2_settings,
                   timing='exact physical interval; no retiming',gripper='native interval-start'))
         from .tracking_audit import TrackingAudit
         tracking=TrackingAudit(session.env.robot)
@@ -620,14 +621,18 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                 previous=target.copy();target=action.copy();last_row=row
                 session.env.take_action_cnt=int(getattr(session.env,'take_action_cnt',0))+1
                 emit(dict(event='execute',row=row,start_time=initial+row*queue.dt,end_time=initial+(row+1)*queue.dt,
-                          actual_start=now,physical_tick=tick,execution_wall_time=time.perf_counter(),target=target.tolist(),controller='fixed_c2_arm_native_gripper' if c2_settings else 'endpoint_linear_arm_native_gripper'))
+                          actual_start=now,physical_tick=tick,execution_wall_time=time.perf_counter(),target=target.tolist(),controller=('phase_c2_arm_native_gripper' if c2_settings.get('executor')=='phase_c2' else 'fixed_c2_arm_native_gripper') if c2_settings else 'endpoint_linear_arm_native_gripper'))
             elif not np.array_equal(action,target):
                 raise TimingError('active committed endpoint changed')
             fraction=(tick%action_ticks+1)/action_ticks
             position=previous+(target-previous)*fraction;velocity=(target-previous)/queue.dt
             if c2_settings:
-                from .c2_executor import evaluate
-                position,velocity,_=evaluate(previous,target,segment_start_velocity,queue.dt,fraction*queue.dt)
+                if c2_settings.get('executor')=='phase_c2':
+                    from .reference_executor import evaluate
+                    position,velocity,_=evaluate(previous,target,queue.dt,fraction*queue.dt)
+                else:
+                    from .c2_executor import evaluate
+                    position,velocity,_=evaluate(previous,target,segment_start_velocity,queue.dt,fraction*queue.dt)
             position[[6,13]]=target[[6,13]];velocity[[6,13]]=0
             robot=session.env.robot
             # Same single-state passive-force reuse as the paired Full baseline.
