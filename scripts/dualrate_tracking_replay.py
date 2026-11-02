@@ -95,7 +95,7 @@ def run_case(c,case,out,deadline):
                 or not np.allclose(actual,desc['initial_state'],atol=1e-8,rtol=0)
                 or not np.allclose(actual,rows[0]['target'],atol=1e-8,rtol=0)
                 or not np.allclose(env._eval_target_actor.actor.get_pose().p,desc['initial_target_position'],atol=1e-8,rtol=0)
-                or abs(prepared['velocity']-desc['velocity_m_per_s'])>1e-8):
+                or not np.allclose(prepared['velocity'],desc['velocity_m_per_s'],atol=1e-8,rtol=0)):
             raise ValueError('replay initial state/motion/grid mismatch')
         session=DominoLevel1Session(env,flow=None,observation_config={},stop_on_contact=prepared['stop_on_contact'],
             check_z_threshold=prepared['check_z_threshold'],lift_actor=prepared['lift_actor'],start_z=prepared['start_z'],
