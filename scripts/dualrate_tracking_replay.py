@@ -34,7 +34,7 @@ def validate_config(c):
     for case in c['cases']:
         if case['label'] in labels or '/' in case['label']:raise ValueError('unique simple label required')
         labels.add(case['label'])
-        if case['controller'] not in ('c2','linear','projected_c2') or type(case['disable_robot_contacts']) is not bool:
+        if case['controller'] not in ('c2','linear','projected_c2','raw_c2') or type(case['disable_robot_contacts']) is not bool:
             raise ValueError('explicit replay controller/contact mode required')
         if sha(case['report'])!=case['report_sha256']:raise ValueError('recorded controls changed')
         j=read(case['report']);manifest=read(Path(case['report']).parent/'manifest.json')
@@ -138,7 +138,7 @@ def run_case(c,case,out,deadline):
                     v0=(target-previous)/adt;previous=target.copy();target=np.asarray(rows[tick//45]['target'],np.float64)
                     env.take_action_cnt=int(getattr(env,'take_action_cnt',0))+1
                 frac=(tick%45+1)/45
-                if case['controller'] in ('c2','projected_c2'):q,v,_=evaluate(previous,target,v0,adt,frac*adt)
+                if case['controller'] in ('c2','projected_c2','raw_c2'):q,v,_=evaluate(previous,target,v0,adt,frac*adt)
                 else:q=previous+(target-previous)*frac;v=(target-previous)/adt
                 q[[6,13]]=target[[6,13]];v[[6,13]]=0
                 with passive_force_scope(robot,enabled=True):
