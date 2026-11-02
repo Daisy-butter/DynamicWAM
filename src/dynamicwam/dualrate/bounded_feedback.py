@@ -108,6 +108,9 @@ class BoundedFeedback(ResidualEventFast):
 
 
 def conditions(self, batch, world):
+    if 'interaction_history' in batch:
+        from .native_interaction import validate_interaction
+        validate_interaction(batch)
     result = v9_conditions(self,batch,world)
     for key in ('interaction_history','interaction_valid'):
         if key in batch: result[key] = batch[key]
@@ -155,6 +158,11 @@ def enable_fast_graph(self):
 def training_loss(self,batch,generator=None,action_conditioned=None):
     DualRateSystem._validate_clocks(batch)
     if batch['fast_known_mask'].any():raise ValueError('native boundary has no hard prefix')
+    allowed=torch.zeros_like(batch['source_known_mask'])
+    allowed[:,0]=batch.get('source_has_committed_waypoint',torch.zeros(len(allowed),device=allowed.device,dtype=torch.bool))
+    if not torch.equal(allowed,batch['source_known_mask']):raise ValueError('only irrevocably selected source waypoint may be clamped')
+    if not torch.allclose(batch['rgb_times'],batch['query_time'][:,None].expand_as(batch['rgb_times']),rtol=0,atol=1e-7):
+        raise ValueError('current RGB must use actual native query exposure')
     self.slow.eval()
     old=self.predict_reference(batch,generator=generator)
     world=self.world_readout(old)
@@ -176,7 +184,8 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     # with an auxiliary expert term, not expert replacement of the Full mode.
     # The same absolute-command draws reduce arbitrary teacher mode variance.
     tb['feedback_noise_seed']=batch['feedback_noise_seed']
-    target=self.predict_reference(tb,generator=generator)['reference_actions'].detach()
+    target=(old if torch.equal(batch['native_source_index'],batch['native_query_index']) and not batch['source_known_mask'].any()
+            else self.predict_reference(tb,generator=generator))['reference_actions'].detach()
     arm=torch.tensor(ARM,device=expert.device)
     radius=self.fast.correction_radius.index_select(0,arm)
     difference=(target-prior).index_select(-1,arm)

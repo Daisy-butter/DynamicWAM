@@ -21,11 +21,17 @@ def graph_acceptance(system,config):
         weight=system.fast.action_out.weight.detach().clone()
         system.fast.action_out.weight.copy_(torch.linspace(-.03,.03,weight.numel(),device=weight.device).reshape_as(weight))
         engine=system.enable_fast_graph();base=system.sample_fast(b,world)
+        interaction=dict(b,interaction_history=torch.ones(1,8,64,device='cuda:0'),interaction_valid=torch.zeros(1,8,device='cuda:0',dtype=torch.bool),
+            interaction_intervals=b['query_time'][:,None,None].expand(1,8,2).clone(),
+            interaction_command_indices=torch.full((1,8),-1,device='cuda:0',dtype=torch.long))
+        interaction['interaction_valid'][:,-1]=True
+        interaction['interaction_command_indices'][:,-1]=b['native_query_index']-1
+        interaction['interaction_intervals'][:,-1,0]-=.1
         cases={
             'observation':(dict(b,rgb=b['rgb']*.5),world),
             'world':(b,dict(world,world_tokens=world['world_tokens']*.5)),
             'draft':(b,dict(world,reference_actions=world['reference_actions']+.125)),
-            'interaction':(dict(b,interaction_history=torch.ones(1,8,64,device='cuda:0'),interaction_valid=torch.ones(1,8,device='cuda:0',dtype=torch.bool)),world),
+            'interaction':(interaction,world),
         }
         differences={}
         for name,(bb,ww) in cases.items():

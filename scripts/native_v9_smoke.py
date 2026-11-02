@@ -93,7 +93,8 @@ class ReplayRecorder:
             validate_row(row)
             for k in ('source_text','text','teacher_text'):row.pop(k)
             path=folder/f'query_{number:04d}.pt'
-            torch.save(dict(schema='native-v9-actual-replay-v1',row=row,language=str(language),language_sha256=file_sha256(language)),path)
+            schema='native-v10-feedback-replay-v1' if getattr(system,'bounded_feedback',None) else 'native-v9-actual-replay-v1'
+            torch.save(dict(schema=schema,row=row,language=str(language),language_sha256=file_sha256(language)),path)
             entries.append(dict(path=str(path),sha256=file_sha256(path),task=task,seed=seed,command_index=q,
                 source_index=event['source_command_index'],physical_age=event['reference_age'],source_has_committed_waypoint=bool(source['source_has_committed_waypoint'][0])))
         self.rows.clear();return entries

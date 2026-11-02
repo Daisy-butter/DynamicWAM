@@ -43,7 +43,8 @@ class NativeReplayDataset:
             return row
         r=self.replay[index-len(self.expert_indices)]
         payload=torch.load(r['path'],map_location='cpu',weights_only=True)
-        if payload['schema']!='native-v9-actual-replay-v1':raise ValueError('unknown replay semantics')
+        expected='native-v10-feedback-replay-v1' if self.manifest.get('bounded_feedback_dataset') else 'native-v9-actual-replay-v1'
+        if payload['schema']!=expected:raise ValueError('unknown or incompatible replay semantics')
         row=payload['row']
         if sha256_file(Path(payload['language']))!=payload['language_sha256']:raise ValueError('replay language changed')
         language=torch.load(payload['language'],map_location='cpu',weights_only=True)

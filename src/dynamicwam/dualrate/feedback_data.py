@@ -49,6 +49,8 @@ def defaults(row):
     row=dict(row)
     row.setdefault('interaction_history',torch.zeros(8,64))
     row.setdefault('interaction_valid',torch.zeros(8,dtype=torch.bool))
+    row.setdefault('interaction_intervals',row['query_time'].expand(8,2).clone().to(torch.float64))
+    row.setdefault('interaction_command_indices',torch.full((8,),-1,dtype=torch.long))
     row.setdefault('previous_actions',torch.zeros(16,14))
     row.setdefault('previous_valid',torch.zeros(16,dtype=torch.bool))
     row.setdefault('feedback_noise_seed',row.get('frozen_source_seed',torch.tensor(20261102)))
@@ -74,8 +76,17 @@ class FeedbackDataset(NativeReplayDataset):
             previous={k[9:]:v for k,v in raw.items() if k.startswith('previous_')}
             row=defaults({k:v for k,v in raw.items() if not k.startswith('previous_')})
             previous=defaults(previous)
+            uid=self.expert.episodes[int(self.expert.rows[index,0])]['episode_uid']
+            seed=int.from_bytes(hashlib.sha256(('feedback:'+uid).encode()).digest()[:8],'big')%((1<<63)-1)
+            row['feedback_noise_seed']=torch.tensor(seed);previous['feedback_noise_seed']=torch.tensor(seed)
         else:
-            row=defaults(super().__getitem__(index))
+            row=super().__getitem__(index)
+            required={'interaction_history','interaction_valid','interaction_intervals','interaction_command_indices','feedback_noise_seed'}
+            if not required<=row.keys():raise ValueError('native feedback replay lacks measured interaction provenance')
+            if int(row['native_query_index'])>0 and not row['interaction_valid'].any():raise ValueError('nonbootstrap replay lost achieved history')
+            row=defaults(row)
+            from .native_interaction import validate_interaction
+            validate_interaction({k:v[None] for k,v in row.items() if isinstance(v,torch.Tensor)})
             # Actual prior proposals are present in the recorded row. Do not
             # pretend the current observation is an earlier observation.
             previous=dict(row);row['pair_valid']=torch.tensor(False)

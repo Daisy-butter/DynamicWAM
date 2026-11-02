@@ -126,22 +126,34 @@ def test_native_builder_selects_physical_history_for_both_current_and_source(mon
     assert calls==[False,False]
 
 
-def test_source_derivation_preserves_frozen_model_and_rejects_wrong_checkpoint():
-    import hashlib,subprocess
+def test_source_derivation_preserves_frozen_model_and_rejects_wrong_checkpoint(tmp_path,monkeypatch):
+    # Test the historical deployment-only rule against its actual frozen tree,
+    # not the unrelated latest architecture checked out by this test process.
+    import hashlib,subprocess,tarfile,io
     from pathlib import Path
-    from dynamicwam.dualrate.native_v7_source_compat import validate_deployment_source,TRAINING_COMMIT
-    root=Path(__file__).resolve().parents[1]
-    prefix='src/dynamicwam/'
-    names=subprocess.check_output(['git','-C',str(root),'ls-tree','-r','--name-only',TRAINING_COMMIT,prefix],text=True).splitlines()
+    from dynamicwam.dualrate import native_v7_source_compat as compat
+    root=Path(__file__).resolve().parents[1];prefix='src/dynamicwam/'
+    original=subprocess.check_output
+    archive=original(['git','-C',str(root),'archive',compat.TRAINING_COMMIT,prefix])
     h=hashlib.sha256()
-    for name in sorted(x for x in names if x.endswith('.py')):
-        data=subprocess.check_output(['git','-C',str(root),'show',TRAINING_COMMIT+':'+name])
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        baseline={m.name:tar.extractfile(m).read() for m in tar.getmembers() if m.isfile() and m.name.endswith('.py')}
+    for name,data in sorted(baseline.items()):
         h.update(name[len(prefix):].encode()+b'\0');h.update(hashlib.sha256(data).digest())
-    receipt=validate_deployment_source(h.hexdigest())
+        p=tmp_path/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
+    def archived(args,*aa,**kw):
+        if args[:3]==['git','-C',str(tmp_path)]:return archive
+        return original(args,*aa,**kw)
+    monkeypatch.setattr(compat.subprocess,'check_output',archived)
+    changed=tmp_path/prefix/'dualrate/online.py';changed.write_bytes(changed.read_bytes()+b'\n')
+    receipt=compat.validate_deployment_source(h.hexdigest(),repo=tmp_path)
     assert receipt['protected_model_and_training_equal']
     assert 'dualrate/online.py' in receipt['deployment_changes']
-    with pytest.raises(ValueError,match='exact frozen'):
-        validate_deployment_source('0'*64)
+    with pytest.raises(ValueError,match='exact frozen'):compat.validate_deployment_source('0'*64,repo=tmp_path)
+    changed=tmp_path/prefix/'dualrate/fast.py';changed.write_bytes(changed.read_bytes()+b'\n')
+    with pytest.raises(ValueError,match='non-deployment'):compat.validate_deployment_source(h.hexdigest(),repo=tmp_path)
+    if (root/prefix/'dualrate/bounded_feedback.py').exists():
+        with pytest.raises(ValueError,match='non-deployment'):compat.validate_deployment_source(h.hexdigest(),repo=root)
 
 
 def test_v7_policy_connects_tick_capture_without_changing_action_ledger(monkeypatch):

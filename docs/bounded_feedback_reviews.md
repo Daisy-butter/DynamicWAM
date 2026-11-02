@@ -10,7 +10,11 @@
 
 ## Round2
 
-待审查：交互时钟、训练/部署已有proposal、future action支持、无效/终端mask与checkpoint契约。
+发现并修复：交互向量缺少可重验的真实时间与命令身份；部署previous proposal保存了边界处理之前的版本；回放可能悄悄补零而接受旧schema；专家教师噪声在不同episode中完全相同；训练入口需要复核真实query exposure和已选首waypoint。
+
+新增FP64 interval/int64 command id/连续suffix校验；actual qpos/qvel按配置joint顺序读取；previous proposal绑定实际边界处理后的目标；V10回放schema拒绝旧缺失数据；episode绑定教师底噪；source/current clamping与exposure检查。8条命令历史只包含已经完成的TOPP动作。
+
+验证：71项CPU通过，覆盖真实关节读取、未来/错误命令历史拒绝、native history、Full噪声对齐、优化器/checkpoint/分布式配置回归。首次宽回归暴露旧V7测试把当前架构误当作deployment-only补丁的假设；测试改用实际冻结V7源码构造正例，同时验证当前V10和任何训练模型修改仍被V7兼容门拒绝，生产门禁没有放宽。原失败日志保留。GPU仍未运行。
 
 ## Round3
 

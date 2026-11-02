@@ -120,6 +120,7 @@ def test_feedback_loss_has_directional_gradient_outside_radius_and_no_future_lea
         def world_readout(self,old):return old
         def conditions(self,batch,world):return k
     b=dict(source_time=k['source_time'],completed_time=k['completed_time'],query_time=k['query_time'],
+        source_known_mask=torch.zeros(1,16,dtype=torch.bool),rgb_times=k['query_time'][:,None].expand(1,3),
         native_query_index=k['native_query_index'],native_source_index=k['native_source_index'],
         fast_known_mask=torch.zeros(1,16,dtype=torch.bool),fast_action=k['draft_actions'].clone(),
         fast_action_valid=torch.ones(1,16,dtype=torch.bool),future=torch.zeros(1,12,134),
@@ -128,3 +129,34 @@ def test_feedback_loss_has_directional_gradient_outside_radius_and_no_future_lea
     result=training_loss(System(),b);result['loss'].backward()
     assert result['reachable_fraction']==0 and result['supervised_action_fraction']==1
     assert m.action_out.bias.grad[0]<0 and torch.isfinite(result['loss'])
+
+def test_interaction_clock_and_command_provenance_rejects_future_or_wrong_order():
+    from dynamicwam.dualrate.native_interaction import validate_interaction
+    h=InteractionHistory(np.zeros(14),np.ones(14))
+    h.append(index=0,start=0.,end=.2,command=np.zeros(14),before=np.zeros(12),after=np.zeros(12),velocity=np.zeros(12),source_time=0.)
+    b=h.tensors(.2,1,'cpu');b.update(query_time=torch.tensor([.2],dtype=torch.float64),native_query_index=torch.tensor([1]))
+    validate_interaction(b)
+    b['interaction_intervals'][0,-1,1]=.3
+    with pytest.raises(ValueError,match='future'):validate_interaction(b)
+    b['interaction_intervals'][0,-1,1]=.2;b['interaction_command_indices'][0,-1]=1
+    with pytest.raises(ValueError,match='command'):validate_interaction(b)
+
+def test_actual_joint_reader_uses_articulation_positions_and_velocities():
+    from types import SimpleNamespace
+    class Joint:
+        def __init__(self,name):self.name=name
+        def get_name(self):return self.name
+        def get_drive_target(self):raise AssertionError('must not read drive target as achieved')
+    class Entity:
+        def __init__(self,joints):self.joints=joints[::-1]
+        def get_active_joints(self):return self.joints
+        def get_qpos(self):return np.arange(6)
+        def get_qvel(self):return np.arange(6)*.1
+    robot=SimpleNamespace()
+    for side in ('left','right'):
+        joints=[Joint(side+str(i)) for i in range(6)]
+        setattr(robot,side+'_arm_joints',joints);setattr(robot,side+'_arm_joints_name',[j.name for j in joints])
+        setattr(robot,side+'_entity',Entity(joints))
+    q,v=read_arm_state(robot)
+    np.testing.assert_equal(q,np.tile(np.arange(6)[::-1],2))
+    np.testing.assert_allclose(v,q*.1)

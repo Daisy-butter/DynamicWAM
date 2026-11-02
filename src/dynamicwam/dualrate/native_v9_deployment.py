@@ -139,7 +139,9 @@ class NativeResidualPolicy:
             raw=sample['actions'][0].cpu()*self.builder.scale+self.builder.mean
             raw,project=self.bounds(raw,torch.zeros(16,dtype=torch.bool))
             if self.feedback:
-                self.previous_plan=sample['actions'].detach().clone()
+                # The next query observes the proposal AFTER native bounds, not
+                # an unrealizable pre-projection plan masquerading as issued.
+                self.previous_plan=((raw-self.builder.mean)/self.builder.scale)[None].to(self.builder.device)
                 self.previous_origin=batch['native_query_index'].clone()
             if self._time(env)!=now:raise RuntimeError('native physics advanced during fast query')
             self.pending.extend(raw[:1].numpy().copy())
@@ -175,6 +177,9 @@ class NativeResidualPolicy:
         self.records.append(dict(kind='native_topp_execute',command_index=self.command_index-1,
             physical_start=now,physical_end=self._time(env),actual_duration=self._time(env)-now,
             execute_start_wall=action_wall,execute_end_wall=time.monotonic()))
+        if self.feedback:
+            self.records[-1].update(achieved_arm_before=achieved_before.tolist(),achieved_arm_after=achieved_after.tolist(),
+                achieved_arm_velocity_after=velocity_after.tolist(),issued_command=self.executed_targets[-1].tolist())
 
     def finish(self):
         self._publish(wait=True)
