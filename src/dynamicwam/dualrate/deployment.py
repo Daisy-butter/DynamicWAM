@@ -714,6 +714,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         exc.dualrate_report=dict(step_owner=step_owner.receipt() if step_owner is not None else None,protocol=protocol,time_contract=builder.manifest['time_contract'],
             realtime_valid=False,continuous_valid=False,success=False,
             error=f'{type(exc).__name__}: {exc}',events=events,
+            actuator_tracking=tracking.receipt() if tracking is not None else None,
+            projector_acceptance=getattr(system,'_projection_parity',None),
             owner_loop_diagnostics=diagnostics.snapshot(include_ticks=True))
         if on_failure is not None:
             try:on_failure(exc)

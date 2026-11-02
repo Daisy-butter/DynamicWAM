@@ -12,7 +12,7 @@ from torch import nn
 from torch.nn import functional as F
 from .continuous_v8 import ContinuousResidualFast,aligned_draft
 from .system import masked_mean,DualRateSystem
-from .c2_executor import project_chunk,displacement_interval,ARMS
+from .c2_executor import project_chunk,project_numpy,displacement_interval,ARMS
 
 
 class ResidualFast(ContinuousResidualFast):
@@ -55,17 +55,20 @@ def project(self,action,batch,center=None):
             self._projection_cpu_constants=tuple(t.detach().cpu().clone() for t in
                 (self.action_mean_v10,self.action_scale_v10,self.radius_raw_v10))
         mean,scale,radius=self._projection_cpu_constants
-        value,accepted=project_chunk(action.detach().cpu(),batch['fast_known_actions'].cpu(),batch['fast_known_mask'].cpu(),
-            mean=mean,scale=scale,dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
-            center=None if center is None else center.detach().cpu(),radius=None if center is None else radius)
-        return value.to(action.device),accepted.to(action.device)
+        value,accepted=project_numpy(action.detach().cpu().numpy(),batch['fast_known_actions'].cpu().numpy(),batch['fast_known_mask'].cpu().numpy(),
+            mean=mean.numpy(),scale=scale.numpy(),dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
+            center=None if center is None else center.detach().cpu().numpy(),radius=None if center is None else radius.numpy())
+        return torch.from_numpy(value).to(action.device),torch.from_numpy(accepted).to(action.device)
     return project_chunk(action,batch['fast_known_actions'],batch['fast_known_mask'],mean=self.action_mean_v10,
         scale=self.action_scale_v10,dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
         center=center,radius=self.radius_raw_v10 if center is not None else None)
 
 
 def predict(self,batch,world,*,expert_actions=None):
+    trace=getattr(self,'_residual_trace',lambda stage:None)
+    trace('baseline_start')
     base,valid=baseline(self,batch,world)
+    trace('baseline_done')
     # Z is anchored AFTER the protected action prefix, identically in data/runtime.
     first=batch['fast_known_mask'].long().sum(-1)
     origin=batch['action_times'].gather(1,first[:,None])
@@ -74,6 +77,7 @@ def predict(self,batch,world,*,expert_actions=None):
     if not torch.allclose(batch['future_times'],expected,atol=1e-7,rtol=0):
         raise ValueError('V10 future labels must use the first mutable physical interval')
     cond=self.conditions(batch,world)
+    trace('conditions_enqueued')
     cond.setdefault('future_valid',(self.future_field_support.any(-1)|self.contact_field_support.any(-1))[None].expand(len(base),-1))
     cond['action_draft']=base;cond['draft_valid']=valid
     known=batch['fast_known_mask'];a=torch.where(known[...,None],batch['fast_known_actions'],base)
@@ -92,9 +96,11 @@ def predict(self,batch,world,*,expert_actions=None):
     else:
         raw=self.fast(a,z,a.new_zeros(a.shape[0]),action_known_mask=known,known_actions=a,**cond)
     correction=raw['action_velocity'].tanh()*self.radius_raw_v10/self.action_scale_v10
+    trace('core_enqueued')
     raw['normalized_correction']=raw['action_velocity'].tanh()
     proposed=base+torch.where(valid[...,None],correction,0.)
     final,accepted=project(self,proposed,batch,center=base)
+    trace('projection_done')
     final=torch.where(batch['fast_known_mask'][...,None],batch['fast_known_actions'],final)
     return final,base,valid,accepted,raw,cond
 
@@ -277,9 +283,10 @@ def verify_projection_parity(model,batch,world):
         torch.cuda.synchronize(device);start=time.perf_counter()
         gpu,gv=project_chunk(action,batch['fast_known_actions'],batch['fast_known_mask'],**kw)
         torch.cuda.synchronize(device);gpu_seconds=time.perf_counter()-start
-        cpu_kw={k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in kw.items()}
-        a,k,m=action.cpu(),batch['fast_known_actions'].cpu(),batch['fast_known_mask'].cpu()
-        start=time.perf_counter();cpu,cv=project_chunk(a,k,m,**cpu_kw);cpu_seconds=time.perf_counter()-start
+        cpu_kw={k:v.cpu().numpy() if isinstance(v,torch.Tensor) else v for k,v in kw.items()}
+        a,k,m=action.cpu().numpy(),batch['fast_known_actions'].cpu().numpy(),batch['fast_known_mask'].cpu().numpy()
+        start=time.perf_counter();cpu,cv=project_numpy(a,k,m,**cpu_kw);cpu_seconds=time.perf_counter()-start
+        cpu,cv=torch.from_numpy(cpu),torch.from_numpy(cv)
         torch.testing.assert_close(gpu.cpu(),cpu,atol=1e-5,rtol=1e-5)
         if not torch.equal(gv.cpu(),cv):raise ValueError('CPU/CUDA feasibility decisions differ')
         cases.append(dict(amplitude=amplitude,max_absolute_error=float((gpu.cpu()-cpu).abs().max()),

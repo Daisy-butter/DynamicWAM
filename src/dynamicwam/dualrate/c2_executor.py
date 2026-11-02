@@ -92,3 +92,41 @@ def evaluate(q0, q1, v0, dt, elapsed):
         while len(points)>1:points=(1-u)*points[:-1]+u*points[1:]
         return points[0]
     return at(control),at(np.diff(control,axis=0)*5/dt),at(np.diff(control,n=2,axis=0)*20/dt**2)
+
+
+def project_numpy(actions,known,known_mask,*,mean,scale,dt,bounds,limits,center=None,radius=None):
+    """No-grad deployment equivalent; avoid hundreds of tiny Torch dispatches.
+
+    The differentiable implementation above remains the training definition.
+    Actual CUDA parity, including acceptance decisions, gates deployment.
+    """
+    if actions.ndim!=3 or actions.shape[-1]!=14 or known_mask.shape!=actions.shape[:2]:
+        raise ValueError('expected [B,H,14] and [B,H]')
+    if not known_mask[:,:2].all() or (known_mask[:,1:] & ~known_mask[:,:-1]).any():
+        raise ValueError('C2 continuation requires two contiguous committed endpoints')
+    if (center is None)!=(radius is None):raise ValueError('trust center/radius must be paired')
+    raw=actions*scale+mean;fixed=known*scale+mean
+    raw=np.where(known_mask[...,None],fixed,raw)
+    base=None if center is None else center*scale+mean
+    arm=np.asarray(ARMS);bounds=np.asarray(bounds,dtype=raw.dtype);lo,hi=bounds.T
+    a,b,pos,bound=np.asarray(_coefficients(dt,limits['velocity'],limits['acceleration'],limits['jerk']),dtype=raw.dtype).T
+    nz=np.abs(a)>1e-10;div=np.where(nz,a,1.)
+    rows=[raw[:,0],raw[:,1]];valid=np.ones(len(raw),bool)
+    for i in range(2,raw.shape[1]):
+        prev=rows[-1];vel=(prev-rows[-2])/dt
+        offset=vel[:,arm,None]*dt*b+prev[:,arm,None]*pos
+        lower=np.where(pos.astype(bool),lo[arm,None],-bound);upper=np.where(pos.astype(bool),hi[arm,None],bound)
+        x=(lower-offset)/div;y=(upper-offset)/div
+        low=np.where(nz,np.minimum(x,y),-np.inf).max(-1);high=np.where(nz,np.maximum(x,y),np.inf).min(-1)
+        ok=(nz|((offset>=lower-1e-6)&(offset<=upper+1e-6))).all(-1)&(low<=high+1e-7)
+        low=prev[:,arm]+low;high=prev[:,arm]+high
+        if base is not None:
+            low=np.maximum(low,base[:,i,arm]-radius[arm]);high=np.minimum(high,base[:,i,arm]+radius[arm]);ok &= low<=high+1e-7
+        value=np.maximum(np.minimum(raw[:,i],hi),lo)
+        value[:,arm]=np.maximum(np.minimum(value[:,arm],high),low)
+        active=~known_mask[:,i];valid &= ~active|ok.all(-1)
+        rows.append(np.where(active[:,None],value,fixed[:,i]))
+    result=(np.stack(rows,1)-mean)/scale;result=np.where(known_mask[...,None],known,result)
+    if center is not None:result=np.where(valid[:,None,None],result,np.where(known_mask[...,None],known,center))
+    elif not valid.all():raise ValueError('committed C2 state has no feasible fixed-time continuation')
+    return result,valid

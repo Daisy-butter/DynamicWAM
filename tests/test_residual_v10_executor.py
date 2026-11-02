@@ -67,3 +67,20 @@ def test_reject_impossible_committed_state_and_noncontiguous_prefix():
 
 def test_reject_out_of_interval_evaluation():
     with pytest.raises(ValueError,match='outside'):evaluate(np.zeros(12),np.ones(12),np.zeros(12),DT,DT+.01)
+
+
+def test_numpy_deployment_projector_matches_differentiable_torch():
+    from dynamicwam.dualrate.c2_executor import project_numpy
+    torch.manual_seed(1387)
+    for _ in range(20):
+        a,k,m,kw=fixture(batch=7)
+        kw['mean']=torch.randn(14);kw['scale']=torch.rand(14)+.3
+        k[:,:2]=0.;k[:,:,[6,13]]=(.5-kw['mean'][[6,13]])/kw['scale'][[6,13]]
+        base,_=project_chunk(a,k,m,**kw)
+        for center in (None,base):
+            params=dict(kw,center=center,radius=None if center is None else torch.full((14,),.06))
+            expect,ev=project_chunk(a,k,m,**params)
+            params={n:v.numpy() if isinstance(v,torch.Tensor) else v for n,v in params.items()}
+            actual,av=project_numpy(a.numpy(),k.numpy(),m.numpy(),**params)
+            torch.testing.assert_close(torch.from_numpy(actual),expect,atol=1e-5,rtol=1e-5)
+            assert np.array_equal(av,ev.numpy())

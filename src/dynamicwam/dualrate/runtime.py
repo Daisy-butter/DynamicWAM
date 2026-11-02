@@ -281,8 +281,13 @@ class DualRateRuntime:
         def work():
             worker_started_wall=self.wall_clock()
             with device_stream(self.device, self.fast_stream), torch.no_grad():
+                if getattr(self.system,'residual_v10',None):
+                    self.system._residual_trace=lambda stage:self.record(dict(event='fast_stage',query_id=lease.query_id,
+                        stage=stage,wall_time=self.wall_clock(),clock='CPU enqueue/return; no added CUDA synchronization'))
+                    self.system._residual_trace('batch_start')
                 batch=detached_batch(batch_factory(lease,reference))
                 batch={k:v.to(self.device) for k,v in batch.items()}
+                if getattr(self.system,'residual_v10',None):self.system._residual_trace('batch_done')
                 if float(batch["query_time"].item()) != query:
                     raise TimingError("batch query differs from queue lease")
                 self._prefix(batch,lease.prefix,"fast")
