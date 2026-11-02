@@ -89,6 +89,7 @@ class QueryContext:
     future_valid: Tensor
     draft_actions: Tensor | None = None
     draft_valid: Tensor | None = None
+    correction_valid: Tensor | None = None
 
 
 class _JointBlock(nn.Module):

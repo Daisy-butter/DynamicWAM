@@ -158,6 +158,7 @@ def phase_contract(config, identity):
     if config.get("native_v6"):contract["native_v6"]=config["native_v6"]
     if config.get("native_v7"):contract["native_v7"]=config["native_v7"]
     if config.get("native_v9"):contract["native_v9"]=config["native_v9"]
+    if config.get("bounded_feedback"):contract["bounded_feedback"]=config["bounded_feedback"]
     return contract
 
 

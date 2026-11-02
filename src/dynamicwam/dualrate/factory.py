@@ -91,6 +91,11 @@ def build_system(config, device="cpu"):
         model.fast=ResidualEventFast(arch,radius/scale)
         model.world_readout=EventWorldReadout(latent_channels=48,action_dim=14,world_dim=arch.world_dim,native_hidden_dim=2048)
         configure(model,config['native_v9'],config['native_v6'])
+        if config.get('bounded_feedback'):
+            from .bounded_feedback import BoundedFeedback,configure as configure_feedback
+            model.fast=BoundedFeedback(arch,radius/scale)
+            model.fast.reference_ttl=config['native_v9']['reference_ttl']
+            configure_feedback(model,config['bounded_feedback'])
     elif config.get('native_v7'):
         from .native_v7 import CompactEventFast, configure
         from .native_v6 import EventWorldReadout

@@ -7,6 +7,9 @@ from dualrate_domino_smoke import save
 
 
 def graph_acceptance(system,c):
+    if c.get('bounded_feedback'):
+        from bounded_feedback_acceptance import graph_acceptance as check
+        return check(system,c)
     import torch
     from dynamicwam.dualrate.producer import DominoPhysicalDataset,materialize_native_latents
     from dynamicwam.dualrate.train import _device_batch
@@ -152,13 +155,14 @@ def main():
         if file_sha256(c['checkpoint'])!=c['checkpoint_sha256']:raise ValueError('checkpoint mismatch')
         payload=torch.load(c['checkpoint'],map_location='cpu',weights_only=True,mmap=True)
         if payload['identity']['source_sha256']!=source_identity() or payload['identity']['manifest_sha256']!=file_sha256(c['manifest']):raise ValueError('trained source/data contract differs')
-        for key in ('architecture','native_v6','native_v9','time_contract','codec_id'):
+        for key in ('architecture','native_v6','native_v9','time_contract','codec_id') + (('bounded_feedback',) if c.get('bounded_feedback') else ()):
             if payload['contract'][key]!=c[key]:raise ValueError('trained model contract differs: '+key)
         if not payload.get('phase_complete') or payload.get('phase')!='cross_time_joint':raise ValueError('final complete phase required')
         system.load_state_dict(payload['model'],strict=True);del payload
     save(out/'model_acceptance.json',graph_acceptance(system,c))
     from dynamicwam.dualrate.online import OnlineBatchBuilder
     from dynamicwam.dualrate.native_v9_deployment import NativeResidualPolicy,PROTOCOL
+    if c.get('bounded_feedback'):PROTOCOL='native_topp_dualrate_bounded_feedback_v10'
     from dynamicwam.dualrate.producer import SCENE_PREFIX
     from dynamicwam.runtime.domino_rt.domino_session import prepare_level1_env
     from dynamicwam.runtime.domino_rt.sapien_init_lock import SapienInitLock
@@ -220,7 +224,7 @@ def main():
                 action_count=env.take_action_cnt,action_limit=env.step_lim,physical_end=policy._time(env),wall_seconds=time.monotonic()-start,
                 events=policy.records,clock_audit=checks,native_motion_unmodified=True,performance_accepted=False,
                 purpose=c.get('purpose','engineering_smoke'),checkpoint_sha256=c.get('checkpoint_sha256'),config_sha256=canonical_hash(c))
-            native=out/'eval_result'/task/'native_v9'/c['deployment']['task_config']/'candidate'/c['deployment']['result_stamp']
+            native=out/'eval_result'/task/('dualrate_feedback_v10' if c.get('bounded_feedback') else 'native_v9')/c['deployment']['task_config']/'candidate'/c['deployment']['result_stamp']
             report.update(video.finalize(native/f'episode{ep}.mp4',episode_end_physics_s=policy._time(env)))
             if not validate_video_artifacts(report):raise ValueError('native MP4 decode failed')
             save(d/'report.json',report);reports.append(report)

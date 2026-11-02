@@ -44,6 +44,8 @@ def child(sock,config,parent_pid,parent_session):
                 source['source_known_mask'][0,0]=True
             source['source_has_committed_waypoint']=torch.tensor([request['committed'] is not None],device='cuda:1')
             source['frozen_source_seed']=torch.tensor([request['seed']],device='cuda:1')
+            if config.get('bounded_feedback'):
+                source['feedback_noise_seed']=source['frozen_source_seed'].clone()
             with torch.no_grad():
                 model_start=time.monotonic()
                 reference=system.predict_reference(source)

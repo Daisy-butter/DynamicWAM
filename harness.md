@@ -1,3 +1,22 @@
+# Current authorization: .92 dual-rate bounded feedback, 2026-11-02
+
+Continue branch `feat/native-v9-residual-async-20261101`; commits distinguish iterations.
+The historical 41.72 versus 39.83 native experiment is a mechanism audit, NOT an
+instruction to replace the current dual-rate model with the old feedback head.
+Retain frozen complete Full slow planner + independent 448/6/7 one-pass residual
+fast model, fast1/slow4, native synchronous TOPP. See docs/bounded_feedback_v10.md.
+User requires complete implementation followed by at least THREE reviewed iterations.
+Do not disturb current foreign .92 GPU jobs; .50/.100 remain protected. CPU work only
+until resource preflight passes. Earliest scheduled GPU acceptance is 2026-11-03
+02:00 Asia/Shanghai; formal training additionally requires all current-source GPU,
+native episode/MP4, eight-rank three-stage and strict restore/clean-exit gates.
+If occupied or a gate fails, stop and record blockage; no automatic retry or GPU
+recovery. Do not reinterpret a timer as acceptance. Half expert data is allowed,
+selected by whole train episodes per task/style; preserve splits/statistics.
+All artifacts under verified .92 SSD wuruihan. Freeze source/config while scheduled
+or running. No full benchmark auto-evaluation is requested in this iteration.
+
+---
 # Current authorization: .92 native V9, 2026-11-01
 User authorizes a new native noncontinuous DOMINO revision: independent background
 slow updates, bounded corrections around aligned Full A10, raw-frame motion parity,

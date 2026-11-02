@@ -32,6 +32,11 @@ class NativeResidualPolicy:
         self.pending=deque();self.command_index=0;self.world=None;self.source=None
         self.records=[];self.env=None;self.current_target=None;self.last_request=-1e30;self.last_request_index=-100
         self.record_query=record_query;self.consumed=set();self.version=0;self.completed=None;self.bootstrap_checked=False;self.executed_targets=[]
+        self.feedback=bool(getattr(system,'bounded_feedback',None))
+        self.previous_plan=None;self.previous_origin=None
+        if self.feedback:
+            from .native_interaction import InteractionHistory
+            self.interactions=InteractionHistory(builder.mean.numpy(),builder.scale.numpy())
 
     def _time(self,env):return float(env._scene_step_clock.snapshot().time_seconds)
 
@@ -73,7 +78,7 @@ class NativeResidualPolicy:
         selected={f.exposure:f for f in selected}
         frames=tuple(selected[k] for k in sorted(selected))
         self.service.submit(dict(frames=frames,source_time=now,index=self.command_index,committed=committed,
-            seed=(self.seed+1000003*self.command_index+round(now*1e6))%((1<<63)-1),
+            seed=self.seed if self.feedback else (self.seed+1000003*self.command_index+round(now*1e6))%((1<<63)-1),
             manifest=self.builder.manifest,language=self.builder.language),self.env._scene_step_clock)
         self.last_request=now;self.last_request_index=self.command_index
         self.records.append(dict(kind='slow_request',version=self.service.counter,source_index=self.command_index,
@@ -120,13 +125,22 @@ class NativeResidualPolicy:
                 actual=(torch.tensor(np.stack(past),device=self.builder.device)-self.builder.mean.to(self.builder.device))/self.builder.scale.to(self.builder.device)
                 deviation=(actual-self.world['reference_actions'][0,:len(past)]).abs().mean()
             batch['executed_deviation']=torch.as_tensor(deviation,device=self.builder.device).reshape(1)
+            if self.feedback:
+                batch.update(self.interactions.tensors(now,self.command_index,self.builder.device))
+                if self.previous_plan is not None:
+                    from .native_v6 import align_plan
+                    pa,pv=align_plan(self.previous_plan,self.previous_origin,batch['native_query_index'])
+                    batch.update(previous_actions=pa,previous_valid=pv)
             a10,valid=draft(self.world,batch,self.system.native_v9['reference_ttl'])
             if not bool(valid[:,:1].all()):raise RuntimeError('uncovered execution prefix')
             t=time.monotonic();overlap=self.service.future is not None
-            sample=self.system.sample_fast(batch,self.world,steps=10,generator=self.generator,
+            sample=self.system.sample_fast(batch,self.world,steps=1 if self.feedback else 10,generator=self.generator,
                 initial_action_noise=ordinal_action_noise(self.command_index,16,14,self.seed,batch['state']))
             raw=sample['actions'][0].cpu()*self.builder.scale+self.builder.mean
             raw,project=self.bounds(raw,torch.zeros(16,dtype=torch.bool))
+            if self.feedback:
+                self.previous_plan=sample['actions'].detach().clone()
+                self.previous_origin=batch['native_query_index'].clone()
             if self._time(env)!=now:raise RuntimeError('native physics advanced during fast query')
             self.pending.extend(raw[:1].numpy().copy())
             self.records.append(dict(kind='fast_query',command_index=self.command_index,query_physical_time=now,
@@ -146,7 +160,14 @@ class NativeResidualPolicy:
         before=len(self.sensors.capture_events)
         self._request(frames)  # boundary snapshot plus irrevocably selected next waypoint
         action_wall=time.monotonic()
+        if self.feedback:
+            from .native_interaction import read_arm_state
+            achieved_before,_=read_arm_state(env.robot)
         with self.sensors.during_action(env):env.take_action(self.current_target,action_type='qpos')
+        if self.feedback:
+            achieved_after,velocity_after=read_arm_state(env.robot)
+            self.interactions.append(index=self.command_index,start=now,end=self._time(env),command=self.current_target,
+                before=achieved_before,after=achieved_after,velocity=velocity_after,source_time=float(self.world['source_time'][0]))
         self.executed_targets.append(self.current_target.copy())
         self.current_target=None;self.command_index+=1
         if self.command_index!=env.take_action_cnt:raise RuntimeError('TOPP command count mismatch')

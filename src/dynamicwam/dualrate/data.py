@@ -402,6 +402,9 @@ class DualRateShardDataset(Dataset):
 def open_training_dataset(manifest_path: str | Path, **kwargs) -> Dataset:
     """Open either audited legacy tensor shards or fixed-time real DOMINO episodes."""
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    if manifest.get("bounded_feedback_dataset"):
+        from .feedback_data import FeedbackDataset
+        return FeedbackDataset(manifest_path,**kwargs)
     if manifest.get("native_v9_dataset"):
         from .native_v9_data import NativeReplayDataset
         return NativeReplayDataset(manifest_path,**kwargs)
