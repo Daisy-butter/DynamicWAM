@@ -68,6 +68,28 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def validate_tracking_review(config, receipt, source):
+    """V10 formal training requires resolution of the measured contact defect."""
+    if not config.get('residual_v10'):
+        return
+    binding = receipt.get('actuator_tracking_review')
+    if not isinstance(binding, dict) or not binding.get('path'):
+        raise ValueError('V10 actuator tracking review is absent')
+    path = Path(binding['path']).resolve(strict=True)
+    if base.file_sha256(path) != binding.get('sha256'):
+        raise ValueError('V10 actuator tracking review changed')
+    review = read_json(path)
+    if (review.get('passed') is not True or review.get('source_sha256') != source['source_sha256']
+            or review.get('production_contacts_enabled') is not True
+            or review.get('baseline_comparison_complete') is not True):
+        raise ValueError('V10 actuator tracking cause remains unresolved for this source')
+    if not review.get('evidence'):
+        raise ValueError('V10 actuator tracking review has no physical evidence')
+    for row in review['evidence']:
+        if base.file_sha256(Path(row['path']).resolve(strict=True)) != row['sha256']:
+            raise ValueError('V10 actuator tracking evidence changed')
+
+
 def validate_acceptance(config, source):
     if config["run_kind"] == "dualrate_tracking_replay":
         from dualrate_tracking_replay import validate_config
@@ -111,6 +133,7 @@ def validate_acceptance(config, source):
     if base.file_sha256(path) != config["acceptance_receipt_sha256"]:
         raise ValueError("formal acceptance receipt hash changed")
     receipt = read_json(path)
+    validate_tracking_review(config, receipt, source)
     if receipt.get("passed") is not True or receipt.get("source_sha256") != source["source_sha256"]:
         raise ValueError("formal acceptance is absent or for another model source")
     if receipt.get("supervisor_sha256") != source["distributed_supervisor_sha256"]:
