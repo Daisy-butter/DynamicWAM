@@ -31,6 +31,8 @@ def validate_policy_contract(config, contract):
     """Parameter shapes alone cannot distinguish full/residual or gating modes."""
     if config.get('continuous_v8') != contract.get('continuous_v8'):
         raise ValueError('continuous V8 train/deploy policy semantics differ')
+    if config.get('residual_v10') != contract.get('residual_v10'):
+        raise ValueError('V10 residual/executor/label contract differs between train and deploy')
     if config.get('continuous_v8') and any(config.get(k) for k in ('native_v5','native_v6','native_v7')):
         raise ValueError('continuous V8 cannot use native event-coordinate policy')
     if config.get('continuous_v8'):
@@ -40,6 +42,10 @@ def validate_policy_contract(config, contract):
 
 
 def validate_training_contract(config, manifest):
+    if config.get('residual_v10')!=manifest.get('residual_v10'):
+        raise ValueError('V10 labels and model must bind the same executor and future anchor')
+    if config.get('residual_v10') and config['runtime']!=manifest.get('measured_runtime'):
+        raise ValueError('V10 training windows require the measured deployed runtime, not only matching action dt')
     expected = dict(version='continuous_rtc_v8',clock='physical_seconds',
         action_semantics='fixed_interval_endpoint_arm_start_gripper',
         action_interval_seconds=config['action_interval_seconds'],

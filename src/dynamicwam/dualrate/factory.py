@@ -87,6 +87,12 @@ def build_system(config, device="cpu"):
         from .continuous_v8 import ContinuousResidualFast, configure
         model.fast=ContinuousResidualFast(arch,independent_future_gate=config['continuous_v8']['independent_future_gate'])
         configure(model,config['continuous_v8'])
+        if config.get('residual_v10'):
+            from .residual_v10 import ResidualFast, configure as configure_residual
+            model.fast=ResidualFast(arch)
+            stats=payload['config']['action_normalization']['stats']
+            configure_residual(model,config['residual_v10'],stats['mean'],
+                               [max(float(x),1e-6) for x in stats['std']])
     elif config.get('native_v7'):
         from .native_v7 import CompactEventFast, configure
         from .native_v6 import EventWorldReadout

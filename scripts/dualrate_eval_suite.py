@@ -86,7 +86,7 @@ def consumed_background_versions(report):
 def deployment_acceptance(reports):
     graph = bool(reports) and all(r.get('fast_graph_acceptance', {}).get('enabled')
         and r['fast_graph_acceptance'].get('passed') and r['fast_graph_acceptance'].get('sealed')
-        and r['fast_graph_acceptance'].get('shape_count') == 2 for r in reports)
+        and r['fast_graph_acceptance'].get('shape_count') == (1 if r.get('residual_v10') else 2) for r in reports)
     during = sum(r.get('fast_queries_during_slow', 0) for r in reports)
     overlap = sum(r.get('model_overlap_fast_queries', 0) for r in reports)
     camera_steps = sum(r.get('physics_steps_during_camera', 0) for r in reports)

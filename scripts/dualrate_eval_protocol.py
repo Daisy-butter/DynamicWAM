@@ -8,6 +8,7 @@ def validate_backlog_contract(config):
     budget=float(config['max_backlog'])
     if budget not in (.25,.5):raise ValueError('explicit nominal250ms or500ms protocol required')
     expected=BASE_PROTOCOL if budget==.25 else BACKLOG500_PROTOCOL
+    if config.get('residual_v10'):expected+='_fixed_c2_v10'
     if config.get('protocol')!=expected:raise ValueError('protocol label differs from actual backlog budget')
     bench=config['benchmark_contract']
     if float(bench.get('max_backlog',-1))!=budget:raise ValueError('benchmark metadata backlog differs')
@@ -22,6 +23,7 @@ def validate_backlog_contract(config):
                 or float(config.get('wall_scheduling_tolerance',-1))!=0.
                 or float(config.get('physical_scheduling_tolerance',-1))!=0.):
             raise ValueError('backlog500ms must retain1x/camera.24/45ticks/strict deadlines/5ms tolerance')
-        if bench.get('evaluation_setting')!='continuous1x_backlog500ms_v1':
+        setting='continuous1x_backlog500ms_v1'+('_fixed_c2_v10' if config.get('residual_v10') else '')
+        if bench.get('evaluation_setting')!=setting:
             raise ValueError('separate backlog500ms benchmark setting metadata required')
     return expected

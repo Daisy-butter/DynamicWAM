@@ -1,5 +1,6 @@
 """Continuous DOMINO driver: only fast plans reach the robot's execution queue."""
 from __future__ import annotations
+from dataclasses import asdict
 import math
 import threading
 import time
@@ -19,10 +20,11 @@ from .producer import NUMERIC_TIME_EPSILON
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
 
-def protocol_for_backlog(max_backlog):
+def protocol_for_backlog(max_backlog, *, residual_v10=False):
     if max_backlog not in (.25,.5):
         raise ValueError('explicit nominal250ms or500ms evaluation backlog required')
-    return PROTOCOL if max_backlog==.25 else PROTOCOL+'_backlog500ms_v1'
+    result=PROTOCOL if max_backlog==.25 else PROTOCOL+'_backlog500ms_v1'
+    return result+'_fixed_c2_v10' if residual_v10 else result
 
 
 class BoundedArmSmoothing:
@@ -413,7 +415,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     Target rows are endpoints over [.18i,.18(i+1)); arms interpolate linearly from
     the preceding committed endpoint, grippers keep native command semantics.
     """
-    protocol=protocol_for_backlog(float(max_backlog))
+    protocol=protocol_for_backlog(float(max_backlog),residual_v10=bool(getattr(system,'residual_v10',None)))
     if not getattr(builder,'hardtime',False):
         raise ValueError('deployment requires exposure_anchor_wall_release_v4 data contract')
     frame_period=runtime_config.action_dt if frame_period is None else float(frame_period)
@@ -475,6 +477,15 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         episode_id=f'domino-{seed}',clock_id='sapien-scene-step-clock')
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     projection=ActuatorProjection.from_robot(session.env.robot)
+    c2_settings=getattr(system,'residual_v10',None)
+    if c2_settings:
+        if arm_smoothing is not None:
+            raise ValueError('V10 feasibility projection cannot be followed by a different smoothing rule')
+        actual=np.asarray(projection.serialized_bounds,dtype=np.float64)
+        if actual.shape!=(14,2) or not np.allclose(actual,np.asarray(c2_settings['bounds']),atol=1e-6,rtol=0):
+            raise ValueError('V10 trained bounds differ from actual SAPIEN actuator limits')
+        emit(dict(event='fixed_c2_executor_contract',settings=c2_settings,
+                  timing='exact physical interval; no retiming',gripper='native interval-start'))
     if arm_smoothing is not None:
         projection=BoundedArmSmoothing(projection,arm_smoothing)
     runtime=DualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
@@ -523,6 +534,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
                   immutable_wall_origin=True,inflight_catchup_hold=False,soft_horizon_reserve_hold=False))
         max_lag=0.;min_lag=0.;last_row=-1;completed_rows=0;metrics_row=-1
         previous=np.asarray(held,np.float64);target=previous.copy();next_capture_tick=capture_ticks
+        segment_start_velocity=np.zeros_like(previous)
         from dynamicwam.runtime.domino_rt import _sapien_color_reader
         bind_gil_releasing_physx_step(session.env, _sapien_color_reader.step_cpu_physx)
         step_owner=ContinuousStepOwner(session.env.scene,clock).install()
@@ -601,14 +613,18 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             diagnostics.begin_tick(tick,now,lag)
             action=np.asarray(queue.action_at(now),np.float64)
             if row!=last_row:
+                segment_start_velocity=(target-previous)/queue.dt
                 previous=target.copy();target=action.copy();last_row=row
                 session.env.take_action_cnt=int(getattr(session.env,'take_action_cnt',0))+1
                 emit(dict(event='execute',row=row,start_time=initial+row*queue.dt,end_time=initial+(row+1)*queue.dt,
-                          actual_start=now,physical_tick=tick,execution_wall_time=time.perf_counter(),target=target.tolist(),controller='endpoint_linear_arm_native_gripper'))
+                          actual_start=now,physical_tick=tick,execution_wall_time=time.perf_counter(),target=target.tolist(),controller='fixed_c2_arm_native_gripper' if c2_settings else 'endpoint_linear_arm_native_gripper'))
             elif not np.array_equal(action,target):
                 raise TimingError('active committed endpoint changed')
             fraction=(tick%action_ticks+1)/action_ticks
             position=previous+(target-previous)*fraction;velocity=(target-previous)/queue.dt
+            if c2_settings:
+                from .c2_executor import evaluate
+                position,velocity,_=evaluate(previous,target,segment_start_velocity,queue.dt,fraction*queue.dt)
             position[[6,13]]=target[[6,13]];velocity[[6,13]]=0
             robot=session.env.robot
             # Same single-state passive-force reuse as the paired Full baseline.
@@ -662,7 +678,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             end_wall=end_wall,end_physics=end_physics,physics_steps=physics_steps,
             max_lag=max_lag,min_lag=min_lag,max_backlog=max_backlog)
         emit(dict(event='terminal_clock',**clock_evidence))
-        report=dict(step_owner=step_owner.receipt(),protocol=protocol,time_contract=builder.manifest['time_contract'],
+        report=dict(step_owner=step_owner.receipt(),protocol=protocol,residual_v10=c2_settings,
+            runtime_contract=asdict(runtime_config),time_contract=builder.manifest['time_contract'],
             realtime_valid=clock_evidence['passed'],continuous_valid=clock_evidence['passed'],simulation_rate=1.,
             success=terminal=='success',stop_reason=terminal,bootstrap_wall_seconds=bootstrap_seconds,
             bootstrap_latency_excluded_from_active_episode=True,action_interval_s=queue.dt,

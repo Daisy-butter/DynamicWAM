@@ -261,7 +261,7 @@ def run(stack):
     consumed_refresh=any(len(r['reference_versions_consumed'])>=2 for r in results)
     graph_parity=bool(results) and all(r.get('fast_graph_acceptance',{}).get('enabled') and
         r['fast_graph_acceptance'].get('passed') and r['fast_graph_acceptance'].get('sealed') and
-        r['fast_graph_acceptance'].get('shape_count')==2 for r in results)
+        r['fast_graph_acceptance'].get('shape_count')==(1 if config.get('residual_v10') else 2) for r in results)
     save(output/'deployment_acceptance.json',dict(completed=True,episodes=len(results),real_domino=True,simulation_rate=1.,
         full_model=True,strict_checkpoint_load=True,checkpoint=checkpoint_meta,gpu_count=len(uuids),
         time_contract=manifest['time_contract'],inference_device_map=placement,

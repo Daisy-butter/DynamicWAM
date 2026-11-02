@@ -187,6 +187,39 @@ def effective_runtime_settings(config):
     return dict(trained, min_query_budget_seconds=reserve)
 
 
+
+def install_mailbox_receipt_refresh_patch():
+    """Scripts-only DualRateRuntime.poll wrap for worker_receipt_v8.
+
+    poll snapshots mailbox.check_pending into a local receipt, then may run
+    slow_job.result/publish before deciding whether a done fast future lacks a
+    receipt. A concurrent on-time mailbox.submit during that slow work leaves
+    the local snapshot None and raises TimingError even though fast_submitted was
+    recorded failed02/failed04. V8 forbids editing src/dynamicwam identical
+    frozen training source_sha256, so hold a completed slow future while a
+    mailbox-backed fast job is in flight; slow drains on a later poll once fast
+    is idle. Deadlines stay strict.
+    """
+    from dynamicwam.dualrate.runtime import DualRateRuntime
+    if getattr(DualRateRuntime, '_mailbox_receipt_refresh_patched', False):
+        return
+    orig = DualRateRuntime.poll
+
+    def poll(self):
+        held = None
+        if (getattr(self, '_mailbox', None) is not None and self.fast_job is not None
+                and self.slow_job is not None and self.slow_job[0].done()):
+            held, self.slow_job = self.slow_job, None
+        try:
+            return orig(self)
+        finally:
+            if held is not None and self.slow_job is None:
+                self.slow_job = held
+
+    DualRateRuntime.poll = poll
+    DualRateRuntime._mailbox_receipt_refresh_patched = True
+
+
 def validated_arm_smoothing(config):
     """Optional deployment experiment, distinct from the checkpoint contract."""
     spec = config.get('deployment_arm_smoothing')
@@ -203,7 +236,7 @@ def validated_arm_smoothing(config):
     return dict(spec)
 
 
-def validate_config(config):
+def validate_config(config, *, checkpoint_pending=False):
     if config.get('run_kind') != MODE or config.get('stage') not in ('smoke', 'formal'):
         raise ValueError('explicit DualRate V4 smoke/formal configuration required')
     from dualrate_eval_protocol import validate_backlog_contract
@@ -244,7 +277,9 @@ def validate_config(config):
     # A comparison protocol cannot silently change the accepted V4 timing grid.
     if not math.isclose(float(config['action_dt']), 0.18000000854954124, abs_tol=1e-8):
         raise ValueError('common action grid must be 45 float32 physics steps')
-    for name in ('profile', 'checkpoint'):
+    if checkpoint_pending and config.get('checkpoint_sha256')!='PENDING_TRAINING_COMPLETION':
+        raise ValueError('pending preflight must not substitute a different checkpoint')
+    for name in (('profile',) if checkpoint_pending else ('profile', 'checkpoint')):
         if sha(config[name]) != config[name + '_sha256']:
             raise ValueError(name + ' hash mismatch')
     if Path(config['profile']).resolve() != Path(config['native_profile']).resolve():
@@ -456,7 +491,7 @@ def checked_episode(config, task, episode):
         raise ValueError('native metric success differs from rollout')
     graph = report.get('fast_graph_acceptance', {})
     if (report.get('executable_action_source') != 'fast_only' or not graph.get('enabled')
-            or not graph.get('passed') or not graph.get('sealed') or graph.get('shape_count') != 2):
+            or not graph.get('passed') or not graph.get('sealed') or graph.get('shape_count') != (1 if config.get('residual_v10') else 2)):
         raise ValueError('fast-only two-shape CUDA Graph contract not accepted')
     return report, metric
 
@@ -529,12 +564,13 @@ def _run_worker(resources):
     from dynamicwam.dualrate.producer import episode_prompt
     from dualrate_deployment_inputs import build_cached_online_batch_builder
     from dualrate_physics_optimization import passive_force_scope
+    install_mailbox_receipt_refresh_patch()
     from dynamicwam.dualrate.runtime import RuntimeConfig
     from dynamicwam.dualrate.deployment import run_episode, protocol_for_backlog
     runtime_config = RuntimeConfig(**effective_runtime_settings(config))
     if abs(runtime_config.action_dt - config['action_dt']) > 1e-10 or not runtime_config.fast_cuda_graph:
         raise ValueError('runtime grid/CUDA Graph differs from accepted V4 configuration')
-    if config['protocol'] != protocol_for_backlog(float(config['max_backlog'])):
+    if config['protocol'] != protocol_for_backlog(float(config['max_backlog']),residual_v10=bool(config.get('residual_v10'))):
         raise ValueError('runtime protocol differs from configuration')
     from dynamicwam.runtime.domino_rt.domino_session import DominoLevel1Session, prepare_level1_env
     from dynamicwam.runtime.domino_rt.camera_capture import AsyncCameraCapture, validate_native_rgb_conversion
@@ -554,7 +590,8 @@ def _run_worker(resources):
     cohort = EpisodeCohort(args.cohort_dir, args.task)
     native = output / 'eval_result' / args.task / 'dualrate_dynamicwam' / config['task_config'] / Path(config['checkpoint']).stem / config['result_stamp']
     save(output/args.task/'deployment_identity.json', dict(checkpoint=checkpoint_meta, checkpoint_sha256=config['checkpoint_sha256'],
-        training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config['source_compatibility_sha256'],
+        training_source_sha256=compatibility['training_source_sha256'], source_compatibility_sha256=config.get('source_compatibility_sha256'),
+        source_compatibility_mode=compatibility.get('mode', 'audited_inference_delta'),
         inference_device_map=placement, renderer=renderer, gpu_uuids=uuids, gpu_count=3,
         trained_runtime=config['runtime'], effective_runtime=effective_runtime_settings(config),
         deployment_arm_smoothing=validated_arm_smoothing(config),

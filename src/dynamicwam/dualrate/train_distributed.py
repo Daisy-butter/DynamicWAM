@@ -167,6 +167,7 @@ def phase_contract(config, identity):
     if config.get("native_v7"):contract["native_v7"]=config["native_v7"]
     if config.get("continuous_v8"):
         contract["continuous_v8"]=config["continuous_v8"]
+        if config.get("residual_v10"):contract["residual_v10"]=config["residual_v10"]
         contract["runtime_contract"]=config["runtime"]
         contract["training_recipe"]=config.get("training_recipe")
     return contract

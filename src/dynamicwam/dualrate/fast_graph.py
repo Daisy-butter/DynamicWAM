@@ -17,6 +17,13 @@ def eager_joint_sample(fast, a, z, known, mask, context, fields, contacts, *, st
     if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
         raise ValueError('positive integer sampling steps required')
     batch = a.shape[0]
+    if getattr(fast,'clean_residual',False):
+        if steps!=1:raise ValueError('clean residual graph is a single deterministic forward')
+        result=fast.forward_cached(a,z,a.new_zeros(batch),context,known_actions=known,action_known_mask=mask)
+        return dict(actions=torch.where(mask[...,None],known,result['action_velocity']),
+            future=torch.where(fields,result['future_velocity'],0.),contact_logits=result['contact_logits'],
+            contact_probability=torch.where(contacts,result['contact_logits'].sigmoid(),0.),
+            future_valid=context.future_valid,future_field_valid=fields,contact_valid=contacts)
     grid=getattr(fast,'sampling_sigmas',None)
     if grid is not None and len(grid)!=steps:raise ValueError('untrained compact sampling schedule')
     for step in range(steps):

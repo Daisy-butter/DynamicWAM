@@ -135,16 +135,18 @@ class DualRateRuntime:
         if self.clock_bridge is None or self.clock_bridge.active:
             raise TimingError('CUDA Graph capture is forbidden after episode activation')
         state=self.fast_rng.get_state()
+        expected_shapes=1 if getattr(self.system,'residual_v10',None) else 2
         try:
             try:
                 self.system.sample_fast(batch,world,steps=self.config.sample_steps,generator=self.fast_rng)
-                self.system.sample_fast(batch,self.system.empty_world(batch),
-                                        steps=self.config.sample_steps,generator=self.fast_rng)
+                if expected_shapes==2:
+                    self.system.sample_fast(batch,self.system.empty_world(batch),
+                                            steps=self.config.sample_steps,generator=self.fast_rng)
             finally:
                 self.fast_rng.set_state(state)
-            self.fast_graph.seal(expected_shapes=2)
+            self.fast_graph.seal(expected_shapes=expected_shapes)
             receipt=self.fast_graph_receipt()
-            if not receipt.get('passed') or not receipt.get('sealed') or receipt.get('shape_count')!=2:
+            if not receipt.get('passed') or not receipt.get('sealed') or receipt.get('shape_count')!=expected_shapes:
                 raise TimingError('fast CUDA Graph parity/shape acceptance did not pass')
         except BaseException as exc:
             self.record(dict(event='fast_graph_preparation_failed',acceptance=self.fast_graph_receipt(),
@@ -279,6 +281,9 @@ class DualRateRuntime:
                 if float(batch["query_time"].item()) != query:
                     raise TimingError("batch query differs from queue lease")
                 self._prefix(batch,lease.prefix,"fast")
+                if getattr(self.system,'residual_v10',None):
+                    from .residual_v10 import anchor_future
+                    batch['future_times']=anchor_future(batch,self.system.fast.config.future_entities)
                 if reference:
                     world={k:v.clone() for k,v in device_reference[1].items()}
                     # Publication time is assigned on the owner, after transfer.
@@ -289,6 +294,15 @@ class DualRateRuntime:
                 model_started_wall=self.wall_clock()
                 output=self.system.sample_fast(batch,world,steps=self.config.sample_steps,generator=self.fast_rng)
                 raw=output["actions"][0].float().cpu()*self.scale+self.mean
+                if 'baseline_actions' in output:
+                    base=output['baseline_actions'][0].float().cpu()*self.scale+self.mean
+                    self.record(dict(event='residual_action_audit',query_id=lease.query_id,
+                        action_intervals=batch['action_intervals'][0].cpu().tolist(),
+                        baseline_raw=base.tolist(),proposed_raw=raw.tolist(),
+                        correction_raw=(raw-base).tolist(),draft_valid=output['draft_valid'][0].cpu().tolist(),
+                        correction_accepted=bool(output['correction_accepted'][0]),
+                        observation_times=batch['rgb_times'][0].cpu().tolist(),
+                        reference_version=lease.reference_version))
                 known_cpu=batch['fast_known_mask'][0].cpu()
                 # Reuse authoritative queue values, avoiding normalization round-trip
                 # changes even in the returned executable-action diagnostic.

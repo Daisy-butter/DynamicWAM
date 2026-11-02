@@ -33,13 +33,14 @@ def guard_fixture(directory,config,src,pid):
     return identity
 
 
-def training_fixture(tmp_path,monkeypatch):
+def training_fixture(tmp_path,monkeypatch,recipe=None):
     root=tmp_path/'training';src=source();rows=[];completed=[];previous=None
-    for index,(name,steps,global_step) in enumerate(mod.PHASES):
+    for index,(name,steps,global_step) in enumerate(mod.expected_phases({'training_recipe':recipe}) if recipe is not None else mod.PHASES):
         output=tmp_path/'weights'/name;output.mkdir(parents=True)
         checkpoint=output/'last.pt';checkpoint.write_bytes(name.encode())
         digest=mod.file_sha256(checkpoint)
         template=dict(phase=name,steps=steps,world_size=8,run_kind='formal_distributed_training',output=str(output))
+        if recipe is not None:template['training_recipe']=recipe
         template_path=tmp_path/'templates'/(name+'.json');save(template_path,template)
         rows.append(dict(phase=name,config=str(template_path),config_sha256=mod.file_sha256(template_path)))
         config=dict(template,sequence_id='training1')
@@ -61,7 +62,9 @@ def training_fixture(tmp_path,monkeypatch):
     save(root/'status.json',dict(state='completed',source=src,sequence_id='training1',errors=[],
         controller=dict(pid=99,start_ticks=10),completed_phases=completed))
     monkeypatch.setattr(mod,'identity_exited',lambda identity:True)
-    return dict(training_sequence_dir=str(root)),root
+    spec=dict(training_sequence_dir=str(root))
+    if recipe is not None:spec['training_recipe']=recipe
+    return spec,root
 
 
 def test_waits_for_live_training_and_completed_controller_exit(tmp_path,monkeypatch):
@@ -232,3 +235,20 @@ def test_acceptance_producer_cannot_publish_a_false_graph_pass(tmp_path,monkeypa
     with pytest.raises(ValueError,match='Graph/concurrency'):
         mod.make_acceptance(smoke,directory,src,path)
     assert not path.exists()
+
+
+def test_explicit_v8_recipe_accepts_real_completion_not_old_v4(tmp_path,monkeypatch):
+    recipe=[dict(phase=n,steps=s) for n,s in [('warmup',500),('small_age_joint',4000),('cross_time_joint',8000)]]
+    spec,root=training_fixture(tmp_path,monkeypatch,recipe)
+    result=mod.training_ready(spec)
+    assert [p['global_step'] for p in result['phases']]==[500,4500,12500]
+    spec['training_recipe'][-1]['steps']=7999
+    with pytest.raises(ValueError):mod.training_ready(spec)
+
+
+@pytest.mark.parametrize('recipe',[[],[{}],None,True, [{'phase':n,'steps':True} for n in ['warmup','small_age_joint','cross_time_joint']]])
+def test_bad_explicit_recipe_rejected(recipe):
+    if recipe is None:
+        assert mod.expected_phases({})==mod.PHASES
+    else:
+        with pytest.raises(ValueError):mod.expected_phases({'training_recipe':recipe})

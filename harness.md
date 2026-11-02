@@ -1,3 +1,22 @@
+# Current authorization: .50 Continuous RTC residual V10, 2026-11-02
+User authorizes this route's bounded clean residual/controller changes, executor
+research and implementation, at least three reviews, smoke and a fresh official
+Full multi-stage training after acceptance. Continue the existing branch; record
+commits in the experiment ledger. .92/.100 and prior .50 results remain protected.
+Only a verified idle GPU keepalive was stopped; never stop unrelated jobs.
+Read docs/residual_v10.md. Current candidate is NOT training-ready yet. Preserve
+real physical/exposure clocks, exact queue commitments and independent slow/fast
+GPU execution. C2 is a NEW explicit benchmark protocol, not old-linear parity.
+No reset/unbind/reload, broad process kill, automatic retries or silent gate bypass.
+All large artifacts under .50 /SSD_DISK/users/wuruihan. Freeze source/config for
+GPU acceptance and training. Formal requires current-source data/real deployment
+and three-phase eight-rank strict-restore evidence. Synthetic future-queue
+augmentation is not on-policy data and must never carry counterfactual GT labels.
+
+Historical scopes follow; they do not override this authorization.
+
+---
+
 # Current authorization: .50 Continuous RTC V8, 2026-10-31
 Only the isolated .50 dualrate-v8-rtc-20261031 worktree is writable. Previous V8 is preserved.
 Protect .92 training, .100, all older .50 worktrees/results and running jobs.

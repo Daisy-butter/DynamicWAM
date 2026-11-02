@@ -891,6 +891,8 @@ class DominoPhysicalDataset(Dataset):
                 if not self.manifest.get('native_v5'):raise
                 video_frames.append(source_frame);video_valid.append(False)
         visual_requests=(fast_starts[0]+np.array([1,2,4,8])*dt if self.manifest.get('native_v6') else q+np.array([.1,.2,.4,.8]))
+        if self.manifest.get('residual_v10'):
+            visual_requests=fast_starts[int(fast_known.sum())]+np.array([.1,.2,.4,.8])
         visual_frames=[]
         for target in visual_requests:
             try:visual_frames.append(select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE))
@@ -915,7 +917,7 @@ class DominoPhysicalDataset(Dataset):
         for frame in set(i for i in visual_frames if i>=0):features[frame],context_valid[frame]=visual_cache[frame]
         r=replace(records,frozen_visual_features=features,projectability=context_valid,visual_context_valid=context_valid)
         labels=produce_future_labels(r,q,max_interpolation_gap=INTERPOLATION_GAP,max_contact_age=INTERPOLATION_GAP,duplicate_policy='last',max_visual_time_error=RGB_TOLERANCE,
-            target_offsets=(visual_requests-q).tolist() if self.manifest.get('native_v6') else None)
+            target_offsets=(visual_requests-q).tolist() if self.manifest.get('native_v6') or self.manifest.get('residual_v10') else None)
         item={key:value.index_select(0,self.future_token_indices) for key,value in labels.tensors().items()}
         item['future']=normalize_future(item['future'],item['future_loss_valid'],self.manifest['statistics'])
         textrow=self.text_index[ep['prompt_id']];p=(self.text_root.parent/textrow['path']).resolve()
@@ -988,6 +990,31 @@ class DominoPhysicalDataset(Dataset):
                 teacher_future_intervals=torch.tensor([[q,q+8*dt],[q+8*dt,q+16*dt]],dtype=torch.float64),
                 teacher_temporal_support=torch.tensor([mi[0].tolist(),[hist_start,q]],dtype=torch.float64),
                 teacher_view_overlap=source_overlap,teacher_token_valid=torch.cat([torch.full((120,),bool(mv[0])),torch.ones(120,dtype=torch.bool)]),
+                teacher_input_type=torch.tensor([1,2]))
+        if self.manifest.get('residual_v10'):
+            # A current-observation Full endpoint is a privileged TRAINING
+            # teacher. Its prefix is the same physical queue as the student;
+            # its exposure is NOT relabelled as the query time.
+            exposure=float(t[query_frame])
+            hist_start=float(mi[mv,0].min()) if bool(mv.any()) else exposure
+            from .exposure_timing import grid_start,prefix_count
+            teacher_start=grid_start(exposure,float(starts[0]),dt)
+            teacher_starts=teacher_start+np.arange(16)*dt
+            teacher_values,teacher_valid,_=resample_interval_commands(t,raw_actions.numpy(),teacher_starts,dt)
+            teacher_n=prefix_count(teacher_start,float(fast_starts[int(fast_known.sum())]),dt)
+            _require(bool(teacher_valid[:teacher_n].all()),'current teacher lacks actual committed history')
+            teacher_values=(torch.from_numpy(np.where(teacher_valid[:,None],teacher_values,0.))-self.action_mean)/self.action_std
+            teacher_mask=torch.arange(16)<teacher_n
+            item.update(teacher_condition_frames=torch.from_numpy(query_condition).permute(3,0,1,2).float()/127.5-1,
+                teacher_initial_state=item['state'],teacher_motion=motion,teacher_motion_valid=mv,
+                teacher_motion_acceleration_valid=ma,teacher_text=language['context'],
+                teacher_known_actions=torch.where(teacher_mask[:,None],teacher_values,0.),teacher_known_mask=teacher_mask,
+                teacher_action_times=torch.from_numpy(teacher_starts),
+                teacher_action_intervals=torch.from_numpy(np.stack((teacher_starts,teacher_starts+dt),-1)),
+                teacher_future_intervals=torch.tensor([[exposure,exposure+8*dt],[exposure+8*dt,exposure+16*dt]],dtype=torch.float64),
+                teacher_temporal_support=torch.tensor([mi[0].tolist(),[hist_start,exposure]],dtype=torch.float64),
+                teacher_view_overlap=source_overlap,
+                teacher_token_valid=torch.cat([torch.full((120,),bool(mv[0])),torch.ones(120,dtype=torch.bool)]),
                 teacher_input_type=torch.tensor([1,2]))
         return item
 

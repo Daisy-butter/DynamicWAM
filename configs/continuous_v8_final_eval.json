@@ -1,0 +1,29 @@
+{
+  "storage_root": "/SSD_DISK/users/wuruihan",
+  "training_sequence_dir": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_v8_rtc_20261031/formal_sequence01",
+  "training_sequence_sha256": "b4de89f0be37672f9724a51f2e4fcf2990e7532e30330f4f4e0971b548ea2b2a",
+  "expected_training_commit": "355d4af324cf8cb2f4f4fe87b6237e5528bc8bfc",
+  "expected_training_source_sha256": "ec50b572199312ca24e034efcfef352d39655e07d762e2eb5fe76fbeaf2cec77",
+  "training_recipe": [
+    {
+      "phase": "warmup",
+      "steps": 500
+    },
+    {
+      "phase": "small_age_joint",
+      "steps": 4000
+    },
+    {
+      "phase": "cross_time_joint",
+      "steps": 8000
+    }
+  ],
+  "max_wait_seconds": 172800,
+  "smoke_max_runtime": 21600,
+  "formal_max_runtime": 604800,
+  "controller_dir": "/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/dualrate_v8_final_eval_20261031/controller01",
+  "smoke_template": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v8-continuous-eval-20261031/configs/continuous_v8_final_smoke.json",
+  "smoke_template_sha256": "3ea231d3ca09f13763ee092728ba5d03a5f454dd4107dab3a00e7c50f15a589b",
+  "formal_template": "/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/dualrate-v8-continuous-eval-20261031/configs/continuous_v8_final_formal.json",
+  "formal_template_sha256": "365c5a35dab96edb2cfe43377a36fcd36a0d6ba4d4ab5166f2670da9d8a55218"
+}
