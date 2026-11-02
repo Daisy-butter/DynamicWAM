@@ -7,6 +7,7 @@ guarantee relative to a different executor or to a fresh Full query.
 """
 from types import MethodType
 import torch
+import time
 from torch import nn
 from torch.nn import functional as F
 from .continuous_v8 import ContinuousResidualFast,aligned_draft
@@ -46,6 +47,18 @@ def baseline(self,batch,world):
 
 def project(self,action,batch,center=None):
     s=self.residual_v10
+    if not torch.is_grad_enabled() and action.device.type=='cuda':
+        # A 16x14 causal projector is launch-bound on CUDA. Keep the identical
+        # arithmetic on CPU at deployment, including the measured copy cost.
+        # Training retains the differentiable CUDA path. GPU parity is gated.
+        if not hasattr(self,'_projection_cpu_constants'):
+            self._projection_cpu_constants=tuple(t.detach().cpu().clone() for t in
+                (self.action_mean_v10,self.action_scale_v10,self.radius_raw_v10))
+        mean,scale,radius=self._projection_cpu_constants
+        value,accepted=project_chunk(action.detach().cpu(),batch['fast_known_actions'].cpu(),batch['fast_known_mask'].cpu(),
+            mean=mean,scale=scale,dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
+            center=None if center is None else center.detach().cpu(),radius=None if center is None else radius)
+        return value.to(action.device),accepted.to(action.device)
     return project_chunk(action,batch['fast_known_actions'],batch['fast_known_mask'],mean=self.action_mean_v10,
         scale=self.action_scale_v10,dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
         center=center,radius=self.radius_raw_v10 if center is not None else None)
@@ -249,3 +262,26 @@ def configure(model,settings,mean,scale):
     radius=torch.full((14,),settings['arm_radius']);radius[[6,13]]=settings['gripper_radius']
     model.register_buffer('radius_raw_v10',radius)
     model.training_loss=MethodType(loss,model);model.sample_fast=MethodType(sample,model)
+
+
+@torch.no_grad()
+def verify_projection_parity(model,batch,world):
+    if batch['fast_known_actions'].device.type!='cuda':raise ValueError('actual CUDA projection parity required')
+    base,_=baseline(model,batch,world);s=model.residual_v10;device=base.device
+    kw=dict(mean=model.action_mean_v10,scale=model.action_scale_v10,dt=s['action_dt'],bounds=s['bounds'],limits=s['limits'],
+            center=base,radius=model.radius_raw_v10)
+    cases=[]
+    for amplitude in (0.,1.,-1.):
+        pattern=torch.sin(torch.arange(base.numel(),device=device,dtype=base.dtype)).reshape_as(base)
+        action=base+amplitude*pattern*model.radius_raw_v10/model.action_scale_v10
+        torch.cuda.synchronize(device);start=time.perf_counter()
+        gpu,gv=project_chunk(action,batch['fast_known_actions'],batch['fast_known_mask'],**kw)
+        torch.cuda.synchronize(device);gpu_seconds=time.perf_counter()-start
+        cpu_kw={k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in kw.items()}
+        a,k,m=action.cpu(),batch['fast_known_actions'].cpu(),batch['fast_known_mask'].cpu()
+        start=time.perf_counter();cpu,cv=project_chunk(a,k,m,**cpu_kw);cpu_seconds=time.perf_counter()-start
+        torch.testing.assert_close(gpu.cpu(),cpu,atol=1e-5,rtol=1e-5)
+        if not torch.equal(gv.cpu(),cv):raise ValueError('CPU/CUDA feasibility decisions differ')
+        cases.append(dict(amplitude=amplitude,max_absolute_error=float((gpu.cpu()-cpu).abs().max()),
+                          cpu_seconds=cpu_seconds,gpu_seconds=gpu_seconds))
+    return dict(passed=True,actual_cuda=True,cases=cases,scope='same causal projector train CUDA / inference CPU; transfer remains in query latency')

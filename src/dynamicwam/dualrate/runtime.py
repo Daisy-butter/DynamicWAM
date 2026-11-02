@@ -72,6 +72,7 @@ class DualRateRuntime:
     The initial queue/hold is caller-owned, logged and common to baseline policies.
     Call close before releasing the external device-lifetime guard.
     """
+    native_mailbox_receipt_refresh=True
     def __init__(self, system, queue: ExecutionQueue, clock: Callable[[],float],
                  config: RuntimeConfig, *, action_mean, action_scale, seed=0, record=None,
                  action_projection=None, clock_bridge: WallPhysicsBridge | None = None):
@@ -136,6 +137,10 @@ class DualRateRuntime:
             raise TimingError('CUDA Graph capture is forbidden after episode activation')
         state=self.fast_rng.get_state()
         expected_shapes=1 if getattr(self.system,'residual_v10',None) else 2
+        if expected_shapes==1:
+            from .residual_v10 import verify_projection_parity
+            self.system._projection_parity=verify_projection_parity(self.system,batch,world)
+            self.record(dict(event='projector_cpu_cuda_parity',**self.system._projection_parity))
         try:
             try:
                 self.system.sample_fast(batch,world,steps=self.config.sample_steps,generator=self.fast_rng)
@@ -439,7 +444,14 @@ class DualRateRuntime:
             try:
                 plan,output,ready_wall,metrics=receipt.result if receipt is not None else job.result()
                 if self._mailbox is not None and receipt is None:
-                    raise TimingError('completed fast job lacks its on-time submission receipt')
+                    # A fast worker can submit while slow publication runs above.
+                    # Once result() returns, submit MUST already have happened.
+                    # Re-read the atomic mailbox instead of delaying ready slow
+                    # references until the fast slot happens to be idle.
+                    receipt=self._mailbox.peek(lease)
+                    if receipt is None:
+                        raise TimingError('completed fast job lacks its on-time submission receipt')
+                    plan,output,ready_wall,metrics=receipt.result
                 if not isinstance(metrics,dict):
                     metrics=dict(wall_seconds=metrics)  # legacy CPU fixture
                 if self.clock_bridge is not None:

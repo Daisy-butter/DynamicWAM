@@ -134,3 +134,30 @@ def test_new_frame_mode_never_requeries_same_image_or_relables_its_time():
         assert runtime.last_fast_observation==0.
         with pytest.raises(StalePlan,match='real exposure'):runtime.start_fast(batch,observation_time=0.)
     finally:runtime.close()
+
+
+def test_fast_receipt_arriving_during_slow_publication_is_reloaded_without_starving_slow():
+    runtime,p,w,events,batch=make();entered=threading.Event();release=threading.Event()
+    def delayed(*args):
+        entered.set();assert release.wait(3);return batch(*args)
+    runtime.start_fast(delayed,observation_time=0.);assert entered.wait(3)
+    prefix=runtime.queue.snapshot_committed(0.)
+    world=dict(source_time=torch.tensor([0.],dtype=torch.float64),
+        completed_time=torch.tensor([.1],dtype=torch.float64),world_types=torch.tensor([[1]]),
+        world_intervals=torch.tensor([[[.18,.36]]],dtype=torch.float64),
+        generation_stage='test_ready_slow')
+    class ReadySlow:
+        def done(self):return True
+        def result(self):
+            release.set();wait(runtime)
+            return world,{k:v for k,v in world.items() if isinstance(v,torch.Tensor)},100.1,{}
+    runtime.slow_job=(ReadySlow(),0.,prefix,1)
+    try:
+        p[0]=.1;w[0]=100.1
+        runtime.poll()
+        assert runtime.slow_job is None and runtime.fast_job is None
+        assert runtime.store.snapshot(.1).version==1
+        kinds=[e['event'] for e in events]
+        assert kinds.index('slow_completed')<kinds.index('fast_committed')
+        assert runtime.queue.action_at(.18)==(0.,)
+    finally:release.set();runtime.close()

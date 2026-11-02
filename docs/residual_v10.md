@@ -111,3 +111,24 @@ Half expert data is acceptable; validation and train/scene splits remain bound.
 Durable supervision has no automatic retries or GPU reset/recovery. Post-training
 closed-loop evaluation must establish stability, useful response and SR; none is
 declared passed by pretraining engineering tests.
+
+## GPU review 1 and scheduler review 2 (2026-11-02)
+
+Frozen ec6d169 ran two unscored 32-command engineering episodes successfully:
+58 fast queries, all two-row prefixes, real fast/slow overlap, native videos fully
+decoded, exact zero-residual baseline within 5.1e-6 raw units. GPU guard/owned
+workers exited cleanly and kernel unchanged. This was not task-performance
+acceptance. Exposure-to-first-mutable action was 360 ms.
+
+The old evaluation-only mailbox workaround held completed slow results while
+fast queries were active: observed extra holds of 150--350 ms. The source now
+reloads a receipt arriving during slow publication, eliminating that artificial
+hold without weakening either deadline. A deterministic race test reproduces
+that interleaving. Slow launch cadence changes from four rows to one: slow and
+fast still have independent slots and only use actually available images.
+
+The small causal projector is evaluated on CPU in no-grad deployment while
+training retains differentiable CUDA. Bootstrap verifies actual CPU/CUDA outputs
+and accept/reject decisions; transfer and projection cost remain in fast latency.
+Actual articulation q/qdot are sampled separately from command q/qdot; bounded
+command derivatives do not prove tracking accuracy or task success.

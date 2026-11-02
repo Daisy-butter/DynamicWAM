@@ -201,6 +201,8 @@ def install_mailbox_receipt_refresh_patch():
     is idle. Deadlines stay strict.
     """
     from dynamicwam.dualrate.runtime import DualRateRuntime
+    if getattr(DualRateRuntime,'native_mailbox_receipt_refresh',False):
+        return
     if getattr(DualRateRuntime, '_mailbox_receipt_refresh_patched', False):
         return
     orig = DualRateRuntime.poll

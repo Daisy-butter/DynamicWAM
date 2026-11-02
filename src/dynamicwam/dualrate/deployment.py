@@ -478,6 +478,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     prefix=queue.commit_prefix(query_time=initial,until=initial+runtime_config.protect_steps*queue.dt)
     projection=ActuatorProjection.from_robot(session.env.robot)
     c2_settings=getattr(system,'residual_v10',None)
+    tracking=None
     if c2_settings:
         if arm_smoothing is not None:
             raise ValueError('V10 feasibility projection cannot be followed by a different smoothing rule')
@@ -486,6 +487,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             raise ValueError('V10 trained bounds differ from actual SAPIEN actuator limits')
         emit(dict(event='fixed_c2_executor_contract',settings=c2_settings,
                   timing='exact physical interval; no retiming',gripper='native interval-start'))
+        from .tracking_audit import TrackingAudit
+        tracking=TrackingAudit(session.env.robot)
     if arm_smoothing is not None:
         projection=BoundedArmSmoothing(projection,arm_smoothing)
     runtime=DualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
@@ -646,6 +649,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
             if abs(clock()-(now+dt))>1e-8:
                 raise TimingError('scene step skipped or rewrote physical time')
             physics_steps+=1
+            if tracking is not None and (tick+1)%5==0:
+                tracking.sample(clock(),position,velocity)
             step_wall=time.perf_counter();max_step_wall_gap=max(max_step_wall_gap,step_wall-last_step_wall)
             last_step_wall=step_wall
             _,lag=checked_now();max_lag=max(max_lag,lag);min_lag=min(min_lag,lag)
@@ -680,6 +685,8 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         emit(dict(event='terminal_clock',**clock_evidence))
         report=dict(step_owner=step_owner.receipt(),protocol=protocol,residual_v10=c2_settings,
             runtime_contract=asdict(runtime_config),time_contract=builder.manifest['time_contract'],
+            actuator_tracking=tracking.receipt() if tracking is not None else None,
+            projector_acceptance=getattr(system,'_projection_parity',None),
             realtime_valid=clock_evidence['passed'],continuous_valid=clock_evidence['passed'],simulation_rate=1.,
             success=terminal=='success',stop_reason=terminal,bootstrap_wall_seconds=bootstrap_seconds,
             bootstrap_latency_excluded_from_active_episode=True,action_interval_s=queue.dt,
