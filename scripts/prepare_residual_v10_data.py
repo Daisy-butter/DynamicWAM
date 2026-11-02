@@ -20,8 +20,9 @@ from dynamicwam.dualrate.c2_executor import displacement_interval,ARMS
 
 def prepare(source,output,config):
     source=Path(source).resolve(strict=True);output=Path(output).resolve()
+    config=Path(config).resolve(strict=True)
     output.mkdir(parents=True,exist_ok=False)
-    cfg=json.loads(Path(config).read_text());s=cfg['residual_v10'];dt=s['action_dt']
+    cfg=json.loads(config.read_text());s=cfg['residual_v10'];dt=s['action_dt']
     audit=dict(kind='offline_expert_not_on_policy',config_sha256=sha256_file(config),splits={},formal_training_ready=False)
     manifests={}
     for split in ('train','validation'):
@@ -29,8 +30,9 @@ def prepare(source,output,config):
         events=load_templates(bound_metadata_path(m,source,'event_templates_file'),m['event_templates_file_sha256'])
         if events['kind']!='measured_parallel':raise ValueError('formal data requires actual parallel timing traces')
         for evidence in events['trace_evidence']:
-            if sha256_file(evidence['path'])!=evidence['sha256']:raise ValueError('timing report changed')
-            report=json.loads(Path(evidence['path']).read_text())
+            trace_path=Path(evidence['path']).resolve(strict=True)
+            if sha256_file(trace_path)!=evidence['sha256']:raise ValueError('timing report changed')
+            report=json.loads(trace_path.read_text())
             if report.get('runtime_contract')!=cfg['runtime'] or report.get('residual_v10')!=s:
                 raise ValueError('timing traces do not use the exact V10 model/executor/runtime')
         ep=json.loads(bound_metadata_path(m,source,'episodes_file').read_text())
