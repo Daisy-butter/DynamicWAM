@@ -46,13 +46,13 @@ def prepare(source,output,config):
             candidates=[];q=[];v=[]
             for row in rows[rows[:,0]==epi]:
                 frame,tid=map(int,row[1:]);event=validate_template(events['templates'][tid],dt)
-                n=event['fast_prefix_rows'];source=float(times[frame])
+                n=event['fast_prefix_rows'];source_time=float(times[frame])
                 if not event['reference_available'] or n<2:
                     reasons['unavailable_reference_or_short_prefix']+=1;continue
                 first=event['fast_action_start']+n*dt
                 if first+dt>16*dt+1e-7 or event['query_time']>cfg['continuous_v8']['draft_max_age']+1e-7:
                     reasons['no_first_executable_slow_coverage']+=1;continue
-                starts=source+event['fast_action_start']+np.array([n-2,n-1])*dt
+                starts=source_time+event['fast_action_start']+np.array([n-2,n-1])*dt
                 values,valid,_=resample_interval_commands(times,actions,starts,dt)
                 if not valid.all():reasons['unsupported_prefix']+=1;continue
                 candidates.append(row);q.append(values[-1,list(ARMS)]);v.append((values[-1,list(ARMS)]-values[-2,list(ARMS)])/dt)
