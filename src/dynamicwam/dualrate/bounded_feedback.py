@@ -124,6 +124,21 @@ def outputs(fast, context, fields, contacts):
         future_valid=context.future_valid,future_field_valid=fields,contact_valid=contacts)
 
 
+def executed_deviation(batch, reference_actions):
+    """Issued-command disagreement, not achieved-joint error or elapsed seconds."""
+    b=dict(batch)
+    replay=b.get('native_replay',torch.zeros(len(reference_actions),device=reference_actions.device,dtype=torch.bool))
+    if bool(replay.all()):return b  # measured deployment value is authoritative
+    count=b['native_query_index']-b['native_source_index']
+    prefix=torch.arange(16,device=count.device)[None]<count[:,None]
+    if ((count<0)|(count>=16)).any() or (prefix & ~b['source_action_valid'] & ~replay[:,None]).any():
+        raise ValueError('expert issued-command prefix is missing or outside source coverage')
+    error=torch.where(prefix[...,None],(b['source_action']-reference_actions).abs(),0.)
+    value=error.sum((1,2))/(prefix.sum(1)*14).clamp_min(1)
+    b['executed_deviation']=torch.where(replay,b.get('executed_deviation',value.new_zeros(len(value))),value)
+    return b
+
+
 @torch.no_grad()
 def sample_fast(self,batch,world,*,steps=1,generator=None,initial_action_noise=None):
     if steps != 1: raise ValueError('one-pass feedback has no diffusion step count')
@@ -163,15 +178,19 @@ def training_loss(self,batch,generator=None,action_conditioned=None):
     if not torch.equal(allowed,batch['source_known_mask']):raise ValueError('only irrevocably selected source waypoint may be clamped')
     if not torch.allclose(batch['rgb_times'],batch['query_time'][:,None].expand_as(batch['rgb_times']),rtol=0,atol=1e-7):
         raise ValueError('current RGB must use actual native query exposure')
+    events=batch['native_query_index'][:,None]+torch.tensor([1,2,4,8]*3,device=batch['native_query_index'].device)
+    if batch['future_events'].dtype!=torch.int64 or not torch.equal(batch['future_events'],events):
+        raise ValueError('future labels must match the actual query command events')
     self.slow.eval()
     old=self.predict_reference(batch,generator=generator)
     world=self.world_readout(old)
     world['native_available']=torch.ones_like(batch['native_query_index'],dtype=torch.bool)
-    b=dict(batch)
+    b=executed_deviation(batch,old['reference_actions'])
     previous={k[9:]:v for k,v in batch.items() if k.startswith('previous_') and k not in ('previous_actions','previous_valid')}
     # Recompute the prior proposal with this model, joined by absolute command id.
     if previous and bool(batch['pair_valid'].any()):
         with torch.no_grad():
+            previous=executed_deviation(previous,old['reference_actions'])
             p=self.sample_fast(previous,world,steps=1)['actions']
             p,pv=align_plan(p,previous['native_query_index'],batch['native_query_index'])
         b.update(previous_actions=p,previous_valid=pv & batch['pair_valid'][:,None])

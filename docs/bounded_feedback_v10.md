@@ -29,9 +29,13 @@
 
 跨查询：同绝对命令对齐旧 proposal，作为软条件；专家配对窗口重算本模型前一次预测，不把专家 previous action 作为本模型输出。实际回放记录当时的 proposal。continuation 按教师一致性加权，不能成为旧错误计划的硬承诺。
 
+执行偏差在专家端按实际已记录的命令前缀与源 Full reference 计算，真实回放保留部署记录。它是 issued-command disagreement，不能代替 command-achieved error。未来事件标签必须精确匹配 query 的 +1/+2/+4/+8 命令身份。专家配对来自原始两命令间隔数据；部署和实际回放为一命令，这一离线分布差异保留并披露，不将专家窗描述为完全on-policy。
+
 数据分三种：expert bootstrap、真实 native collection replay、二者混合。前者必须包含非零命令年龄；不能继续 V9 只保留 age0 的过滤。后者必须有原 source 身份、真实 exposure/publication/命令时钟、完整交互 mask；不能借用另条专家轨迹的未来。当前预约的初始 replay 来自零初始化反馈策略，属于 baseline-policy rollout，不是训练完成学生的 on-policy 覆盖；后续学生分布扩展需单独数据版本和训练验收，不能称本轮已完成 DAgger。
 
 半量方案按 task/style 选完整 train episode，固定种子20261102；不动 validation/test，不重拟合原统计。缩减固定更新预算到500/1500/3000，有效 batch16（8×1×2）；不是声称删数据就自动缩短固定步数训练。正式全程从官方 Full + 新快路初始化；诊断权重禁止成为正式起点。
+
+实际半量为4753个train episode、217994窗口、70个task/style组。采集另外从这些已选train episode中按固定UID哈希预声明每任务一个clean场景，共35个；原DOMINO必须接受该精确seed，否则停止，不按策略表现筛选或替换成测试场景。
 
 ## 4. TOPP、异步发布和缓存边界
 

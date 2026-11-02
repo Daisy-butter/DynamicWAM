@@ -60,6 +60,25 @@ def defaults(row):
     return row
 
 
+def training_seed_manifest(expert_manifest):
+    """Predeclare one clean TRAIN scene per task, without policy outcome selection."""
+    p=Path(expert_manifest).resolve(strict=True);m=json.loads(p.read_text())
+    if m['split']!='train':raise ValueError('training collection requires train metadata')
+    episodes=json.loads((p.parent/m['episodes_file']).read_text())
+    selected=set(m['feedback_subset']['selected_episode_ids']);groups={}
+    for ep in episodes:
+        if ep['episode_uid'] in selected and ep['style']=='clean':
+            if ep['split']!='train' or int(ep['seed'])>=100000:raise ValueError('training scene overlaps scored seed domain')
+            groups.setdefault(ep['task'],[]).append(ep)
+    result={}
+    for task,rows in groups.items():
+        e=min(rows,key=lambda row:hashlib.sha256(('collection:'+row['episode_uid']).encode()).digest())
+        result[task]=dict(seed=int(e['seed']),episode_uid=e['episode_uid'],split='train',style='clean')
+    if len(result)!=35:raise ValueError('all 35 tasks require declared train scenes')
+    return dict(expert_manifest=str(p),expert_manifest_sha256=sha256_file(p),tasks=result,
+                selection='fixed hash of train episode uid; no policy outcome filtering',strict_seed=True)
+
+
 class FeedbackDataset(NativeReplayDataset):
     def __init__(self,manifest_path,verify_hash=True):
         super().__init__(manifest_path,verify_hash=verify_hash)

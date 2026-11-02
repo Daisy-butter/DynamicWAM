@@ -178,6 +178,14 @@ def main():
     try:
       for task in c['deployment']['tasks']:
        metrics=[];next_seed=c['deployment']['seed'];references=None
+       if c.get('training_scenes'):
+        if not c.get('bounded_feedback') or c.get('purpose')!='native_training_collection' or c['deployment']['episodes']!=1:
+            raise ValueError('declared training scenes are collection-only')
+        seeds=c['training_scenes']
+        if file_sha256(seeds['expert_manifest'])!=seeds['expert_manifest_sha256']:raise ValueError('training seed source changed')
+        scene=seeds['tasks'][task]
+        if scene['split']!='train' or scene['style']!='clean' or scene['seed']>=100000:raise ValueError('unverified training scene')
+        next_seed=scene['seed']
        if c.get('prepared'):
         from dualrate_eval_worker import load_frozen_task
         references=load_frozen_task(dict(c,seed=c['deployment']['seed'],episodes=c['deployment']['episodes']),task)
@@ -190,6 +198,7 @@ def main():
                 replay=dict(seed=descriptor['seed'],instruction=descriptor['instruction'],saved_motion=motion['saved_motion'])
             with SapienInitLock():env,prepared=prepare_level1_env(domino,task_name=task,task_config=c['deployment']['task_config'],
                 start_seed=next_seed,instruction_type=c['deployment']['instruction_type'],native_protocol=True,replay=replay)
+            if c.get('training_scenes') and prepared['seed']!=next_seed:raise ValueError('declared train seed was not accepted; do not substitute validation/test scenes')
             next_seed=prepared['seed']+1
             if descriptor:
                 import numpy as np

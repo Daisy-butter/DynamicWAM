@@ -17,6 +17,7 @@ def main():
     p.add_argument('--cpu-acceptance',required=True);p.add_argument('--not-before',required=True)
     p.add_argument('--deployment',required=True);p.add_argument('--gpus',required=True);p.add_argument('--prepared-eval',required=True)
     a=p.parse_args();root=Path(a.root).resolve();repo=Path(__file__).resolve().parents[1]
+    sys.path.insert(0,str(repo/'src'))
     if not str(root).startswith('/SSD_DISK/users/wuruihan/'):raise ValueError('verified SSD scope required')
     root.mkdir(parents=True,exist_ok=False);base=runner.read_json(a.core);deploy=runner.read_json(a.deployment)
     from bounded_feedback_launch import wait_and_validate
@@ -53,6 +54,9 @@ def main():
         guard=runner.read_json(root/(name+'_guard')/'status.json')
         acceptance=runner.read_json(Path(config['output'])/'deployment_acceptance.json')
         if guard.get('state')!='completed' or not guard.get('guard_closed') or not acceptance.get('passed'):raise RuntimeError(name+' acceptance/exit failed')
+        model=runner.read_json(Path(config['output'])/'model_acceptance.json')
+        if model.get('passed') is not True or model.get('contract')!='native_bounded_feedback_onepass_v10':raise RuntimeError('current one-pass model/graph acceptance missing')
+        if acceptance.get('protocol')!='native_topp_dualrate_bounded_feedback_v10':raise RuntimeError('native feedback protocol mismatch')
         return acceptance
     def initial_training_acceptance(child,name,configs):
         # Finite CPU-only check, then stop observing. The existing guards remain
@@ -99,14 +103,19 @@ def main():
         wait(child,name)
         if runner.read_json(root/name/'status.json')['state']!='completed':raise RuntimeError(name+' incomplete')
     try:
-        # Training scenes use a separate seed range. Never use scored scenes as
-        # teacher replay. Initial zero-residual policy is the actual V9 policy.
+        # Predeclared clean train scenes, not scored scenes or success-filtered
+        # policy rollouts. The initial zero-residual policy remains dual-rate.
         prepared=runner.read_json(a.prepared_eval);tasks=prepared['tasks']
         if len(tasks)!=35 or len(set(tasks))!=35:raise ValueError('35 native tasks required')
+        from dynamicwam.dualrate.feedback_data import training_seed_manifest
+        train_seeds=training_seed_manifest(base['manifest'])
+        if set(train_seeds['tasks'])!=set(tasks):raise ValueError('training task set differs')
+        atomic(root/'training_scenes.json',train_seeds)
         collection=[];status('collecting_native_training_replay')
         for group in range(4):
             name=f'collect_{group}';c=json.loads(json.dumps(deploy));c.pop('checkpoint',None);c.pop('checkpoint_sha256',None)
             c.update(output=str(root/name),collect_native_replay=True,purpose='native_training_collection')
+            c['training_scenes']=train_seeds
             c['deployment'].update(tasks=tasks[group::4],episodes=1,seed=300100,result_stamp=root.name+'_collect')
             collection.append((rollout(c,name,gpus[2*group:2*group+2]),name,c))
         for child,name,c in collection:wait(child,name);check_rollout(name,c)
@@ -128,7 +137,7 @@ def main():
         for phase,domains in zip(PHASES,(['expert_bootstrap'],['native_replay'],['expert_bootstrap','native_replay'])):
             c=dict(base,manifest=str(manifest),run_kind='distributed_training_smoke',phase=phase,
                 sequence_id=root.name+'_smoke',output=str(root/'training_smoke'/phase),steps=4,
-                query_age_seconds=[0.],training_domains=domains,log_every=1,
+                query_age_seconds=base['query_age_seconds'],training_domains=domains,log_every=1,
                 data_distribution='expert bootstrap + actual native Full-anchored feedback collection replay, no retimed labels')
             for key in ('stage_init_checkpoint','stage_init_checkpoint_sha256','acceptance_receipt','acceptance_receipt_sha256','resume'):c.pop(key,None)
             configs.append(c)
@@ -154,6 +163,13 @@ def main():
             source_contract=runner.source_contract(source),profiles={p:runner.profile_sha256(c) for p,c in zip(PHASES,configs)},
             evidence=evidence,native_deployment=acceptance,quality_accepted=False)
         ap=root/'acceptance.json';atomic(ap,receipt)
+        from datetime import datetime
+        if time.time()<datetime.fromisoformat(a.not_before).timestamp():raise RuntimeError('formal training attempted before user time')
+        atomic(root/'formal_checklist.json',dict(passed=True,cpu_acceptance_sha256=file_sha256(Path(a.cpu_acceptance)),
+            gpu_acceptance_sha256=file_sha256(ap),world_size=8,all_three_phases_restored=True,
+            actual_native_replay=True,native_topp_mp4_accepted=True,not_before=a.not_before,
+            formal_weights_from_official_full=True,smoke_weights_never_initialize_formal=True,
+            policy_quality_proven=False,no_retry=True))
         formal=[]
         for phase,c,steps in zip(PHASES,configs,(500,1500,3000)):
             formal.append(dict(c,run_kind='formal_distributed_training',steps=steps,sequence_id=root.name+'_formal',
@@ -164,23 +180,9 @@ def main():
             collect_native_replay=False,purpose='final_weight_acceptance',output=str(root/'final_smoke'))
         final['deployment'].update(tasks=['adjust_bottle','click_bell'],episodes=2,seed=450000,result_stamp=root.name+'_final_smoke')
         status('final_weight_smoke');child=rollout(final,'final_smoke',gpus[:2]);wait(child,'final_smoke');check_rollout('final_smoke',final)
-        jobs=[];status('formal_native_35x20',checkpoint=str(checkpoint),checkpoint_sha256=digest)
-        for group in range(4):
-            name=f'formal_eval_{group}';c=json.loads(json.dumps(final));c.update(output=str(root/name),purpose='formal_native_evaluation')
-            c.update({k:prepared[k] for k in ('prepared','prepared_sha256','task_config','instruction_type','start_seed','episodes_per_task') if k in prepared})
-            c['deployment'].update(tasks=tasks[group::4],episodes=20,seed=100000,result_stamp=root.name+'_formal')
-            jobs.append((rollout(c,name,gpus[2*group:2*group+2]),name,c))
-        reports=[]
-        for child,name,c in jobs:
-            wait(child,name);check_rollout(name,c)
-            reports.extend(runner.read_json(f) for f in Path(c['output']).glob('*/episode_*/report.json'))
-        keys={(r['task'],r['episode_index']) for r in reports}
-        if len(reports)!=700 or len(keys)!=700:raise RuntimeError('formal native suite is incomplete or duplicated')
-        success=sum(bool(r['success']) for r in reports)
-        atomic(root/'formal_summary.json',dict(complete=True,episodes=700,success=success,success_rate=success/700,
-            protocol='native_topp_dualrate_bounded_feedback_v10',checkpoint_sha256=digest,
-            per_task={t:dict(success=sum(r['success'] for r in reports if r['task']==t),episodes=20) for t in tasks}))
-        status('completed',summary=str(root/'formal_summary.json'))
+        status('completed_training',checkpoint=str(checkpoint),checkpoint_sha256=digest,
+            formal_training_started=True,final_native_smoke_passed=True,formal_benchmark_started=False)
+        return  # The user scheduled training, not an unsolicited 700-episode suite.
     except BaseException as exc:
         status('failed',error=repr(exc))
         for child,ticks in children:

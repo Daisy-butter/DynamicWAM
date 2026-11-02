@@ -122,6 +122,8 @@ def test_feedback_loss_has_directional_gradient_outside_radius_and_no_future_lea
     b=dict(source_time=k['source_time'],completed_time=k['completed_time'],query_time=k['query_time'],
         source_known_mask=torch.zeros(1,16,dtype=torch.bool),rgb_times=k['query_time'][:,None].expand(1,3),
         native_query_index=k['native_query_index'],native_source_index=k['native_source_index'],
+        source_action=k['draft_actions'].clone(),source_action_valid=torch.ones(1,16,dtype=torch.bool),
+        future_events=k['native_query_index'][:,None]+torch.tensor([1,2,4,8]*3),
         fast_known_mask=torch.zeros(1,16,dtype=torch.bool),fast_action=k['draft_actions'].clone(),
         fast_action_valid=torch.ones(1,16,dtype=torch.bool),future=torch.zeros(1,12,134),
         future_loss_valid=torch.ones(1,12,134,dtype=torch.bool),contact=torch.zeros(1,12,2),
@@ -129,6 +131,19 @@ def test_feedback_loss_has_directional_gradient_outside_radius_and_no_future_lea
     result=training_loss(System(),b);result['loss'].backward()
     assert result['reachable_fraction']==0 and result['supervised_action_fraction']==1
     assert m.action_out.bias.grad[0]<0 and torch.isfinite(result['loss'])
+    b['future_events']+=1
+    with pytest.raises(ValueError,match='query command events'):training_loss(System(),b)
+
+
+def test_expert_deviation_uses_only_issued_commands_and_replay_keeps_measured_value():
+    from dynamicwam.dualrate.bounded_feedback import executed_deviation
+    ref=torch.zeros(2,16,14);actions=torch.ones_like(ref);actions[:,2:]=100
+    b=dict(source_action=actions,source_action_valid=torch.ones(2,16,dtype=torch.bool),
+        native_source_index=torch.tensor([0,0]),native_query_index=torch.tensor([2,2]),
+        native_replay=torch.tensor([False,True]),executed_deviation=torch.tensor([0.,.25]))
+    torch.testing.assert_close(executed_deviation(b,ref)['executed_deviation'],torch.tensor([1.,.25]))
+    b['source_action_valid'][0,1]=False
+    with pytest.raises(ValueError,match='prefix'):executed_deviation(b,ref)
 
 def test_interaction_clock_and_command_provenance_rejects_future_or_wrong_order():
     from dynamicwam.dualrate.native_interaction import validate_interaction
@@ -160,3 +175,13 @@ def test_actual_joint_reader_uses_articulation_positions_and_velocities():
     q,v=read_arm_state(robot)
     np.testing.assert_equal(q,np.tile(np.arange(6)[::-1],2))
     np.testing.assert_allclose(v,q*.1)
+
+def test_collection_scenes_are_frozen_train_only_and_complete(tmp_path):
+    import json
+    from dynamicwam.dualrate.feedback_data import training_seed_manifest
+    rows=[dict(task=f'task{i}',style='clean',split='train',seed=i,episode_uid=f'task{i}/0') for i in range(35)]
+    ep=tmp_path/'episodes.json';ep.write_text(json.dumps(rows))
+    p=tmp_path/'manifest.json';p.write_text(json.dumps(dict(split='train',episodes_file=str(ep),feedback_subset=dict(selected_episode_ids=[r['episode_uid'] for r in rows]))))
+    first=training_seed_manifest(p);assert len(first['tasks'])==35 and first==training_seed_manifest(p)
+    rows[0]['split']='validation';ep.write_text(json.dumps(rows))
+    with pytest.raises(ValueError,match='overlaps'):training_seed_manifest(p)
