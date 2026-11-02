@@ -35,7 +35,7 @@
 
 半量方案按 task/style 选完整 train episode，固定种子20261102；不动 validation/test，不重拟合原统计。缩减固定更新预算到500/1500/3000，有效 batch16（8×1×2）；不是声称删数据就自动缩短固定步数训练。正式全程从官方 Full + 新快路初始化；诊断权重禁止成为正式起点。
 
-实际半量为4753个train episode、217994窗口、70个task/style组。采集另外从这些已选train episode中按固定UID哈希预声明每任务一个clean场景，共35个；原DOMINO必须接受该精确seed，否则停止，不按策略表现筛选或替换成测试场景。
+实际半量为4753个train episode、217994窗口、70个task/style组。采集从这些已选train episode中按固定UID哈希预声明每任务的clean候选列表，共35个任务；保留原DOMINO专家/运动可行性筛选，只能在该列表内前进，列表耗尽即停止。不能顺延到列表外seed，也不按策略表现筛选。
 
 ## 4. TOPP、异步发布和缓存边界
 

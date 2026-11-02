@@ -1,16 +1,16 @@
 """Manual one-shot CPU preflight and detached guarded pipeline; no timer."""
-import argparse,json,os,subprocess,sys,time
+import argparse,json,os,re,subprocess,sys,time
 from pathlib import Path
 repo=Path('/SSD_DISK/users/wuruihan/DynamicWAM/worktrees/native-v9-residual-async-20261101')
 base=Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/bounded_feedback_v10_20261102')
-launcher=Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/launchers/bounded_feedback_v10_20261102');root=base/'manual01'
+launcher=Path('/SSD_DISK/users/wuruihan/DynamicWAM/outputs/launchers/bounded_feedback_v10_20261102')
 sys.path[:0]=[str(repo/'scripts'),str(repo/'src')]
 from guarded_dualrate_smoke import atomic,file_sha256,proc_identity
 from bounded_feedback_launch import verify
 
 
 def check():
-    receipt=base/'prep/cpu_acceptance_manual.json';r=json.loads(receipt.read_text())
+    receipt=base/'prep/cpu_acceptance_gpu02.json';r=json.loads(receipt.read_text())
     core=repo/'configs/bounded_feedback_core.json';deploy=repo/'configs/bounded_feedback_deploy.json'
     verify(r,repo,core,deploy)
     c=json.loads(core.read_text());d=json.loads(deploy.read_text())
@@ -36,8 +36,11 @@ def check():
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);g=p.add_mutually_exclusive_group(required=True)
+    p.add_argument('--run-id',default='manual02')
     g.add_argument('--check',action='store_true');g.add_argument('--start',action='store_true');g.add_argument('--status',action='store_true')
     a=p.parse_args()
+    if not re.fullmatch(r'manual[0-9]{2}',a.run_id):raise ValueError('explicit manualNN run identity required')
+    root=base/a.run_id;run_launcher=launcher/a.run_id
     if a.status:
         path=root/'status.json';print(path.read_text() if path.exists() else json.dumps(dict(state='not_started',timer_present=False)));return
     proof,receipt,core,deploy=check()
@@ -51,8 +54,9 @@ def main():
         '--core',str(core),'--deployment',str(deploy),'--gpus',','.join(gpus),'--cpu-acceptance',str(receipt),
         '--prepared-eval','/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v7_final_eval_20261031/run01/formal.json']
     # O_EXCL is the one-shot reservation; never recover/retry a partial launch.
-    with (launcher/'launch.json').open('x') as identity:
-        with (launcher/'controller.log').open('x') as log:
+    run_launcher.mkdir(exist_ok=False)
+    with (run_launcher/'launch.json').open('x') as identity:
+        with (run_launcher/'controller.log').open('x') as log:
             env=dict(os.environ,CUDA_VISIBLE_DEVICES='',PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(repo/'src'))
             child=subprocess.Popen(cmd,cwd=repo,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
         state=dict(controller=proc_identity(child.pid),argv=cmd,preflight=proof,no_retry=True,start_mode='manual')
@@ -61,7 +65,7 @@ def main():
     while not (root/'status.json').exists() and time.monotonic()<deadline:
         if child.poll() is not None:raise RuntimeError('pipeline exited before initial status; inspect controller.log, no retry')
         time.sleep(.25)
-    print(json.dumps(dict(controller_pid=child.pid,status_file=str(root/'status.json'),log=str(launcher/'controller.log'),
+    print(json.dumps(dict(controller_pid=child.pid,status_file=str(root/'status.json'),log=str(run_launcher/'controller.log'),
         formal_training_started=False,next='GPU idle/native replay/three-phase restore gates precede formal training')))
 
 

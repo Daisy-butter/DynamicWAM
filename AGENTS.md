@@ -1,3 +1,12 @@
+# Latest user authorization: smoke, repair, then formal, 2026-11-02
+
+User authorizes GPU smoke now if all .92 GPUs are idle, then formal training
+automatically only after all checklist gates pass. On failure investigate, fix,
+freeze a new commit, and rerun smoke. Preserve failed runs. No blind retries,
+foreign-process signals, GPU recovery or .50/.100 changes. No scheduled tasks.
+This supersedes the prior turn's manual-script-only restriction.
+
+---
 # Latest user instruction: manual launch only, 2026-11-02
 
 The user cancelled all scheduled launches. The CPU waiter and Codex automation

@@ -418,6 +418,7 @@ def prepare_level1_env(
     instruction_type: str,
     replay: dict[str, Any] | None = None,
     native_protocol: bool = False,
+    allowed_seeds: list[int] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Run DOMINO's expert filter and move the object at the training speed.
 
@@ -430,6 +431,9 @@ def prepare_level1_env(
     and does not count it. This function does the same before returning.
     """
     root = domino_root.expanduser().resolve()
+    if allowed_seeds is not None:
+        if replay is not None:raise ValueError('frozen replay cannot change candidate scenes')
+        _seed_candidates(int(start_seed),allowed_seeds)
     os.chdir(root)
     for entry in (
         root,
@@ -460,7 +464,7 @@ def prepare_level1_env(
     init_failures = 0
     while True:
         if replay is None:
-            seed = _accept_expert_seed(env, args, seed, eval_policy.UnStableError)
+            seed = _accept_expert_seed(env, args, seed, eval_policy.UnStableError,allowed_seeds=allowed_seeds)
             saved = getattr(env, "_saved_dynamic_motion_info", None)
         else:
             # A2 paired delays must reuse one accepted expert motion. Running
@@ -504,7 +508,11 @@ def prepare_level1_env(
             raise RuntimeError(
                 f"dynamic motion init failed from {start_seed} through {seed}"
             )
-        seed += 1
+        if allowed_seeds is None:seed += 1
+        else:
+            remaining=_seed_candidates(seed,allowed_seeds)[1:]
+            if not remaining:raise RuntimeError('declared training scene pool exhausted after native motion rejection')
+            seed=remaining[0]
     # Native init stores one scaled step per action. Switch that task onto
     # the expert velocity so each physics second matches training.
     if native_protocol:
@@ -583,12 +591,20 @@ def _read_yaml(path: str, yaml_module: Any) -> dict[str, Any]:
     return loaded
 
 
-def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstable: type) -> int:
+def _seed_candidates(start_seed: int, allowed_seeds: list[int] | None):
+    if allowed_seeds is None:return range(start_seed,start_seed+2000)
+    if (not allowed_seeds or len(allowed_seeds)>2000 or len(set(allowed_seeds))!=len(allowed_seeds)
+            or any(type(seed) is not int or seed<0 for seed in allowed_seeds) or start_seed not in allowed_seeds):
+        raise ValueError('invalid declared scene candidates')
+    return allowed_seeds[allowed_seeds.index(start_seed):]
+
+
+def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstable: type, *, allowed_seeds: list[int] | None = None) -> int:
     seed = int(start_seed)
     render_freq = args["render_freq"]
     # Skip only declared unstable scenes and ordinary unsuccessful expert plans.
     # Unexpected renderer/CUDA/runtime errors are fatal, never seed retries.
-    for _attempt in range(2000):
+    for seed in _seed_candidates(seed,allowed_seeds):
         args["render_freq"] = 0
         print(f"expert check seed {seed}", flush=True)
         try:
@@ -598,7 +614,6 @@ def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstabl
         except unstable:
             args["render_freq"] = render_freq
             env.close_env()  # Cleanup failure must abort, not try another GPU scene.
-            seed += 1
             continue
         except AssertionError as exc:
             args["render_freq"] = render_freq
@@ -608,7 +623,6 @@ def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstabl
             # other assertions and all renderer/CUDA/runtime failures stay fatal.
             if str(exc) != "target_pose cannot be None for move action.":raise
             print(f"reject infeasible expert seed {seed}: {exc}", flush=True)
-            seed += 1
             continue
         except Exception:
             args["render_freq"] = render_freq
@@ -624,7 +638,6 @@ def _accept_expert_seed(env: Any, args: dict[str, Any], start_seed: int, unstabl
             env._rt_episode_info = episode_info
             env._saved_dynamic_motion_info = saved_motion
             return seed
-        seed += 1
     raise RuntimeError(
-        f"no feasible level-1 seed found from {start_seed} through {seed - 1}"
+        f"no feasible level-1 seed found in declared candidates starting at {start_seed}"
     )

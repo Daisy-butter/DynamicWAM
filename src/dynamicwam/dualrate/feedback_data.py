@@ -61,7 +61,7 @@ def defaults(row):
 
 
 def training_seed_manifest(expert_manifest):
-    """Predeclare one clean TRAIN scene per task, without policy outcome selection."""
+    """Predeclare clean TRAIN candidates; native expert feasibility may reject one."""
     p=Path(expert_manifest).resolve(strict=True);m=json.loads(p.read_text())
     if m['split']!='train':raise ValueError('training collection requires train metadata')
     episodes=json.loads((p.parent/m['episodes_file']).read_text())
@@ -72,11 +72,13 @@ def training_seed_manifest(expert_manifest):
             groups.setdefault(ep['task'],[]).append(ep)
     result={}
     for task,rows in groups.items():
-        e=min(rows,key=lambda row:hashlib.sha256(('collection:'+row['episode_uid']).encode()).digest())
-        result[task]=dict(seed=int(e['seed']),episode_uid=e['episode_uid'],split='train',style='clean')
+        ordered=sorted(rows,key=lambda row:hashlib.sha256(('collection:'+row['episode_uid']).encode()).digest())
+        candidates=[dict(seed=int(e['seed']),episode_uid=e['episode_uid']) for e in ordered]
+        if len({e['seed'] for e in candidates})!=len(candidates):raise ValueError('duplicate training seed')
+        result[task]=dict(**candidates[0],split='train',style='clean',candidates=candidates)
     if len(result)!=35:raise ValueError('all 35 tasks require declared train scenes')
     return dict(expert_manifest=str(p),expert_manifest_sha256=sha256_file(p),tasks=result,
-                selection='fixed hash of train episode uid; no policy outcome filtering',strict_seed=True)
+                selection='fixed train UID order; native expert feasibility only, no policy outcome filtering',strict_train_pool=True)
 
 
 class FeedbackDataset(NativeReplayDataset):

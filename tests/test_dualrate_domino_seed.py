@@ -64,3 +64,30 @@ def test_successful_plan_with_failed_teardown_is_not_retried():
     with pytest.raises(RuntimeError) as caught:
         _accept_expert_seed(env,{'render_freq':0},100,UnStableError)
     assert caught.value is error and env.seeds==[100] and env.closes==1
+
+
+def test_training_filter_uses_predeclared_order_never_adjacent_heldout_seed():
+    env=FakeEnv([False,UnStableError('geometry'),True])
+    assert _accept_expert_seed(env,{'render_freq':0},266,UnStableError,allowed_seeds=[266,12,44])==44
+    assert env.seeds==[266,12,44] and env.closes==3
+
+
+def test_training_pool_exhaustion_does_not_fall_back_to_unlisted_seed():
+    env=FakeEnv([False,False,True])
+    with pytest.raises(RuntimeError,match='declared candidates'):
+        _accept_expert_seed(env,{'render_freq':0},266,UnStableError,allowed_seeds=[266,44])
+    assert env.seeds==[266,44]
+
+
+def test_native_motion_rejection_can_continue_only_within_pool_suffix():
+    from dynamicwam.runtime.domino_rt.domino_session import _seed_candidates
+    assert _seed_candidates(12,[266,12,44])[1:]==[44]
+    assert _seed_candidates(44,[266,12,44])[1:]==[]
+    with pytest.raises(ValueError):_seed_candidates(266,[266,266])
+
+
+def test_training_pool_never_retries_a_gpu_runtime_error():
+    env=FakeEnv([RuntimeError('CUDA failure'),True])
+    with pytest.raises(RuntimeError,match='CUDA failure'):
+        _accept_expert_seed(env,{'render_freq':0},266,UnStableError,allowed_seeds=[266,44])
+    assert env.seeds==[266]

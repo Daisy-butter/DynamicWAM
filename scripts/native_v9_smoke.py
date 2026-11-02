@@ -177,7 +177,7 @@ def main():
     service=NativeSlowService(c);reports=[];samples=[]
     try:
       for task in c['deployment']['tasks']:
-       metrics=[];next_seed=c['deployment']['seed'];references=None
+       metrics=[];next_seed=c['deployment']['seed'];references=None;allowed_seeds=None
        if c.get('training_scenes'):
         if not c.get('bounded_feedback') or c.get('purpose')!='native_training_collection' or c['deployment']['episodes']!=1:
             raise ValueError('declared training scenes are collection-only')
@@ -186,6 +186,9 @@ def main():
         scene=seeds['tasks'][task]
         if scene['split']!='train' or scene['style']!='clean' or scene['seed']>=100000:raise ValueError('unverified training scene')
         next_seed=scene['seed']
+        if not seeds.get('strict_train_pool'):raise ValueError('explicit train-only candidate pool required')
+        allowed_seeds=[int(candidate['seed']) for candidate in scene['candidates']]
+        if any(s<0 or s>=100000 for s in allowed_seeds) or allowed_seeds[0]!=next_seed:raise ValueError('training candidate domain differs')
        if c.get('prepared'):
         from dualrate_eval_worker import load_frozen_task
         references=load_frozen_task(dict(c,seed=c['deployment']['seed'],episodes=c['deployment']['episodes']),task)
@@ -197,8 +200,12 @@ def main():
                 descriptor,motion,_=references[ep];next_seed=descriptor['seed']
                 replay=dict(seed=descriptor['seed'],instruction=descriptor['instruction'],saved_motion=motion['saved_motion'])
             with SapienInitLock():env,prepared=prepare_level1_env(domino,task_name=task,task_config=c['deployment']['task_config'],
-                start_seed=next_seed,instruction_type=c['deployment']['instruction_type'],native_protocol=True,replay=replay)
-            if c.get('training_scenes') and prepared['seed']!=next_seed:raise ValueError('declared train seed was not accepted; do not substitute validation/test scenes')
+                start_seed=next_seed,instruction_type=c['deployment']['instruction_type'],native_protocol=True,replay=replay,allowed_seeds=allowed_seeds)
+            if allowed_seeds is not None and prepared['seed'] not in allowed_seeds:raise ValueError('accepted scene left the declared training pool')
+            if allowed_seeds is not None:
+                save(d/'training_scene.json',dict(requested_seed=next_seed,accepted_seed=prepared['seed'],
+                    candidate=next(row for row in scene['candidates'] if row['seed']==prepared['seed']),
+                    train_manifest_sha256=seeds['expert_manifest_sha256'],selection='native expert feasibility over predeclared train pool'))
             next_seed=prepared['seed']+1
             if descriptor:
                 import numpy as np
