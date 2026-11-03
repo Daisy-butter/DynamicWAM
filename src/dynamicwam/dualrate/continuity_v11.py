@@ -190,7 +190,7 @@ def loss(self,batch,generator=None,action_conditioned=None):
 
 def configure(system,settings):
     required={'contract','reference_hold_steps','seam_weight','revision_weight','out_of_radius_weight','revision_radius_fraction'}
-    if set(settings)!=required or settings['contract']!=CONTRACT or settings['reference_hold_steps']<1:
+    if set(settings)-{'handoff'}!=required or settings['contract']!=CONTRACT or settings['reference_hold_steps']<1:
         raise ValueError('explicit V11 continuity contract required')
     if not all(0<=float(settings[k])<=1 for k in ('seam_weight','revision_weight','out_of_radius_weight')):
         raise ValueError('invalid continuity loss weights')
@@ -200,3 +200,6 @@ def configure(system,settings):
     system.fast.sensor_projection=nn.Sequential(nn.Linear(37,dim),nn.SiLU(),nn.Linear(dim,dim))
     system.fast.previous_projection=nn.Linear(14,dim)
     system.training_loss=MethodType(loss,system)
+    if 'handoff' in settings:
+        from .handoff_v12 import configure as configure_handoff
+        configure_handoff(system,settings['handoff'])

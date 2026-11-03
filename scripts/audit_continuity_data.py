@@ -24,11 +24,19 @@ def main():
   assert abs(float(teacher['source_action_intervals'][0,int(known.sum())-1,1]-first))<1e-7
   assert torch.all(r['executed_action_intervals'][r['executed_action_valid'],1]<=r['query_time']+1e-7)
   examples.append(dict(task=task,query=float(r['query_time']),source=float(r['source_time']),exposure=float(r['state_time']),prefix=int(r['fast_known_mask'].sum())))
+ transitions=0;prior_count=0
+ if d.manifest.get('residual_v10',{}).get('continuity',{}).get('handoff'):
+  for entry in d.replay:
+   sample=torch.load(entry['path'],map_location='cpu',weights_only=True)
+   if not bool(sample['previous_valid'].any()):continue
+   assert 'previous_query_time' in sample and sample['previous_query_time']<sample['query_time']
+   prior_count+=1;transitions+=int(not bool(sample['previous_reference_same']))
+  assert transitions>0,'actual cross-reference feedback is required before formal training'
  paired=int((d.previous>=0).sum());assert paired>0
  for i,j in enumerate(d.previous):
   if j<0:continue
   current=d.event_templates['templates'][int(d.rows[i,2])];previous=d.event_templates['templates'][int(d.rows[j,2])]
   assert reference_identity(current)==reference_identity(previous)
   assert current['publish_time']<=previous['query_time']<=current['query_time']
- Path(a.output).write_text(json.dumps(dict(passed=True,tasks=len(seen),replay_rows=len(d.replay),expert_rows=d.expert_length,replay_sampling_slots=d.replay_slots,paired_rows=paired,examples=examples,scope='CPU real-state provenance and same-time contracts; actual Full parity requires GPU smoke'),indent=2))
+ Path(a.output).write_text(json.dumps(dict(passed=True,tasks=len(seen),replay_rows=len(d.replay),expert_rows=d.expert_length,replay_sampling_slots=d.replay_slots,paired_rows=paired,actual_previous_queries=prior_count,cross_reference_rows=transitions,examples=examples,scope='CPU real-state provenance and same-time contracts; actual Full parity requires GPU smoke'),indent=2))
 if __name__=='__main__':main()

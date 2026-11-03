@@ -24,6 +24,7 @@ def row_defaults(row):
     row.setdefault('previous_actions',torch.zeros_like(row['fast_known_actions']))
     row.setdefault('previous_valid',torch.zeros_like(row['fast_known_mask']))
     row.setdefault('previous_reference_same',torch.tensor(False))
+    row.setdefault('previous_handoff',torch.tensor(False))
     return row
 
 
@@ -107,5 +108,7 @@ class ContinuityDataset(DominoPhysicalDataset):
         if not bool(row['measured_state_valid']):raise ValueError('replay lost real joint sensors')
         for k,v in list(row.items()):
             if k.startswith('previous_'):continue
+            # This is the actual prior accepted query, not a paired-label placeholder.
+            if k=='query_time' and 'previous_query_time' in sample:continue
             if 'previous_'+k in row:row['previous_'+k]=v.clone()
         return row

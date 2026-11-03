@@ -97,6 +97,34 @@ def validate_reference_leases(events, config, activation):
     return dict(active_reference_queries=count, active_commits=commits)
 
 
+def validate_handoff_events(events,config):
+    settings=config.get('residual_v10',{}).get('continuity',{}).get('handoff')
+    if not settings:return {}
+    import numpy as np
+    rows={};residual={e['query_id']:e for e in events if e.get('event')=='residual_action_audit'}
+    for e in events:
+        if e.get('event')!='whole_plan_handoff_audit':continue
+        q=e['query_id']
+        if q in rows or q not in residual:raise ValueError('handoff identity missing or duplicated')
+        r=residual[q];raw=np.asarray(e['raw_full_baseline']);offset=np.asarray(e['handoff_offset']);delta=np.asarray(e['learned_correction'])
+        vals=[e[k] for k in ('alpha','budget_rad','raw_revision_rad','revision_rad')]
+        if not all(math.isfinite(v) for v in vals) or not 0<=e['alpha']<=1 or e['budget_rad']>2*settings['handoff_step_rad']+1e-6:
+            raise ValueError('invalid complete-plan revision budget')
+        if (e['enabled'] and e['revision_rad']>e['budget_rad']+2e-5) or e['reference_version']!=r['reference_version']:
+            raise ValueError('complete-plan revision exceeds its physical-query budget')
+        if raw.shape!=(16,14) or not all(np.isfinite(x).all() for x in (raw,offset,delta)):
+            raise ValueError('handoff arrays invalid')
+        if np.abs(delta[:,[6,13]]).max()>2e-5 or np.abs(delta).max()>config['residual_v10']['arm_radius']+2e-5:
+            raise ValueError('learned correction exceeds native local bound')
+        if not np.allclose(raw+offset,r['baseline_raw'],atol=2e-5,rtol=0):raise ValueError('raw Full and connector identities conflated')
+        if not np.allclose(raw+offset+e['alpha']*delta,r['proposed_raw'],atol=2e-5,rtol=0):raise ValueError('connector and residual composition differs')
+        rows[q]=e
+    commits={e['query_id'] for e in events if e.get('event')=='fast_committed'}
+    if not commits.issubset(rows):raise ValueError('committed query lacks complete-plan handoff audit')
+    return dict(handoff_audits=len(rows),active_handoffs=sum(e['active'] for e in rows.values()),
+                handoff_max_revision_rad=max((e['revision_rad'] for e in rows.values() if e['enabled']),default=0.))
+
+
 def validate_continuous_report(report, config):
     evidence = report.get('raw_clock_acceptance', {})
     events = report.get('events', [])
@@ -143,4 +171,4 @@ def validate_continuous_report(report, config):
     reference_checks = validate_reference_leases(events, config, activation)
     return dict(passed=True, raw_wall_seconds=elapsed, physical_seconds=physical,
                 independently_observed_max_backlog_s=max(lags), clock_pairs=len(lags)-1,
-                **reference_checks)
+                **reference_checks, **validate_handoff_events(events,config))

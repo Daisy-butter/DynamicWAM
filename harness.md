@@ -1,3 +1,14 @@
+# Current V12 work 2026-11-03
+
+User authorizes safe V11 stop and complete-plan handoff repair on .50, then fresh
+Full-initialized eight-GPU training and final evaluation after actual acceptance.
+Read docs/handoff_v12.md. Same route branch/worktree; preserve V11 artifacts and
+.92/.100 processes. Whole-plan connector is separate from raw Full and learned
+local residual; zero residual during handoff is not raw-Full/SR parity. Real TRAIN
+cross-reference replay and split first/near/tail precision diagnostics are required.
+Freeze source/config for GPU runs. No GPU recovery, no automatic retry, no bypass
+of clock/prefix/clean-exit/data/eight-rank smoke gates. Record receipts in ledger.
+
 # Current V11 work 2026-11-03
 
 User authorizes .50 continuous RTC implementation, three review iterations, smoke,

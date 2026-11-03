@@ -315,10 +315,13 @@ class DualRateRuntime:
                 self._prefix(batch,lease.prefix,"fast")
                 if self._reference_lease is not None and previous_feedback is not None:
                     from .continuity_v11 import align
-                    previous,intervals,valid,previous_version=previous_feedback
+                    previous,intervals,valid,previous_version=previous_feedback[:4]
                     batch['previous_actions'],batch['previous_valid']=align(previous.to(self.device),
                         intervals.to(self.device),batch['action_intervals'],valid.to(self.device))
                     batch['previous_reference_same']=torch.tensor([previous_version==lease.reference_version],device=self.device)
+                    if hasattr(self.system,'handoff_v12'):
+                        batch['previous_query_time']=batch['query_time'].new_tensor([previous_feedback[4]])
+                        batch['previous_handoff']=torch.tensor([previous_feedback[5]],device=self.device)
                 if getattr(self.system,'residual_v10',None):
                     from .residual_v10 import anchor_future
                     batch['future_times']=anchor_future(batch,self.system.fast.config.future_entities)
@@ -341,6 +344,15 @@ class DualRateRuntime:
                         correction_accepted=bool(output['correction_accepted'][0]),
                         observation_times=batch['rgb_times'][0].cpu().tolist(),
                         reference_version=lease.reference_version))
+                    if hasattr(self.system,'handoff_v12'):
+                        original=output['raw_baseline_actions'][0].float().cpu()*self.scale+self.mean
+                        learned=output['learned_correction_actions'][0].float().cpu()*self.scale
+                        self.record(dict(event='whole_plan_handoff_audit',query_id=lease.query_id,
+                            reference_version=lease.reference_version,baseline_kind='explicit_connector_not_raw_Full',
+                            raw_full_baseline=original.tolist(),handoff_offset=(base-original).tolist(),learned_correction=learned.tolist(),
+                            active=bool(output['handoff_active'][0]),enabled=bool(output['handoff_enabled'][0]),
+                            alpha=float(output['handoff_alpha'][0]),budget_rad=float(output['handoff_budget_rad'][0]),
+                            raw_revision_rad=float(output['handoff_raw_change_rad'][0]),revision_rad=float(output['handoff_revision_rad'][0])))
                 known_cpu=batch['fast_known_mask'][0].cpu()
                 # Reuse authoritative queue values, avoiding normalization round-trip
                 # changes even in the returned executable-action diagnostic.
@@ -503,6 +515,8 @@ class DualRateRuntime:
                     intervals=torch.stack((starts,starts+plan.dt),-1)[None]
                     valid=output['draft_valid'].detach().cpu().clone()
                     self._previous_feedback_plan=((p-self.mean)/self.scale,intervals,valid,lease.reference_version)
+                    if hasattr(self.system,'handoff_v12'):
+                        self._previous_feedback_plan+=(lease.query_time,bool(output['handoff_active'].item()))
                 submitted=True
                 if self.clock_bridge is not None and receipt is None:
                     self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)

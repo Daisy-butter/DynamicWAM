@@ -1,0 +1,121 @@
+import pytest
+import torch
+from types import SimpleNamespace
+from dynamicwam.dualrate.handoff_v12 import reconcile,local_mask,CONTRACT
+from dynamicwam.dualrate.continuity_v11 import defaults,ARMS
+
+def case():
+    s=SimpleNamespace(handoff_v12=dict(local_rows=4,handoff_step_rad=.06,same_step_rad=.02),
+        residual_v10=dict(action_dt=.18,bounds=[[-10,10]]*14),action_scale_v10=torch.ones(14),action_mean_v10=torch.zeros(14))
+    base=torch.zeros(1,16,14);known=torch.arange(16)[None]<2
+    b=defaults(dict(fast_known_actions=base.clone(),fast_known_mask=known,query_time=torch.tensor([.36],dtype=torch.float64)))
+    b['previous_valid'][:]=True;b['previous_actions'][:]=.04;b['previous_actions'][:,:,[6,13]]=0
+    return s,b,base,torch.ones(1,16,dtype=torch.bool)
+
+def test_cross_reference_zero_residual_no_longer_allows_point46_jump():
+    s,b,base,valid=case();base[:,:,ARMS]=.5;original=base.clone()
+    out,effective,m=reconcile(s,b,base,base,valid)
+    assert torch.equal(base,original) and torch.equal(out,effective)
+    assert m['active'].all() and m['raw_change_rad'].item()>.45
+    assert m['achieved_change_rad'].item()<=.060001
+    assert torch.equal(out[b['fast_known_mask']],b['fast_known_actions'][b['fast_known_mask']])
+    torch.testing.assert_close(out[:,2:,ARMS],torch.full_like(out[:,2:,ARMS],.10))
+
+def test_whole_future_plan_is_bounded_not_only_the_first_executed_row():
+    s,b,base,valid=case();base[:,2:,ARMS]=.05;base[:,-1,ARMS]=1.
+    out,_,m=reconcile(s,b,base,base,valid)
+    assert m['achieved_change_rad'].item()<=.060001
+    assert out[:,-1,ARMS].max()<=.100001
+    # A common scalar retains coordinated arm direction.
+    ratio=(out[:,2:,ARMS]-.04)/(base[:,2:,ARMS]-.04)
+    torch.testing.assert_close(ratio,torch.full_like(ratio,m['alpha'].item()),atol=1e-6,rtol=0)
+
+def test_same_reference_budget_and_physical_elapsed_time():
+    s,b,base,valid=case();b['previous_reference_same'][:]=True
+    b['previous_query_time']=b['query_time']-.09
+    out,_,m=reconcile(s,b,base,base,valid)
+    assert m['budget_rad'].item()==pytest.approx(.01)
+    assert m['achieved_change_rad'].item()<=.010001
+    b['previous_handoff']=torch.tensor([True])
+    assert reconcile(s,b,base,base,valid)[2]['budget_rad'].item()==pytest.approx(.03)
+
+def test_missing_tail_connects_and_repeated_queries_converge():
+    s,b,base,valid=case();b['previous_valid'][:,12:]=False;base[:,:,ARMS]=.5
+    previous=.04
+    for _ in range(12):
+        out,_,m=reconcile(s,b,base,base,valid)
+        assert m['achieved_change_rad'].item()<=.060001
+        assert out[:,2:,ARMS].min()>=previous-1e-6
+        previous=out[:,2:,ARMS].min().item()
+        b['previous_actions']=out.detach();b['previous_valid'][:]=True
+        b['previous_handoff']=m['active'];b['previous_reference_same'][:]=True
+    assert not m['active'].any()
+    torch.testing.assert_close(out[:,2:,ARMS],base[:,2:,ARMS])
+
+def test_grippers_are_full_events_not_fractional_interpolation():
+    s,b,base,valid=case();base[:,:]=.5;base[:,:,[6,13]]=1
+    out,eff,m=reconcile(s,b,base,base,valid)
+    assert not out[:,:,[6,13]].any()
+    assert torch.equal(out,eff)
+
+def test_no_history_uses_committed_endpoint_and_local_mask_excludes_tail():
+    s,b,base,valid=case();b['previous_valid'][:]=False;base[:,:,ARMS]=.5
+    out,_,m=reconcile(s,b,base,base,valid)
+    assert m['enabled'].all() and out[:,2:,ARMS].max()<=.060001
+    assert local_mask(s,b,valid).sum()==4
+    b['fast_known_mask'][:]=False
+    out,_,m=reconcile(s,b,base,base,valid)
+    assert not m['enabled'].any() and torch.equal(out,base)
+
+def test_finite_gradient_and_local_feedback_zero_preservation():
+    from test_residual_v10 import fixture,generator
+    from dynamicwam.dualrate.continuity_v11 import configure,CONTRACT as V11
+    s,b,w=fixture()
+    configure(s,dict(contract=V11,reference_hold_steps=4,seam_weight=.1,revision_weight=.1,out_of_radius_weight=.2,revision_radius_fraction=1/3,
+        handoff=dict(contract=CONTRACT,local_rows=4,handoff_step_rad=.06,same_step_rad=.02)))
+    b['feedback_noise_seed']=torch.tensor([17]);b['action_grid_origin']=b['source_time'].clone()
+    s.residual_v10['executor']='phase_c2';b['teacher_motion']=b['teacher_motion']+10.;s.eval()
+    out=s.sample_fast(b,w,steps=1)
+    torch.testing.assert_close(out['actions'],out['baseline_actions'],atol=1e-6,rtol=0)
+    assert not out['learned_correction_actions'].any()
+    losses=s.training_loss(b,generator=generator())
+    assert torch.isfinite(losses['loss']) and 'teacher_all_first_over_radius' in losses
+    losses['loss'].backward()
+    assert torch.isfinite(s.fast.action_out.weight.grad).all() and s.fast.action_out.weight.grad.abs().max()>0
+    assert all(p.grad is None for p in s.slow.parameters())
+
+def test_limit_violation_fails_instead_of_independent_joint_clipping():
+    s,b,base,valid=case();b['previous_actions'][:]=20.
+    with pytest.raises(ValueError,match='joint limits'):reconcile(s,b,base,base,valid)
+
+def test_logged_composition_and_violation_gate():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+    from dualrate_continuous_acceptance import validate_handoff_events
+    s,b,base,valid=case();base[:,:,ARMS]=.5
+    proposal=base.clone();proposal[:,2:6,ARMS]+=.01
+    result,effective,m=reconcile(s,b,base,proposal,valid)
+    r=dict(event='residual_action_audit',query_id=1,reference_version=2,baseline_raw=effective[0].tolist(),proposed_raw=result[0].tolist())
+    h=dict(event='whole_plan_handoff_audit',query_id=1,reference_version=2,raw_full_baseline=base[0].tolist(),
+        handoff_offset=(effective-base)[0].tolist(),learned_correction=(proposal-base)[0].tolist(),
+        active=True,enabled=True,alpha=m['alpha'].item(),budget_rad=m['budget_rad'].item(),raw_revision_rad=m['raw_change_rad'].item(),revision_rad=m['achieved_change_rad'].item())
+    cfg=dict(residual_v10=dict(arm_radius=.06,continuity=dict(handoff=s.handoff_v12)))
+    assert validate_handoff_events([r,h,dict(event='fast_committed',query_id=1)],cfg)['handoff_audits']==1
+    h['revision_rad']=.5
+    with pytest.raises(ValueError,match='revision exceeds'):validate_handoff_events([r,h],cfg)
+
+def test_replay_preserves_actual_previous_query_time(tmp_path):
+    import numpy as np
+    from dynamicwam.dualrate.continuity_data import ContinuityDataset
+    sample=dict(fast_known_actions=torch.zeros(16,14),fast_known_mask=torch.arange(16)<2,
+        source_known_actions=torch.zeros(16,14),source_known_mask=torch.arange(16)<2,
+        source_action_intervals=torch.arange(32,dtype=torch.float64).reshape(16,2),
+        action_intervals=torch.arange(32,dtype=torch.float64).reshape(16,2),
+        teacher_available_time=torch.tensor(.2),measured_state_valid=torch.tensor(True),
+        query_time=torch.tensor(.4,dtype=torch.float64),previous_query_time=torch.tensor(.18,dtype=torch.float64),
+        previous_reference_same=torch.tensor(False),previous_handoff=torch.tensor(True))
+    p=tmp_path/'r.pt';torch.save(sample,p)
+    d=ContinuityDataset.__new__(ContinuityDataset);d.replay=[dict(path=str(p))];d.template=sample
+    r=d.replay_item(0)
+    assert r['previous_query_time']==sample['previous_query_time'] and r['previous_handoff']

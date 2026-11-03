@@ -86,6 +86,10 @@ def predict(self,batch,world,*,expert_actions=None):
     # through the older V8 conditions path (including repeated CUDA host fences).
     cond=DualRateSystem.conditions(self,batch,world)
     cond['future_allowed']=batch.get('world_future_allowed',torch.ones_like(batch['query_time'],dtype=torch.bool))
+    if hasattr(self,'handoff_v12'):
+        from .handoff_v12 import reconcile
+        _,_,preview=reconcile(self,batch,base,base,valid)
+        cond['future_allowed']=cond['future_allowed'] & ~preview['active']
     if self.residual_v10.get('tracking_token'):
         from .reference_executor import measured_reference_discrepancy
         discrepancy,available=measured_reference_discrepancy(batch,world)
@@ -118,13 +122,19 @@ def predict(self,batch,world,*,expert_actions=None):
         from .continuity_v11 import shape_correction
         clean=shape_correction(clean,valid & ~known)
     correction=clean*self.radius_raw_v10/self.action_scale_v10
-    if hasattr(self,'continuity_v11'):
+    if hasattr(self,'handoff_v12'):
+        from .handoff_v12 import local_mask
+        correction=correction*local_mask(self,batch,valid)[...,None]
+    elif hasattr(self,'continuity_v11'):
         from .continuity_v11 import bounded_residual
         correction=bounded_residual(self,batch,base,clean)
     trace('core_enqueued')
     raw['normalized_correction']=clean
     proposed=base+torch.where(valid[...,None],correction,0.)
     final,accepted=project(self,proposed,batch,center=base)
+    if hasattr(self,'handoff_v12'):
+        raw['raw_baseline']=base;raw['raw_proposal']=final
+        final,base,raw['handoff']=reconcile(self,batch,base,final,valid)
     trace('projection_done')
     final=torch.where(batch['fast_known_mask'][...,None],batch['fast_known_actions'],final)
     return final,base,valid,accepted,raw,cond
@@ -144,10 +154,22 @@ def sample(self,batch,world,*,steps=1,generator=None,initial_action_noise=None):
     action,base,valid,accepted,raw,cond=predict(self,batch,world)
     fields=cond['future_valid'][...,None]&self.future_field_support[None]
     contacts=cond['future_valid'][...,None]&self.contact_field_support[None]
-    return dict(actions=action,future=torch.where(fields,raw['future_velocity'],0.),
+    result=dict(actions=action,future=torch.where(fields,raw['future_velocity'],0.),
         future_valid=cond['future_valid'],future_field_valid=fields,contact_valid=contacts,
         contact_probability=torch.where(contacts,raw['contact_logits'].sigmoid(),0.),
         baseline_actions=base,correction_actions=action-base,draft_valid=valid,correction_accepted=accepted)
+    if hasattr(self,'handoff_v12'):
+        h=raw['handoff'];result.update(raw_baseline_actions=raw['raw_baseline'],handoff_actions=base-raw['raw_baseline'],
+            learned_correction_actions=raw['raw_proposal']-raw['raw_baseline'],handoff_active=h['active'],handoff_alpha=h['alpha'],
+            handoff_budget_rad=h['budget_rad'],handoff_raw_change_rad=h['raw_change_rad'])
+        result.update(handoff_revision_rad=h['achieved_change_rad'],handoff_enabled=h['enabled'])
+        result['future']=torch.where(h['active'][:,None,None],0.,result['future'])
+        result['contact_probability']=torch.where(h['active'][:,None,None],0.,result['contact_probability'])
+        # The compact future was predicted before the explicit command connector.
+        result['future_valid']=result['future_valid']&~h['active'][:,None]
+        result['future_field_valid']=fields&~h['active'][:,None,None]
+        result['contact_valid']=contacts&~h['active'][:,None,None]
+    return result
 
 
 def current_teacher_batch(batch):
