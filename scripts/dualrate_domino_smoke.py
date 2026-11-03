@@ -37,7 +37,18 @@ def prepare_train_scene(prepare,candidates,*,stage=lambda *a,**kw:None):
     cursor=seeds[0]
     for requested in seeds:
         if requested<cursor:continue
-        env,prepared=prepare(requested)
+        try:env,prepared=prepare(requested)
+        except AssertionError as exc:
+            frames=traceback.extract_tb(exc.__traceback__)
+            geometric=(str(exc)=='target_pose cannot be None for move action.' and
+                any(f.name=='grasp_actor' and f.filename.endswith('/envs/_base_task.py') for f in frames) and
+                any(f.name=='__init__' and f.filename.endswith('/envs/utils/action.py') for f in frames))
+            if not geometric:raise
+            # _accept_expert_seed already closes the failed environment before
+            # propagating. Only this known missing grasp pose is a scene rejection.
+            stage('reject_train_grasp_geometry',requested_seed=requested,error=str(exc))
+            cursor=requested+1
+            continue
         accepted=int(prepared['seed'])
         if accepted<requested:raise ValueError('native seed filter moved backwards')
         if accepted in seeds:return env,prepared

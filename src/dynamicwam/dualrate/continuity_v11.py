@@ -125,8 +125,13 @@ def loss(self,batch,generator=None,action_conditioned=None):
     prior_target=None
     if prior and bool(paired.any()):
         prior=defaults(prior)
+        DualRateSystem._validate_clocks(prior);DualRateSystem._validate_prefix_pair(prior)
         if not torch.equal(prior['source_action_intervals'],b['source_action_intervals']):
             raise ValueError('paired queries must share the same physical slow source')
+        for key in ('source_time','source_request_time','source_available_time','completed_time',
+                    'source_known_mask','source_known_actions'):
+            if key in b and (key not in prior or not torch.equal(prior[key][paired],b[key][paired])):
+                raise ValueError('paired queries differ in actual reference condition: '+key)
         with torch.no_grad():
             p=predict(self,prior,world)[0]
             p,pv=align(p,prior['action_intervals'],b['action_intervals'])

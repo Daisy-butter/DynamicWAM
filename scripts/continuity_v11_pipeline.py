@@ -1,7 +1,7 @@
 """Finite V11 collection -> measured data -> 8-rank smoke -> Full training -> 700 eval.
 All failures stop dependent stages. No automatic retry or driver operations.
 """
-import argparse,copy,hashlib,json,math,os,signal,statistics,subprocess,sys,time,traceback
+import argparse,ast,copy,hashlib,json,math,os,signal,statistics,subprocess,sys,time,traceback
 from pathlib import Path
 REPO=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(REPO/'scripts'),str(REPO/'src')]
@@ -20,7 +20,7 @@ def save(p,v):
  p=Path(p);p.parent.mkdir(parents=True,exist_ok=True);tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(v,indent=2,allow_nan=False));tmp.replace(p)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--initial',required=True);p.add_argument('--attempt',default='pipeline01');p.add_argument('--manual-start',required=True,action='store_true');a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--initial',required=True);p.add_argument('--attempt',default='pipeline01');p.add_argument('--reuse-prefix');p.add_argument('--retain-collection');p.add_argument('--manual-start',required=True,action='store_true');a=p.parse_args()
  if Path(a.attempt).name!=a.attempt or not a.attempt.startswith('pipeline'):raise ValueError('local unique pipeline attempt required')
  root=Path(a.root).resolve();out=root/a.attempt;out.mkdir(exist_ok=False)
  R=REPO.parents[1];children=[];evidence={};source=guard.frozen_source(REPO);began=time.monotonic()
@@ -49,6 +49,23 @@ def main():
   assert s['state']=='completed' and s['guard_closed'] and not s['errors']
   assert k['unchanged'] and k['same_boot'] and not k.get('added') and not x['remaining'] and x['returncode']==0
   for n in ('status.json','kernel_after.json','owned_exit.json','source.json','config.frozen.json'):ev(g/n)
+ def runtime_equivalent(prior):
+  for key in ('guard_sha256','supervisor_sha256','distributed_supervisor_sha256'):
+   if prior[key]!=source[key]:raise ValueError('supervision changed: '+key)
+  changed=subprocess.check_output(['git','diff','--name-only',prior['commit'],source['commit']],cwd=REPO,text=True).splitlines()
+  allowed={'src/dynamicwam/dualrate/continuity_data.py','src/dynamicwam/dualrate/continuity_v11.py',
+           'scripts/continuity_v11_pipeline.py','scripts/audit_continuity_data.py','scripts/dualrate_domino_smoke.py'}
+  if any(x not in allowed and not x.startswith(('docs/','tests/')) for x in changed):raise ValueError('runtime equivalence not proven')
+  file='src/dynamicwam/dualrate/continuity_v11.py'
+  old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
+  def deployment_ast(text):
+   tree=ast.parse(text);tree.body=[x for x in tree.body if not isinstance(x,ast.FunctionDef) or x.name!='loss']
+   return ast.dump(tree,include_attributes=False)
+  assert deployment_ast(old)==deployment_ast((REPO/file).read_text())
+  proof=out/('runtime_equivalence_'+prior['commit'][:8]+'.json')
+  save(proof,dict(passed=True,original=prior,current=source,changed_paths=changed,unchanged_deployment_ast=True,
+                 scope='training pair selection/loss and collection/controller only; scored runtime and model sampling unchanged'))
+  ev(proof)
  def guarded(c,name,gpus):
   path=out/(name+'.config.json');save(path,c)
   return launch([sys.executable,str(REPO/'scripts/guarded_dualrate_run.py'),'--config',str(path),'--run-dir',str(out/(name+'_guard')),'--gpus',','.join(gpus),'--max-runtime','86400'],name)
@@ -56,22 +73,56 @@ def main():
   state('validating_initial')
   initial=read(ev(root/(a.initial+'.status.json')));assert initial['state']=='initial_gpu_smoke_completed'
   # The added finite controller does not alter source/model/runtime code.
-  assert initial['source']['source_sha256']==source['source_sha256']
+  runtime_equivalent(initial['source'])
   clean(root/(a.initial+'_guard'));ic=read(ev(root/(a.initial+'.config.json')))
   initial_model=read(ev(root/(a.initial+'_initial/initialization_receipt.json')))
   assert initial_model['trained_steps']==0 and not initial_model['cuda_initialized']
   all_tasks=sorted(read(root/'training_scene_pool.json')['tasks'])
-  records=[];configs=[];state('collecting_train_feedback')
+  prefix=Path(a.reuse_prefix).resolve(strict=True) if a.reuse_prefix else out
+  if a.reuse_prefix:
+   if prefix.parent!=root:raise ValueError('preserved prefix must be a sibling attempt')
+   ps=read(ev(prefix/'status.json'));assert ps['state']=='failed'
+   runtime_equivalent(ps['source'])
+  records=[];configs=[];retained=[];retained_tasks=set();state('collecting_train_feedback')
+  if a.retain_collection:
+   if a.reuse_prefix:raise ValueError('choose one preserved-prefix mode')
+   prior_root=Path(a.retain_collection).resolve(strict=True)
+   if prior_root.parent!=root:raise ValueError('retained collection must be a sibling attempt')
+   old=read(ev(prior_root/'status.json'));assert old['state']=='failed';runtime_equivalent(old['source'])
+   gd=prior_root/'collection_0_guard';gs=read(ev(gd/'status.json'));ge=read(ev(gd/'owned_exit.json'));gk=read(ev(gd/'kernel_after.json'))
+   assert gs['guard_closed'] and gs['errors']==["RuntimeError('worker exited 1; automatic retry disabled')"]
+   assert not ge['remaining'] and ge['returncode']==1 and gk['unchanged'] and gk['same_boot'] and not gk['added']
+   log=ev(gd/'worker.log').read_text()
+   assert 'AssertionError: target_pose cannot be None for move action.' in log
+   oldcfg=read(ev(prior_root/'collection_0.config.json'))
+   assert oldcfg['runtime']==base['runtime'] and oldcfg['residual_v10']==base['residual_v10']
+   from video_artifacts import validate_video_artifacts
+   for path in sorted(Path(oldcfg['output']).glob('*/episode_*/report.json')):
+    report=read(path)
+    if not report.get('continuous_valid') or not report.get('realtime_valid'):continue
+    validate_continuous_report(report,oldcfg);assert validate_video_artifacts(report)
+    assert report['task'] not in retained_tasks
+    fm=read(ev(path.parent/'feedback/manifest.json'));assert fm['complete'] and fm['identity']['split']=='train'
+    retained.append(str(ev(path)));retained_tasks.add(report['task'])
+   assert retained and retained_tasks<set(all_tasks)
+   configs.append(oldcfg)
+   save(out/'retained_train_collection.json',dict(passed=True,tasks=sorted(retained_tasks),reports=retained,scope='only complete TRAIN episodes; no scored eval results merged'))
+   ev(out/'retained_train_collection.json')
   # One three-GPU collector: SAPIEN creates a small graphics probe on physical
   # GPU0 even in another visibility group. Two independent guards must not
   # declare each other idle. Scored eval retains its unified eight-GPU guard.
-  c=read(root/'collection.template.json');c['deployment']['tasks']=all_tasks
-  c.update(output=str(out/'collection_0'),source_sha256=source['source_sha256'],training_source_sha256=source['source_sha256'],deployment_checkpoint=initial_model['checkpoint'],deployment_checkpoint_sha256=initial_model['sha256'])
-  configs.append(c);records.append((guarded(c,'collection_0',base['gpu_uuids'][:3]),'collection_0',c))
-  traces=[]
+  if a.reuse_prefix:
+   c=read(ev(prefix/'collection_0.config.json'))
+   assert c['deployment']['tasks']==all_tasks and c['residual_v10']==base['residual_v10'] and c['runtime']==base['runtime']
+   configs.append(c);records.append((None,'collection_0',c))
+  else:
+   c=read(root/'collection.template.json');c['deployment']['tasks']=[t for t in all_tasks if t not in retained_tasks]
+   c.update(output=str(out/'collection_0'),source_sha256=source['source_sha256'],training_source_sha256=source['source_sha256'],deployment_checkpoint=initial_model['checkpoint'],deployment_checkpoint_sha256=initial_model['sha256'])
+   configs.append(c);records.append((guarded(c,'collection_0',base['gpu_uuids'][:3]),'collection_0',c))
+  traces=list(retained)
   for child,name,c in records:
    if child is not None:wait(child,name)
-   clean(out/(name+'_guard'))
+   clean(prefix/(name+'_guard'))
    accepted=read(ev(Path(c['output'])/'deployment_acceptance.json'));assert accepted['hardtime_acceptance_passed']
    for path in accepted['reports']:
     report=read(ev(path));validate_continuous_report(report,c)
@@ -84,8 +135,10 @@ def main():
   tc=json.loads(json.dumps(tc).replace(str(R/'worktrees/dualrate-v8-rtc-20261031'),str(REPO)))
   tc['output']=str(out/'tracking');tc['residual_v10']=base['residual_v10']
   tc['cases']=[dict(row) for row in tc['cases']]+[dict(row,label=row['label']+'_linear_v11',controller='linear') for row in tc['cases']]
-  child=guarded(tc,'tracking',base['gpu_uuids']);wait(child,'tracking');clean(out/'tracking_guard')
-  track=read(ev(out/'tracking/report.json'));assert track['complete'] and len(track['results'])==4
+  if not a.reuse_prefix:
+   child=guarded(tc,'tracking',base['gpu_uuids']);wait(child,'tracking')
+  clean(prefix/'tracking_guard')
+  track=read(ev(prefix/'tracking/report.json'));assert track['complete'] and len(track['results'])==4
   assert all(x['max_error']<.1 for x in track['results'])
   review=out/'tracking_review.json';save(review,dict(passed=True,source_sha256=source['source_sha256'],production_contacts_enabled=True,baseline_comparison_complete=True,evidence=list(evidence.values()),scope='same Full endpoint paths under phase C2 and linear, normal contacts; not a policy SR guarantee'))
   tracking_binding=dict(path=str(review),sha256=sha(review));ev(review)
@@ -95,8 +148,18 @@ def main():
   # Include uninstrumented simultaneous two-environment deployment timings too.
   for task in ic['tasks']:traces.append(str(root/a.initial/task/'episode_0000/report.json'))
   for t in traces:command+=['--trace',t]
-  run(command,'measured_data',cpu)
-  run([sys.executable,str(REPO/'scripts/prepare_residual_v10_data.py'),'--source',str(measured),'--output',str(dataset),'--config',str(root/(a.initial+'.config.json'))],'bind_data',cpu)
+  if a.reuse_prefix:
+   dataset.mkdir()
+   for split in ('train','validation'):
+    original=ev(prefix/'dataset'/(split+'.json'));m=read(original)
+    # Existing manifests bind absolute immutable arrays/templates. Copy metadata,
+    # never mutate the preserved failed attempt's prepared data.
+    assert Path(m['rows_file']).is_absolute()
+    for key in ('continuous_acceptance_file','continuous_acceptance_sha256'):m.pop(key,None)
+    save(dataset/(split+'.json'),m)
+  else:
+   run(command,'measured_data',cpu)
+   run([sys.executable,str(REPO/'scripts/prepare_residual_v10_data.py'),'--source',str(measured),'--output',str(dataset),'--config',str(root/(a.initial+'.config.json'))],'bind_data',cpu)
   from dynamicwam.dualrate.feedback_replay import build_replay_index
   binding=build_replay_index([c['output'] for c in configs],out/'feedback_index.json',all_tasks)
   train=read(dataset/'train.json');train['continuity_replay']=binding;save(dataset/'train.json',train);ev(out/'feedback_index.json')
@@ -106,7 +169,7 @@ def main():
   audit=read(ev(out/'expert_data_audit.json'));assert audit['passed'] and len(audit['history_parity'])==35
   audit=read(ev(out/'feedback_data_audit.json'));assert audit['passed'] and audit['tasks']==35 and audit['paired_rows']>0
   # Tests bind deterministic time/prefix/queue and source-noise/correction rules.
-  tests=['test_continuity_v11','test_residual_v10','test_dualrate_hardtime_deployment','test_dualrate_online','test_dualrate_runtime','test_dualrate_timing','test_dualrate_continuous_acceptance']
+  tests=['test_continuity_v11_collection','test_continuity_v11','test_residual_v10','test_dualrate_hardtime_deployment','test_dualrate_online','test_dualrate_runtime','test_dualrate_timing','test_dualrate_continuous_acceptance']
   run([sys.executable,'-m','pytest','-q',*[str(REPO/'tests'/(x+'.py')) for x in tests]],'cpu_acceptance',dict(cpu,PYTHONPATH=cpu['PYTHONPATH']+':'+str(R/'outputs/dependencies/dualrate_pytest_review_20261024')));ev(out/'cpu_acceptance.log')
   train=read(dataset/'train.json');contract=train['continuous_rtc_contract']
   acceptance=out/'continuous_data_acceptance.json';save(acceptance,dict(contract=contract,source_sha256=source['source_sha256'],same_command_state_parity=True,history_train_deploy_parity=True,injected_delay_queue_parity=True,actual_gpu_parallel_timing=True,physical_label_audit=True,all_task_smoke=True,evidence=list(evidence.values()),policy_quality_accepted=False))

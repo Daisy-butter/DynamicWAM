@@ -8,6 +8,15 @@ import torch
 from .producer import DominoPhysicalDataset
 
 
+def reference_identity(event):
+    # A common source image does not imply a common in-flight reference:
+    # request timing changes commitments; publication timing controls causality.
+    keys=('trace_number','slow_supervision_version','source_available',
+          'request_time','publish_time','source_prefix_end')
+    if any(k not in event for k in keys):raise ValueError('actual reference event identity missing')
+    return tuple(event[k] for k in keys)
+
+
 def row_defaults(row):
     row=dict(row)
     row.setdefault('measured_state',torch.zeros(37))
@@ -26,7 +35,7 @@ class ContinuityDataset(DominoPhysicalDataset):
         groups=defaultdict(list)
         for i,(ep,frame,tid) in enumerate(self.rows):
             event=self.event_templates['templates'][int(tid)]
-            groups[(int(ep),int(frame))].append((float(event['query_time']),i,event))
+            groups[(int(ep),int(frame),reference_identity(event))].append((float(event['query_time']),i,event))
         for values in groups.values():
             values.sort(key=lambda x:(x[0],x[1]))
             last=None

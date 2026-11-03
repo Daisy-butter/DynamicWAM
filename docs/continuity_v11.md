@@ -31,6 +31,15 @@ rather than penalizing all reaction. Per-query same-reference correction innovat
 most 1/3 of the 0.06-rad total arm radius. Grippers retain Full's semantics and zero correction.
 The convex temporal basis and bounded innovation run identically in train and deployment.
 
+The final pair audit additionally binds trace/reference identity, source request,
+publication and commitment boundary. Matching the source image alone was insufficient:
+the engineering index had 19,023 pairs crossing reference identities, including 2,537
+with different source prefixes and 198 noncausal uses of the current publication for
+the earlier query. The strict selector retains 62,144 pairs on that index. Training
+also rejects differing source commitments/publications before sharing a world reference.
+The full-age dataset has 25 percent replay slots; younger curriculum phases include
+all those slots and therefore have a larger replay fraction, not a claimed fixed 25 percent.
+
 ## Iteration 3: independent refresh and deterministic contracts
 Slow candidates continue publishing independently. The active reference has a minimum
 4-row dwell, but cannot outlive TTL or leave fewer than two covered editable rows. The
