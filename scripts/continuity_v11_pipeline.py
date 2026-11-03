@@ -20,8 +20,9 @@ def save(p,v):
  p=Path(p);p.parent.mkdir(parents=True,exist_ok=True);tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(v,indent=2,allow_nan=False));tmp.replace(p)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--initial',required=True);p.add_argument('--manual-start',required=True,action='store_true');a=p.parse_args()
- root=Path(a.root).resolve();out=root/'pipeline01';out.mkdir(exist_ok=False)
+ p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--initial',required=True);p.add_argument('--attempt',default='pipeline01');p.add_argument('--manual-start',required=True,action='store_true');a=p.parse_args()
+ if Path(a.attempt).name!=a.attempt or not a.attempt.startswith('pipeline'):raise ValueError('local unique pipeline attempt required')
+ root=Path(a.root).resolve();out=root/a.attempt;out.mkdir(exist_ok=False)
  R=REPO.parents[1];children=[];evidence={};source=guard.frozen_source(REPO);began=time.monotonic()
  def state(s,**kw):save(out/'status.json',dict(state=s,pid=os.getpid(),elapsed=time.monotonic()-began,no_retry=True,source=source,**kw))
  def ev(p):
@@ -61,18 +62,20 @@ def main():
   assert initial_model['trained_steps']==0 and not initial_model['cuda_initialized']
   all_tasks=sorted(read(root/'training_scene_pool.json')['tasks'])
   records=[];configs=[];state('collecting_train_feedback')
-  for group in range(2):
-   c=read(root/'collection.template.json');c['deployment']['tasks']=all_tasks[group::2]
-   c.update(output=str(out/f'collection_{group}'),source_sha256=source['source_sha256'],training_source_sha256=source['source_sha256'],deployment_checkpoint=initial_model['checkpoint'],deployment_checkpoint_sha256=initial_model['sha256'])
-   name=f'collection_{group}';configs.append(c)
-   records.append((guarded(c,name,base['gpu_uuids'][group*3:group*3+3]),name,c))
+  # One three-GPU collector: SAPIEN creates a small graphics probe on physical
+  # GPU0 even in another visibility group. Two independent guards must not
+  # declare each other idle. Scored eval retains its unified eight-GPU guard.
+  c=read(root/'collection.template.json');c['deployment']['tasks']=all_tasks
+  c.update(output=str(out/'collection_0'),source_sha256=source['source_sha256'],training_source_sha256=source['source_sha256'],deployment_checkpoint=initial_model['checkpoint'],deployment_checkpoint_sha256=initial_model['sha256'])
+  configs.append(c);records.append((guarded(c,'collection_0',base['gpu_uuids'][:3]),'collection_0',c))
   traces=[]
   for child,name,c in records:
-   wait(child,name);clean(out/(name+'_guard'))
+   if child is not None:wait(child,name)
+   clean(out/(name+'_guard'))
    accepted=read(ev(Path(c['output'])/'deployment_acceptance.json'));assert accepted['hardtime_acceptance_passed']
    for path in accepted['reports']:
     report=read(ev(path));validate_continuous_report(report,c)
-    assert report['complete'] and report['actuator_tracking']['actual_physical_tracking']
+    assert report['continuous_valid'] and report['realtime_valid'] and report['actuator_tracking']['actual_physical_tracking']
     traces.append(path)
   assert len(traces)==35
   # Fresh paired identical Full commands under both controllers, contacts ON.

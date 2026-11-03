@@ -25,6 +25,28 @@ def save(path,value):
     temporary.replace(path)
 
 
+def prepare_train_scene(prepare,candidates,*,stage=lambda *a,**kw:None):
+    """Native feasibility filtering may skip a TRAIN seed into validation.
+
+    Discard only normally prepared non-training scenes, before policy input or
+    recording. Cleanup/runtime failures propagate; this is not a GPU retry.
+    """
+    seeds=sorted({int(row['seed']) for row in candidates})
+    if not seeds or seeds[0]<0 or seeds[-1]>=100000:
+        raise ValueError('explicit training-only seed pool required')
+    cursor=seeds[0]
+    for requested in seeds:
+        if requested<cursor:continue
+        env,prepared=prepare(requested)
+        accepted=int(prepared['seed'])
+        if accepted<requested:raise ValueError('native seed filter moved backwards')
+        if accepted in seeds:return env,prepared
+        stage('discard_nontrain_feasible_scene',requested_seed=requested,accepted_seed=accepted)
+        env.close_env();env.release_episode_resources()
+        cursor=accepted+1
+    raise ValueError('declared TRAIN seed pool has no accepted feasible scene')
+
+
 def verify_deployment_artifacts(config, file_hash):
     """Bind native binaries and external simulator bytes absent from Python hash."""
     files=config.get('deployment_artifact_sha256',{})
@@ -171,8 +193,12 @@ def run(stack):
                 stage('scene_preparing',task=task,episode=episode,requested_seed=next_seed)
                 with SapienInitLock():
                     requested_seed=next_seed
-                    env,prepared=prepare_level1_env(domino,task_name=task,task_config=dep['task_config'],
-                        start_seed=requested_seed,instruction_type=dep.get('instruction_type','seen'))
+                    def prepare(candidate):
+                        return prepare_level1_env(domino,task_name=task,task_config=dep['task_config'],
+                            start_seed=candidate,instruction_type=dep.get('instruction_type','seen'))
+                    if train_pool:
+                        env,prepared=prepare_train_scene(prepare,pool['tasks'][task],stage=stage)
+                    else:env,prepared=prepare(requested_seed)
                 stage('scene_ready',task=task,episode=episode,accepted_seed=int(prepared['seed']))
                 if train_pool:
                     candidates=pool['tasks'][task]
