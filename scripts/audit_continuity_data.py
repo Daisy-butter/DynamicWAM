@@ -27,8 +27,8 @@ def main():
  paired=int((d.previous>=0).sum());assert paired>0
  for i,j in enumerate(d.previous):
   if j<0:continue
-  a=d.event_templates['templates'][int(d.rows[i,2])];b=d.event_templates['templates'][int(d.rows[j,2])]
-  assert reference_identity(a)==reference_identity(b)
-  assert a['publish_time']<=b['query_time']<=a['query_time']
+  current=d.event_templates['templates'][int(d.rows[i,2])];previous=d.event_templates['templates'][int(d.rows[j,2])]
+  assert reference_identity(current)==reference_identity(previous)
+  assert current['publish_time']<=previous['query_time']<=current['query_time']
  Path(a.output).write_text(json.dumps(dict(passed=True,tasks=len(seen),replay_rows=len(d.replay),expert_rows=d.expert_length,replay_sampling_slots=d.replay_slots,paired_rows=paired,examples=examples,scope='CPU real-state provenance and same-time contracts; actual Full parity requires GPU smoke'),indent=2))
 if __name__=='__main__':main()
