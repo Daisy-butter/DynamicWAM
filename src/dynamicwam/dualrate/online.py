@@ -30,6 +30,8 @@ class OnlineFrame:
     exposure: float
     available: float
     frame_id: int
+    measured_q: np.ndarray | None = None
+    measured_v: np.ndarray | None = None
 
 
 def _immutable_array(value):
@@ -120,7 +122,14 @@ class ObservationHistory:
         if target.shape != (14,) or not np.isfinite(target).all():
             raise ValueError('actual frozen drive-target vector required')
         target=_immutable_array(target)
-        value = OnlineFrame(images, target, float(exposure), float(available), self.next_id)
+        sensor=observation.get('measured_joint_state')
+        q=v=None
+        if sensor is not None:
+            q=np.asarray(sensor['q'],np.float32);v=np.asarray(sensor['v'],np.float32)
+            if q.shape!=(12,) or v.shape!=(12,) or not np.isfinite(q).all() or not np.isfinite(v).all() or abs(sensor['physical_time']-exposure)>1e-8:
+                raise ValueError('measured state must belong to this exact frozen exposure')
+            q,v=_immutable_array(q),_immutable_array(v)
+        value = OnlineFrame(images, target, float(exposure), float(available), self.next_id,q,v)
         self.next_id += 1
         self.frames.append(value)
         return value
@@ -227,6 +236,7 @@ def history_features(frames, contract, *, strict=False, action_dt=DT, pair_cache
 class OnlineBatchBuilder:
     def __init__(self, manifest, *, action_mean, action_scale, language, device='cpu', slow_device=None):
         self.manifest=manifest;self.device=torch.device(device)
+        self.collect_feedback=False
         self.pair_cache=ObservationPairCache()
         self.slow_device=torch.device(device if slow_device is None else slow_device)
         self.action_dt=float(manifest.get('action_interval_seconds',DT))
@@ -277,6 +287,15 @@ class OnlineBatchBuilder:
             executed_actions=(torch.tensor([x[2] for x in trace],dtype=torch.float32).reshape(-1,14)-self.mean)/self.scale,
             executed_action_intervals=torch.tensor([[x[0],x[1]] for x in trace],dtype=torch.float64).reshape(-1,2),
             executed_action_valid=torch.ones(len(trace),dtype=torch.bool))
+        if self.manifest.get('residual_v10',{}).get('continuity'):
+            from .feedback_observation import measured_features
+            values['measured_state'],values['measured_state_valid']=measured_features(
+                frames[-1].measured_q,frames[-1].measured_v,frames[-1].drive_target,
+                self.mean,self.scale,query_time-frames[-1].exposure)
+        if self.collect_feedback:
+            teacher=self.source(frames,source_time=frames[-1].exposure,
+                action_start=frames[-1].exposure,request_time=query_time,vae=None)
+            values.update({'teacher_'+k[7:]:v[0].cpu() for k,v in teacher.items() if k.startswith('source_')})
         return self._batch(values)
 
     def source(self, frames, *, source_time, action_start, vae, request_time=None):
@@ -297,10 +316,11 @@ class OnlineBatchBuilder:
         # Match producer FP32 pixel normalization before the native VAE cast;
         # BF16 division/subtraction first introduces a different rounding path.
         x=(torch.from_numpy(raw).permute(3,0,1,2)[None].float()/127.5-1).to(
-            self.slow_device,dtype=getattr(vae,'dtype',torch.bfloat16))
-        with torch.no_grad():
-            latent=vae.encode(x)
-        if latent.shape[1:]!=(48,2,24,20):
+            'cpu' if vae is None else self.slow_device,dtype=getattr(vae,'dtype',torch.bfloat16))
+        latent=None
+        if vae is not None:
+            with torch.no_grad():latent=vae.encode(x)
+        if latent is not None and latent.shape[1:]!=(48,2,24,20):
             raise ValueError('native online source codec shape differs from training')
         s=source_time;starts=torch.arange(16,dtype=torch.float64)*self.action_dt+action_start
         hist_start=float(h['motion_times'][h['motion_valid'],0].min()) if h['motion_valid'].any() else last.exposure
@@ -320,7 +340,11 @@ class OnlineBatchBuilder:
             source_request_time=torch.tensor(request_time,dtype=torch.float64),
             source_rgb_actual_times=torch.tensor(last.exposure,dtype=torch.float64),
             source_available_time=torch.tensor(last.available,dtype=torch.float64))
-        result=self._batch(values,device=self.slow_device);result['source_condition_latent']=latent
+        destination='cpu' if vae is None else self.slow_device
+        result=(OnlineBatchBuilder._batch(self,values,device=destination) if vae is None else self._batch(values,device=destination))
+        if latent is not None:result['source_condition_latent']=latent
+        if self.collect_feedback:
+            result['source_condition_frames']=(torch.from_numpy(raw).permute(3,0,1,2)[None].float()/127.5-1)
         return result
 
 

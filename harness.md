@@ -1,3 +1,12 @@
+# Current V11 work 2026-11-03
+
+User authorizes .50 continuous RTC implementation, three review iterations, smoke,
+then eight-rank Full-initialized training and final-checkpoint evaluation. Worktree
+`dualrate-continuity-20261103`; preserve old results and .92/.100 jobs. Read
+`docs/continuity_v11.md`. Reuse existing route branch through commits. Source/config
+freeze during GPU jobs. No GPU recovery; no automatic retries. CPU tests cannot waive
+GPU gates. Big artifacts stay on user SSD. Update local outputs/experiment_ledger.md.
+
 # Current authorization: .50 Continuous RTC residual V10, 2026-11-02
 User authorizes this route's bounded clean residual/controller changes, executor
 research and implementation, at least three reviews, smoke and a fresh official

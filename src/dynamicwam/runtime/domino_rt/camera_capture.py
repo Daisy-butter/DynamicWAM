@@ -285,6 +285,10 @@ class AsyncCameraCapture:
             "right_arm": right[:-1], "right_gripper": right[-1],
             "vector": np.array(list(left) + list(right)),
         }
+        sensor=getattr(env,'_dualrate_actual_sensor',None)
+        if sensor is not None:
+            q,v=sensor.snapshot()
+            observation['measured_joint_state']={'q':q,'v':v,'physical_time':timestamp}
         if self._async_submit:
             future = self._executor.submit(_submit_and_read, cameras,
                 _sapien_color_reader.take_picture, self._read_worker, self._reader, self._clock)

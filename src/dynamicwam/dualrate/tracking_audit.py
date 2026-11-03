@@ -15,13 +15,19 @@ class TrackingAudit:
         self.rows=[]
 
     def sample(self,when,command,command_velocity):
-        q=np.concatenate([np.asarray(a.get_qpos(),np.float64)[i] for a,i in self.parts])
-        v=np.concatenate([np.asarray(a.get_qvel(),np.float64)[i] for a,i in self.parts])
+        q,v=self.snapshot()
         idx=[0,1,2,3,4,5,7,8,9,10,11,12]
         cmd=np.asarray(command)[idx];cv=np.asarray(command_velocity)[idx]
         if not all(np.isfinite(x).all() for x in (q,v,cmd,cv)):raise ValueError('nonfinite articulation tracking sample')
         self.rows.append(dict(physical_time=float(when),actual_q=q.tolist(),actual_v=v.tolist(),
                              commanded_q=cmd.tolist(),commanded_v=cv.tolist()))
+
+    def snapshot(self):
+        """Owner-only real sensors; does not append an audit row."""
+        q=np.concatenate([np.asarray(a.get_qpos(),np.float64)[i] for a,i in self.parts])
+        v=np.concatenate([np.asarray(a.get_qvel(),np.float64)[i] for a,i in self.parts])
+        if not np.isfinite(q).all() or not np.isfinite(v).all():raise ValueError('nonfinite actual sensor')
+        return q.copy(),v.copy()
 
     def receipt(self):
         if not self.rows:return dict(samples=0,rows=[],actual_physical_tracking=True)

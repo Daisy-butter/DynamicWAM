@@ -79,6 +79,12 @@ def measured_templates(paths,dt):
     for trace_number,path in enumerate(paths):
         path=Path(path).resolve(strict=True)
         events=load_events(path);audit_wall_release(events,dt)
+        raw=json.loads(path.read_text()) if path.suffix=='.json' else {}
+        continuity=raw.get('residual_v10',{}).get('continuity') if isinstance(raw,dict) else None
+        if continuity:
+            from dualrate_continuous_acceptance import validate_reference_leases
+            activation=next(e for e in events if e.get('event')=='activation')
+            validate_reference_leases(events,dict(runtime=raw['runtime_contract'],residual_v10=raw['residual_v10']),activation)
         starts={};completed={};captures={};commits={};published_order={};started_order={}
         for event_index,event in enumerate(events):
             kind=event.get('event')
@@ -104,7 +110,10 @@ def measured_templates(paths,dt):
                 raise ValueError('active query lacks a real causal slow supervision anchor')
             reference_available=version>=0
             anchor=max(available)
-            if reference_available and version!=anchor:
+            if continuity:
+                if version not in available:raise ValueError('held reference was not causally published')
+                anchor=version
+            elif reference_available and version!=anchor:
                 raise ValueError('trace fast query did not select latest published reference')
             if anchor not in starts:raise ValueError('historical slow request missing from trace')
             # A missing/expired reference is NEVER marked available to the fast

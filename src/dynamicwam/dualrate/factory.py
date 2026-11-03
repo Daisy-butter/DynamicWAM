@@ -93,6 +93,9 @@ def build_system(config, device="cpu"):
             stats=payload['config']['action_normalization']['stats']
             configure_residual(model,config['residual_v10'],stats['mean'],
                                [max(float(x),1e-6) for x in stats['std']])
+            if config['residual_v10'].get('continuity'):
+                from .continuity_v11 import configure as configure_continuity
+                configure_continuity(model,config['residual_v10']['continuity'])
     elif config.get('native_v7'):
         from .native_v7 import CompactEventFast, configure
         from .native_v6 import EventWorldReadout

@@ -23,6 +23,8 @@ def validate_reference_leases(events, config, activation):
     published, started, active, latest = {}, {}, False, None
     count = commits = 0
     ttl = float(config.get('runtime', {}).get('reference_max_age', 2.))
+    continuity=config.get('residual_v10',{}).get('continuity')
+    selection=None;selected_version=None;selected_at=None
     aw, ap = activation['wall_time'], activation['physics_time']
     for event in events:
         if event.get('post_terminal'):
@@ -35,6 +37,26 @@ def validate_reference_leases(events, config, activation):
             if version in published or not event['source_time'] <= event['completed_time']:
                 raise ValueError('invalid slow publication identity/time')
             published[version], latest = event, version
+        elif kind == 'reference_selected' and continuity:
+            q=event['query_time'];version=event['reference_version'];ref=published.get(version)
+            dt=float(config['runtime']['action_dt']);hold=continuity['reference_hold_steps']*dt
+            first=event['first_editable_time']
+            if (event['candidate_version'] not in (latest,-1) or ref is None
+                    or event['hold_seconds']!=hold or event['required_editable_rows']!=2
+                    or first+2*dt>ref['source_time']+16*dt+1e-7
+                    or not ref['completed_time']<=q<ref['source_time']+ttl):
+                raise ValueError('reference lease lacks causal predicted coverage')
+            if selected_version!=version:
+                old=published.get(selected_version)
+                old_usable=old is not None and q<old['source_time']+ttl and first+2*dt<=old['source_time']+16*dt+1e-7
+                if old_usable and q<selected_at+hold-1e-9:
+                    raise ValueError('reference changed inside its minimum dwell')
+                if version!=latest or event['activated_time']!=q:
+                    raise ValueError('activation did not select the latest candidate')
+                selected_version,selected_at=version,q
+            elif event['activated_time']!=selected_at:
+                raise ValueError('reference activation time was rewritten')
+            selection=event
         elif active and kind == 'fast_started':
             version, query = event['reference_version'], event['query_time']
             reference = published.get(version)
@@ -47,7 +69,8 @@ def validate_reference_leases(events, config, activation):
                     raise ValueError('missing-reference query skipped a valid latest reference')
                 started[event['query_id']]=event;count+=1
                 continue
-            if (version < 1 or version != latest or reference is None
+            selected=(selection is not None and selection['query_time']==query and selection['reference_version']==version)
+            if (version < 1 or (not selected if continuity else version != latest) or reference is None
                     or not reference['source_time'] <= reference['completed_time'] <= query
                     or not query < reference['source_time'] + ttl
                     or event['source_time'] != reference['source_time']

@@ -90,6 +90,8 @@ def selected_rows(dataset, query_age_seconds):
         raise ValueError("requested stage ages are absent from the prepared physical-grid data")
     ids = [i for i, age in enumerate(available) if any(abs(age-value) < 1e-9 for value in allowed)]
     rows = np.flatnonzero(np.isin(dataset.rows[:, 2], ids)).astype(np.int64)
+    if getattr(dataset,"replay",None):
+        rows=np.unique(np.concatenate((rows,np.arange(dataset.expert_length,len(dataset.rows)))))
     if not len(rows):
         raise ValueError("stage age filter produced no samples")
     return rows

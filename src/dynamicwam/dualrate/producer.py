@@ -1052,13 +1052,19 @@ def materialize_native_latents(batch, vae, *, device=None):
     result=dict(batch)
     result['source_condition_latent']=encode(conditions)
     _require(result['source_condition_latent'].shape[2]==2,'native 4-flow-plus-RGB codec must produce two slices')
-    all_future=encode(future)
-    _require(all_future.ndim==5 and all_future.shape[2]==3,'native 1+8 frame codec must produce three slices')
-    result['source_future_latent']=all_future[:,:,1:].contiguous()
+    if 'feedback_noise_seed' in batch:
+        # V11 freezes Full; its source-future VAE tensor has no training use.
+        # This does not skip the separately supervised compact future labels.
+        result['source_future_latent']=torch.zeros_like(result['source_condition_latent'])
+        result['source_video_loss_valid']=torch.zeros_like(result['source_future_latent'],dtype=torch.bool)
+    else:
+        all_future=encode(future)
+        _require(all_future.ndim==5 and all_future.shape[2]==3,'native 1+8 frame codec must produce three slices')
+        result['source_future_latent']=all_future[:,:,1:].contiguous()
     if 'teacher_condition_frames' in batch:
         result['teacher_condition_latent']=encode(batch['teacher_condition_frames'])
     previous={k[9:]:v for k,v in batch.items() if k.startswith('previous_')}
-    if 'source_condition_frames' in previous:
+    if 'source_condition_frames' in previous and ('pair_valid' not in batch or bool(batch['pair_valid'].any())):
         result.update({'previous_'+k:v for k,v in materialize_native_latents(previous,vae,device=device).items()})
     if 'native_video_valid' in batch:
         result['source_video_loss_valid']=batch['native_video_valid'][:,None,None,None,None].expand_as(result['source_future_latent'])

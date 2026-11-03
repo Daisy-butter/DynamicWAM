@@ -93,6 +93,9 @@ def predict(self,batch,world,*,expert_actions=None):
         cond['observation_tokens']=torch.cat((cond['observation_tokens'],token[:,None]),1)
         cond['observation_valid']=torch.cat((cond['observation_valid'],available[:,None]),1)
     trace('conditions_enqueued')
+    if hasattr(self,'continuity_v11'):
+        from .continuity_v11 import augment_context
+        cond=augment_context(self,batch,cond)
     cond.setdefault('future_valid',(self.future_field_support.any(-1)|self.contact_field_support.any(-1))[None].expand(len(base),-1))
     cond['action_draft']=base;cond['draft_valid']=valid
     known=batch['fast_known_mask'];a=torch.where(known[...,None],batch['fast_known_actions'],base)
@@ -110,9 +113,16 @@ def predict(self,batch,world,*,expert_actions=None):
         raw=dict(action_velocity=core['actions'],future_velocity=core['future'],contact_logits=core['contact_logits'])
     else:
         raw=self.fast(a,z,a.new_zeros(a.shape[0]),action_known_mask=known,known_actions=a,**cond)
-    correction=raw['action_velocity'].tanh()*self.radius_raw_v10/self.action_scale_v10
+    clean=raw['action_velocity'].tanh()
+    if hasattr(self,'continuity_v11'):
+        from .continuity_v11 import shape_correction
+        clean=shape_correction(clean,valid & ~known)
+    correction=clean*self.radius_raw_v10/self.action_scale_v10
+    if hasattr(self,'continuity_v11'):
+        from .continuity_v11 import bounded_residual
+        correction=bounded_residual(self,batch,base,clean)
     trace('core_enqueued')
-    raw['normalized_correction']=raw['action_velocity'].tanh()
+    raw['normalized_correction']=clean
     proposed=base+torch.where(valid[...,None],correction,0.)
     final,accepted=project(self,proposed,batch,center=base)
     trace('projection_done')
@@ -280,7 +290,7 @@ def loss(self,batch,generator=None,action_conditioned=None):
 
 def configure(model,settings,mean,scale):
     required={'action_dt','bounds','limits','arm_radius','gripper_radius','execute_weight','preserve_tolerance','future_anchor','deterministic','teacher_weight','queue_perturb_probability','queue_perturb_radius'}
-    if set(settings)-{'executor','tracking_token','reaction_weight'}!=required or settings['future_anchor']!='first_mutable_start' or settings['deterministic'] is not True:
+    if set(settings)-{'executor','tracking_token','reaction_weight','continuity'}!=required or settings['future_anchor']!='first_mutable_start' or settings['deterministic'] is not True:
         raise ValueError('explicit V10 residual/executor/clock contract required')
     if settings.get('executor') not in (None,'phase_c2'):
         raise ValueError('unsupported residual executor')

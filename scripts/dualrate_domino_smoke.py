@@ -154,7 +154,14 @@ def run(stack):
         inference_device_map=placement,gpu_count=len(uuids),protocol=PROTOCOL,time_contract=manifest['time_contract']))
     for task in dep['tasks']:
         task_metrics=[]
-        next_seed=int(dep['seed'])
+        train_pool=config.get('training_scene_pool')
+        if train_pool:
+            if not config.get('collect_continuity_feedback') or dep.get('episodes',1)!=1:
+                raise ValueError('training collection requires one declared train scene per task')
+            pool=json.loads(Path(train_pool['path']).read_text())
+            if file_sha256(train_pool['path'])!=train_pool['sha256']:raise ValueError('train pool changed')
+            next_seed=int(pool['tasks'][task][0]['seed'])
+        else:next_seed=int(dep['seed'])
         for episode in range(int(dep.get('episodes',1))):
             env=camera=session=None;video=BufferedHeadVideo();report=None
             episode_dir=output/task/f'episode_{episode:04d}';episode_dir.mkdir(parents=True,exist_ok=False)
@@ -167,6 +174,10 @@ def run(stack):
                     env,prepared=prepare_level1_env(domino,task_name=task,task_config=dep['task_config'],
                         start_seed=requested_seed,instruction_type=dep.get('instruction_type','seen'))
                 stage('scene_ready',task=task,episode=episode,accepted_seed=int(prepared['seed']))
+                if train_pool:
+                    candidates=pool['tasks'][task]
+                    if not any(int(e['seed'])==int(prepared['seed']) for e in candidates):
+                        raise ValueError('accepted collection seed outside declared TRAIN pool')
                 next_seed=int(prepared['seed'])+1
                 info=getattr(env,'_rt_episode_info',None)
                 if not info or 'info' not in info:raise ValueError('actual episode language bindings missing')
@@ -203,6 +214,12 @@ def run(stack):
                 builder=OnlineBatchBuilder(manifest,action_mean=manifest['action_statistics']['mean'],
                     action_scale=manifest['action_statistics']['std'],language=language,
                     device=fast_device,slow_device=device)
+                if config.get('collect_continuity_feedback'):
+                    from dynamicwam.dualrate.feedback_replay import FeedbackRecorder
+                    if not train_pool:raise ValueError('feedback collection cannot use evaluation scenes')
+                    builder.collect_feedback=True
+                    builder.feedback_recorder=FeedbackRecorder(episode_dir/'feedback',dict(task=task,
+                        seed=int(prepared['seed']),split='train',training_pool=train_pool,checkpoint=config['deployment_checkpoint_sha256']))
                 if len(builder.entity_roles)!=system.fast.config.future_entities:
                     raise ValueError('online entity roles differ from trained fast head')
                 session=DominoLevel1Session(env,flow=None,observation_config={},
@@ -240,6 +257,8 @@ def run(stack):
                     fast_graph_acceptance=graph_status)
                 raise
             finally:
+                if 'builder' in locals() and getattr(builder,'feedback_recorder',None) is not None:
+                    builder.feedback_recorder.close()
                 if camera is not None:camera.close()
                 if report is not None:
                     if session is not None and video.frames:

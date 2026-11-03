@@ -101,6 +101,9 @@ class DualRateSystem(nn.Module):
         native = self.slow.native.config
         video_noise = self._noise((b, *self.future_latent_shape), source.condition_latent, generator)
         action_noise = self._noise((b, native.chunk_size, native.action_dim), source.initial_state, generator)
+        if hasattr(self,'continuity_v11'):
+            from .continuity_noise import prediction_noise
+            video_noise,action_noise=prediction_noise(self,batch,batch['source_action_intervals'])
         return self.slow.sample_reference(source, video_noise, action_noise,
             batch["source_known_actions"], batch["source_known_mask"],
             batch["source_action_times"], batch["source_future_intervals"],

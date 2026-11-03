@@ -404,6 +404,9 @@ def open_training_dataset(manifest_path: str | Path, **kwargs) -> Dataset:
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     if manifest.get("schema_version") == "dualrate-domino-lazy-v2":
         from .producer import DominoPhysicalDataset
+        if manifest.get('residual_v10',{}).get('continuity'):
+            from .continuity_data import ContinuityDataset
+            return ContinuityDataset(manifest_path,**kwargs)
         if manifest.get('native_v6'):
             from .native_v6_data import EventDataset
             return EventDataset(manifest_path,**kwargs)

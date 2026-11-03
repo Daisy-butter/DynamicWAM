@@ -122,6 +122,14 @@ class DualRateRuntime:
         # CPU store owns defensive copies. This separate ready device payload
         # avoids owner-thread GPU copies; each fast worker clones it on its stream.
         self._published_device_world = None
+        self._previous_feedback_plan = None
+        self.feedback_seed=int(seed)+1
+        self.feedback_recorder=None
+        self._feedback_sources={}
+        self._reference_lease = None
+        if hasattr(system,'continuity_v11'):
+            from .reference_lease import ReferenceLease
+            self._reference_lease=ReferenceLease(system.continuity_v11['reference_hold_steps'],config.action_dt)
         self._mailbox = FastMailbox(self.wall_clock,clock_bridge) if config.submission_contract=='worker_receipt_v8' else None
 
     def fast_graph_receipt(self):
@@ -231,6 +239,15 @@ class DualRateRuntime:
                 # true completion is assigned by the owner after physical catch-up.
                 local["completed_time"]=local["source_time"].new_full((1,),request)
                 local["query_time"]=local["source_time"].new_full((1,),request)
+                if self._reference_lease is not None:
+                    local['feedback_noise_seed']=torch.tensor([self.feedback_seed],device=self.slow_device,dtype=torch.long)
+                    local['action_grid_origin']=local['source_time'].new_tensor([self.queue.origin])
+                if self.feedback_recorder is not None:
+                    from .feedback_replay import cpu_batch
+                    self._feedback_sources[version]=(cpu_batch(local),self.slow_rng.get_state().cpu().clone())
+                    # Retain active + newest sources; no unbounded per-episode GPU/host cache.
+                    active=self._reference_lease.active.version if self._reference_lease.active else -1
+                    self._feedback_sources={k:v for k,v in self._feedback_sources.items() if k in (active,version,version-1)}
                 model_started_wall=self.wall_clock()
                 reference=self.system.predict_reference(local,generator=self.slow_rng)
                 world=self.system.world_readout(reference)
@@ -262,6 +279,11 @@ class DualRateRuntime:
         protection,budget=self._fast_query_protection(query,requested_wall)
         reference=self.store.snapshot(query)
         device_reference = self._published_device_world
+        if self._reference_lease is not None:
+            first=self.queue.origin+(math.floor((query-self.queue.origin)/self.queue.dt+1e-9)+protection)*self.queue.dt
+            reference,device_reference,selection=self._reference_lease.select(reference,device_reference,now=query,first=first)
+            self.record(selection)
+        previous_feedback=self._previous_feedback_plan
         if reference is not None and (device_reference is None or device_reference[0] != reference.version):
             raise TimingError('published CPU/device reference version differs')
         lease=self.queue.begin_query(query_time=query,observation_time=observation_time,
@@ -291,6 +313,12 @@ class DualRateRuntime:
                 if float(batch["query_time"].item()) != query:
                     raise TimingError("batch query differs from queue lease")
                 self._prefix(batch,lease.prefix,"fast")
+                if self._reference_lease is not None and previous_feedback is not None:
+                    from .continuity_v11 import align
+                    previous,intervals,valid,previous_version=previous_feedback
+                    batch['previous_actions'],batch['previous_valid']=align(previous.to(self.device),
+                        intervals.to(self.device),batch['action_intervals'],valid.to(self.device))
+                    batch['previous_reference_same']=torch.tensor([previous_version==lease.reference_version],device=self.device)
                 if getattr(self.system,'residual_v10',None):
                     from .residual_v10 import anchor_future
                     batch['future_times']=anchor_future(batch,self.system.fast.config.future_entities)
@@ -350,6 +378,9 @@ class DualRateRuntime:
                         earliest_physical_time=receipt.earliest_physical_time,
                         protected_until=lease.protected_until,prefix_hash=lease.prefix_hash,
                         submission_contract=self.config.submission_contract))
+                if self.feedback_recorder is not None:
+                    self.feedback_recorder.capture(lease.query_id,self._feedback_sources[lease.reference_version],batch,
+                        output,reference)
                 return result
         try:
             self.fast_job=(self.pool.submit(work),lease)
@@ -466,6 +497,12 @@ class DualRateRuntime:
                     if not self.clock_bridge.ready(release_wall,float(self.clock())):
                         return None
                 discarded=self.queue.replace(plan,now=float(self.clock()))
+                if self._reference_lease is not None:
+                    p=torch.tensor(plan.actions,dtype=torch.float32)[None]
+                    starts=torch.arange(p.shape[1],dtype=torch.float64)*plan.dt+plan.start_time
+                    intervals=torch.stack((starts,starts+plan.dt),-1)[None]
+                    valid=output['draft_valid'].detach().cpu().clone()
+                    self._previous_feedback_plan=((p-self.mean)/self.scale,intervals,valid,lease.reference_version)
                 submitted=True
                 if self.clock_bridge is not None and receipt is None:
                     self.clock_bridge.check_deadline(lease.protected_until,lease.submit_margin,ready_wall=ready_wall)

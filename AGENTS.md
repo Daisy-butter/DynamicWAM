@@ -1,3 +1,29 @@
+# Current V11 work 2026-11-03
+
+User authorizes .50 continuous RTC implementation, three review iterations, smoke,
+then eight-rank Full-initialized training and final-checkpoint evaluation. Worktree
+`dualrate-continuity-20261103`; preserve old results and .92/.100 jobs. Read
+`docs/continuity_v11.md`. Reuse existing route branch through commits. Source/config
+freeze during GPU jobs. No GPU recovery; no automatic retries. CPU tests cannot waive
+GPU gates. Big artifacts stay on user SSD. Update local outputs/experiment_ledger.md.
+
+# Current V11 work 2026-11-03
+
+User authorizes .50 continuous RTC implementation, three review iterations, smoke,
+then eight-rank Full-initialized training and final-checkpoint evaluation. New isolated
+worktree dualrate-continuity-20261103; preserve old results and .92/.100 jobs. Read
+`docs/continuity_v11.md`. Reuse the existing route branch through commits. Numerical
+source/config freezes during GPU work. No GPU recovery. Training gates cannot be
+waived by CPU tests. Big artifacts stay in /SSD_DISK/users/wuruihan. Update the local
+outputs/experiment_ledger.md with actual terminal receipts.
+
+# Current scope: V8 final continuous evaluation, 2026-10-31
+Only this isolated evaluation worktree may change. Protect active V8 training, .92 and .100.
+Read docs/continuous_v8_final_eval.md. Preserve src byte identity and the continuous RTC contract.
+Prepare only; user starts the detached launcher. Final checkpoint, clean training exit,
+full 2x2 smoke, Graph/concurrency/new-M/video/clock/cleanup gates precede 35x20.
+No automatic retry, GPU recovery or mixed old scores. All outputs on SSD.
+
 # Current authorization: .50 Continuous RTC V8, 2026-10-31
 Only the isolated .50 dualrate-v8-rtc-20261031 worktree is writable. Previous V8 is preserved.
 Protect .92 training, .100, all older .50 worktrees/results and running jobs.

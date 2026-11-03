@@ -362,7 +362,8 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
             # Reference publication and physical advancement are owner-only, so
             # start_fast below sees this same reference at this same query time.
             # Old actions before its support cannot affect action-deviation M.
-            trace=queue.completed_execution_trace(reference_trace_since(ref,initial,now),now)
+            trace_ref=(runtime._reference_lease.active if getattr(runtime,"_reference_lease",None) is not None else ref)
+            trace=queue.completed_execution_trace(reference_trace_since(trace_ref,initial,now),now)
             try:
                 runtime.start_fast(lambda lease,reference,snapshot=snapshot,trace=trace:
                     builder.current(snapshot,query_time=lease.query_time,action_start=lease.prefix.start_time,
@@ -378,7 +379,9 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                     observation_age=age,observation_wall_age=wall_age,max_observation_age=builder.max_observation_age,
                     reason='insufficient_prefix_budget'))
                 continue
-            if ref:seen_references.add(ref.version)
+            if getattr(runtime,'_reference_lease',None) is not None:
+                seen_references.add(runtime.fast_job[1].reference_version)
+            elif ref:seen_references.add(ref.version)
             history_receipt(route)
         else:
             if getattr(builder,'hardtime',False):
@@ -468,6 +471,9 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
         now=clock()
         return now,bridge.check_backlog(now,max_backlog)
     bootstrap_started=time.perf_counter()
+    if hasattr(system,'continuity_v11'):
+        from .tracking_audit import TrackingAudit
+        session.env._dualrate_actual_sensor=TrackingAudit(session.env.robot)
     captured=warm_camera(camera,session,count=camera_warmup_captures,emit=emit)
     history.append(captured.observation,exposure=captured.physics_time_s,available=initial)
     exposure_walls[captured.physics_time_s]=captured.capture_wall_perf_s
@@ -495,6 +501,7 @@ def run_episode(session, system, builder, camera, runtime_config, *, action_limi
     runtime=DualRateRuntime(system,queue,clock,runtime_config,action_mean=builder.mean,
         action_scale=builder.scale,seed=seed,record=emit,clock_bridge=bridge,
         action_projection=projection)
+    runtime.feedback_recorder=getattr(builder,'feedback_recorder',None)
     emit(dict(event='actuator_contract',bounds=runtime.action_projection.serialized_bounds,
               provenance=runtime.action_projection.provenance,projection='uncommitted_fast_suffix_only',
               arm_smoothing=arm_smoothing))
