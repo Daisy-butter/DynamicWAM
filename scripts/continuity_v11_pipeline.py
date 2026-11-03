@@ -54,7 +54,9 @@ def main():
    if prior[key]!=source[key]:raise ValueError('supervision changed: '+key)
   changed=subprocess.check_output(['git','diff','--name-only',prior['commit'],source['commit']],cwd=REPO,text=True).splitlines()
   allowed={'src/dynamicwam/dualrate/continuity_data.py','src/dynamicwam/dualrate/continuity_v11.py',
-           'scripts/continuity_v11_pipeline.py','scripts/audit_continuity_data.py','scripts/dualrate_domino_smoke.py'}
+           'scripts/continuity_v11_pipeline.py','scripts/audit_continuity_data.py','scripts/dualrate_domino_smoke.py',
+           'src/dynamicwam/dualrate/producer.py','scripts/prepare_dualrate_exposure_data.py',
+           'scripts/audit_continuity_expert_data.py'}
   if any(x not in allowed and not x.startswith(('docs/','tests/')) for x in changed):raise ValueError('runtime equivalence not proven')
   file='src/dynamicwam/dualrate/continuity_v11.py'
   old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
@@ -62,6 +64,16 @@ def main():
    tree=ast.parse(text);tree.body=[x for x in tree.body if not isinstance(x,ast.FunctionDef) or x.name!='loss']
    return ast.dump(tree,include_attributes=False)
   assert deployment_ast(old)==deployment_ast((REPO/file).read_text())
+  file='src/dynamicwam/dualrate/producer.py'
+  old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
+  def producer_runtime_ast(text):
+   tree=ast.parse(text)
+   tree.body=[x for x in tree.body if not isinstance(x,ast.FunctionDef) or x.name!='materialize_native_latents']
+   for x in tree.body:
+    if isinstance(x,ast.ClassDef) and x.name=='DominoPhysicalDataset':
+     x.body=[f for f in x.body if not isinstance(f,ast.FunctionDef) or f.name!='__getitem__']
+   return ast.dump(tree,include_attributes=False)
+  assert producer_runtime_ast(old)==producer_runtime_ast((REPO/file).read_text())
   proof=out/('runtime_equivalence_'+prior['commit'][:8]+'.json')
   save(proof,dict(passed=True,original=prior,current=source,changed_paths=changed,unchanged_deployment_ast=True,
                  scope='training pair selection/loss and collection/controller only; scored runtime and model sampling unchanged'))
@@ -84,6 +96,15 @@ def main():
    ps=read(ev(prefix/'status.json'));assert ps['state']=='failed'
    runtime_equivalent(ps['source'])
   records=[];configs=[];retained=[];retained_tasks=set();state('collecting_train_feedback')
+  if a.reuse_prefix and (prefix/'retained_train_collection.json').exists():
+   prior_retained=read(ev(prefix/'retained_train_collection.json'))
+   from video_artifacts import validate_video_artifacts
+   for path in prior_retained['reports']:
+    path=ev(path);cfg_path=path.parents[3]/'collection_0.config.json';cfg=read(ev(cfg_path))
+    r=read(path);validate_continuous_report(r,cfg);assert validate_video_artifacts(r)
+    retained.append(str(path));retained_tasks.add(r['task'])
+   for directory in sorted({str(Path(x).parents[3]) for x in retained}):
+    configs.append(read(Path(directory)/'collection_0.config.json'))
   if a.retain_collection:
    if a.reuse_prefix:raise ValueError('choose one preserved-prefix mode')
    prior_root=Path(a.retain_collection).resolve(strict=True)
@@ -113,7 +134,7 @@ def main():
   # declare each other idle. Scored eval retains its unified eight-GPU guard.
   if a.reuse_prefix:
    c=read(ev(prefix/'collection_0.config.json'))
-   assert c['deployment']['tasks']==all_tasks and c['residual_v10']==base['residual_v10'] and c['runtime']==base['runtime']
+   assert set(c['deployment']['tasks'])==set(all_tasks)-retained_tasks and c['residual_v10']==base['residual_v10'] and c['runtime']==base['runtime']
    configs.append(c);records.append((None,'collection_0',c))
   else:
    c=read(root/'collection.template.json');c['deployment']['tasks']=[t for t in all_tasks if t not in retained_tasks]
@@ -144,27 +165,17 @@ def main():
   tracking_binding=dict(path=str(review),sha256=sha(review));ev(review)
   state('preparing_current_measured_data')
   measured=out/'measured';dataset=out/'dataset'
-  command=[sys.executable,str(REPO/'scripts/prepare_dualrate_exposure_data.py'),'--source',str(R/'outputs/datasets/residual_v10_20261102/half13'),'--output',str(measured),'--partial-fast-tail','--train-fraction','.5','--templates-per-source','4']
+  command=[sys.executable,str(REPO/'scripts/prepare_dualrate_exposure_data.py'),'--source',str(R/'outputs/datasets/residual_v10_20261102/half13'),'--output',str(measured),'--partial-fast-tail','--partial-source-tail','--train-fraction','.5','--templates-per-source','4']
   # Include uninstrumented simultaneous two-environment deployment timings too.
   for task in ic['tasks']:traces.append(str(root/a.initial/task/'episode_0000/report.json'))
   for t in traces:command+=['--trace',t]
-  if a.reuse_prefix:
-   dataset.mkdir()
-   for split in ('train','validation'):
-    original=ev(prefix/'dataset'/(split+'.json'));m=read(original)
-    # Existing manifests bind absolute immutable arrays/templates. Copy metadata,
-    # never mutate the preserved failed attempt's prepared data.
-    assert Path(m['rows_file']).is_absolute()
-    for key in ('continuous_acceptance_file','continuous_acceptance_sha256'):m.pop(key,None)
-    save(dataset/(split+'.json'),m)
-  else:
-   run(command,'measured_data',cpu)
-   run([sys.executable,str(REPO/'scripts/prepare_residual_v10_data.py'),'--source',str(measured),'--output',str(dataset),'--config',str(root/(a.initial+'.config.json'))],'bind_data',cpu)
+  run(command,'measured_data',cpu)
+  run([sys.executable,str(REPO/'scripts/prepare_residual_v10_data.py'),'--source',str(measured),'--output',str(dataset),'--config',str(root/(a.initial+'.config.json'))],'bind_data',cpu)
   from dynamicwam.dualrate.feedback_replay import build_replay_index
   binding=build_replay_index([c['output'] for c in configs],out/'feedback_index.json',all_tasks)
   train=read(dataset/'train.json');train['continuity_replay']=binding;save(dataset/'train.json',train);ev(out/'feedback_index.json')
   # Actual expert physical/flow and real achieved-state replay audits.
-  run([sys.executable,str(root/'audit_expert_data.py'),str(dataset),str(out/'expert_data_audit.json')],'expert_data_audit',cpu)
+  run([sys.executable,str(REPO/'scripts/audit_continuity_expert_data.py'),str(dataset),str(out/'expert_data_audit.json')],'expert_data_audit',cpu)
   run([sys.executable,str(REPO/'scripts/audit_continuity_data.py'),'--manifest',str(dataset/'train.json'),'--output',str(out/'feedback_data_audit.json')],'feedback_data_audit',cpu)
   audit=read(ev(out/'expert_data_audit.json'));assert audit['passed'] and len(audit['history_parity'])==35
   audit=read(ev(out/'feedback_data_audit.json'));assert audit['passed'] and audit['tasks']==35 and audit['paired_rows']>0

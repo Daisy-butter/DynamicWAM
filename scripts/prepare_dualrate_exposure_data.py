@@ -151,21 +151,26 @@ def measured_templates(paths,dt):
         provenance='coupled actual reference/camera/query/prefix events; offline expert actions are not on-policy'))
 
 
-def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source,*,partial_fast_tail=False):
+def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source,*,partial_fast_tail=False,partial_source_tail=False,validated_templates=None):
     """Keep source REAL exposures; all other conditions use the same translated axis."""
     times=np.asarray(times,dtype=np.float64)
+    parsed=validated_templates if validated_templates is not None else [validate_template(t,dt) for t in templates]
+    minimum_end=min(max(t['source_prefix_end'],t['fast_action_start']+
+                    (t['fast_prefix_rows']+2 if partial_fast_tail else 16)*dt) for t in parsed)
     next_source=-float('inf')
     valid=unique_last_indices(times)
     for frame in valid:
         e=float(times[frame])
         if e<next_source-NUMERIC_TIME_EPSILON:continue
         next_source=e+stride
-        if e+16*dt>times[-1]+NUMERIC_TIME_EPSILON:continue
-        try:
-            for target in e+np.arange(1,9)*2*dt:
-                select_frame(times,target,past_only=False,tolerance=RGB_TOLERANCE)
-        except ValueError:continue
-        if not _action_targets_supported(times,e+np.arange(1,17)*dt).all():continue
+        if e+minimum_end>times[-1]+NUMERIC_TIME_EPSILON:continue
+        if not partial_source_tail:
+            if e+16*dt>times[-1]+NUMERIC_TIME_EPSILON:continue
+            try:
+                for target in e+np.arange(1,9)*2*dt:
+                    select_frame(times,target,past_only=False,tolerance=RGB_TOLERANCE)
+            except ValueError:continue
+            if not _action_targets_supported(times,e+np.arange(1,17)*dt).all():continue
         # Rotation balances templates without multiplying the entire dataset by
         # every query in a long trace. Eligibility scans the remaining templates.
         key=f'{episode_uid}:{int(frame)}'.encode()
@@ -173,7 +178,8 @@ def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source,*,p
         added=0
         for shift in range(len(templates)):
             template_id=(first+shift)%len(templates)
-            row=validate_template(templates[template_id],dt)
+            row=parsed[template_id]
+            if not _action_targets_supported(times,e+np.arange(1,row['source_prefix_rows']+1)*dt).all():continue
             q=e+row['query_time'];start=e+row['fast_action_start']
             needed=row['fast_prefix_rows']+2 if partial_fast_tail else 16
             if start+needed*dt>times[-1]+NUMERIC_TIME_EPSILON:continue
@@ -188,12 +194,14 @@ def eligible_rows(times,templates,dt,stride,episode_uid,templates_per_source,*,p
             if added>=templates_per_source:break
 
 
-def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None,partial_fast_tail=False,train_fraction=1.):
+def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None,partial_fast_tail=False,partial_source_tail=False,train_fraction=1.):
     import h5py
     source=Path(source).resolve(strict=True);output=Path(output).resolve()
     if output.exists():raise FileExistsError('new dataset directory required')
     validate_templates(events);dt=float(events['action_interval_seconds'])
+    parsed=[validate_template(t,dt) for t in events['templates']]
     if stride<=0 or templates_per_source<1:raise ValueError('positive index sampling settings required')
+    if partial_source_tail and not partial_fast_tail:raise ValueError('frozen-source tail requires explicit partial fast support')
     parents={s:json.loads((source/f'{s}.json').read_text()) for s in ('train','validation')}
     m=parents['train'];episodes=json.loads(bound_metadata_path(m,source,'episodes_file').read_text())
     for parent in parents.values():
@@ -220,7 +228,7 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
         verify_file_stat(ep['raw_path'],stats[ep['episode_uid']]['raw'])
         with h5py.File(ep['raw_path'],'r') as h:times=h['interception/sim_time_seconds'][:]
         rows[ep['split']].extend((episode_id,frame,t) for frame,t in eligible_rows(times,events['templates'],dt,stride,
-            ep['episode_uid'],templates_per_source,partial_fast_tail=partial_fast_tail))
+            ep['episode_uid'],templates_per_source,partial_fast_tail=partial_fast_tail,partial_source_tail=partial_source_tail,validated_templates=parsed))
         if (episode_id+1)%1000==0:
             print(json.dumps(dict(episodes=episode_id+1,rows={s:len(v) for s,v in rows.items()})),flush=True)
     if not all(rows.values()):raise ValueError('timing index must retain both original data splits')
@@ -247,7 +255,7 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
     audit['sampling_semantics']='uniform eligible indexed rows; event templates extended to expert trajectories; not exact measured-frequency equivalence'
     audit.update(train_fraction=train_fraction,selected_train_episodes=len(chosen),validation_episodes_unchanged=True,
                  training_statistics='original training split only; includes unselected training episodes',
-                 partial_fast_tail=partial_fast_tail)
+                 partial_fast_tail=partial_fast_tail,partial_source_tail=partial_source_tail)
     audit_path=output/'timing_audit.json';audit_path.write_text(json.dumps(audit,indent=2))
     result={}
     for split,parent in parents.items():
@@ -269,6 +277,7 @@ def build(source,output,events,*,stride,templates_per_source=2,max_episodes=None
             reference_availability_semantics='measured runtime availability; expired source remains slow-label-only',
             timing_quality='deterministic event/queue alignment; bounded demonstration resampling error')
         if partial_fast_tail:new['continuous_tail_policy']='valid_prefix_and_two_free_rows'
+        if partial_source_tail:new['continuous_source_tail_policy']='known_only_frozen_slow_v11'
         path=output/f'{split}.json';path.write_text(json.dumps(new,indent=2));result[split]=str(path)
     return dict(manifests=result,audit=audit)
 
@@ -281,6 +290,7 @@ def main():
     p.add_argument('--templates-per-source',type=int,default=2)
     p.add_argument('--max-episodes',type=int)
     p.add_argument('--partial-fast-tail',action='store_true')
+    p.add_argument('--partial-source-tail',action='store_true')
     p.add_argument('--train-fraction',type=float,default=1.)
     args=p.parse_args()
     if bool(args.trace)==bool(args.synthetic_engineering):p.error('choose measured traces OR explicit engineering fixture')
@@ -288,7 +298,7 @@ def main():
     events=synthetic_templates(dt) if args.synthetic_engineering else measured_templates(args.trace,dt)
     print(json.dumps(build(args.source,args.output,events,stride=2*dt,
         templates_per_source=args.templates_per_source,max_episodes=args.max_episodes,
-        partial_fast_tail=args.partial_fast_tail,train_fraction=args.train_fraction)))
+        partial_fast_tail=args.partial_fast_tail,partial_source_tail=args.partial_source_tail,train_fraction=args.train_fraction)))
 
 
 if __name__=='__main__':main()

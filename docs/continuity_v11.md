@@ -53,6 +53,14 @@ Execution history is retained for the active reference, not only the newest cand
 No extra EMA, post-hoc prefix edit, time stretching, or old-plan fallback bypass is added.
 
 ## Acceptance and training
+The last data review removed an unnecessary complete-source-future requirement:
+with Full frozen, source future actions/video are not supervised. Terminal windows
+now require the real source commitment and the real fast commitment plus two editable
+rows, rather than sixteen future source actions and eight future frames. Missing
+future RGB is explicitly masked; no placeholder is treated as a ground-truth label.
+The separately supervised compact future retains its original validity masks.
+Measured query/reference events are reused without changing their timestamps.
+
 Three commits/reviews, deterministic CPU tests, real Full source parity, new/old reference
 consumption, true parallel fast/slow queries, Graph parity, physical/wall deadlines,
 source/prefix identity, native MP4 full decode, actual tracking and clean owned exit.

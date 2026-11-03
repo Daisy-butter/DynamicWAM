@@ -56,3 +56,37 @@ def test_only_native_missing_grasp_pose_is_a_scene_rejection():
     assert calls==[2,4] and r['seed']==4
     def unrelated(seed):raise AssertionError('target_pose cannot be None for move action.')
     with pytest.raises(AssertionError):prepare_train_scene(unrelated,[{'seed':2}])
+
+
+def test_frozen_source_tail_keeps_real_prefix_without_full_future_labels():
+    import numpy as np
+    from prepare_dualrate_exposure_data import eligible_rows
+    from dynamicwam.dualrate.exposure_timing import synthetic_templates,validate_template
+    dt=45*float(np.float32(.004));times=np.arange(101)*dt/3
+    templates=synthetic_templates(dt)['templates']
+    args=(times,templates,dt,2*dt,'task/episode',4)
+    old=list(eligible_rows(*args,partial_fast_tail=True))
+    new=list(eligible_rows(*args,partial_fast_tail=True,partial_source_tail=True))
+    assert set(old)<=set(new) and max(i for i,_ in new)>max(i for i,_ in old)
+    tail=[(i,t) for i,t in new if times[i]+16*dt>times[-1]+1e-6]
+    assert tail
+    for i,t in tail:
+        e=validate_template(templates[t],dt)
+        assert times[i]+e['source_prefix_end']<=times[-1]+1e-6
+        assert times[i]+e['fast_prefix_end']+2*dt<=times[-1]+1e-6
+
+
+def test_frozen_future_latent_placeholder_has_native_shape_and_no_labels():
+    import torch
+    from dynamicwam.dualrate.producer import materialize_native_latents
+    class Codec:
+        dtype=torch.float32
+        def encode(self,x):
+            assert x.shape[2]==5  # Frozen future video must never be encoded.
+            return torch.zeros(x.shape[0],48,2,x.shape[-2]//16,x.shape[-1]//16)
+    b=dict(source_condition_frames=torch.zeros(1,3,5,384,320),
+           source_future_frames=torch.zeros(1,3,9,192,160),
+           feedback_noise_seed=torch.tensor([1]),native_video_valid=torch.tensor([True]))
+    r=materialize_native_latents(b,Codec())
+    assert r['source_future_latent'].shape==(1,48,2,12,10)
+    assert not r['source_video_loss_valid'].any()

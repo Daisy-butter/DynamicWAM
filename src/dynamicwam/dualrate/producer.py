@@ -830,6 +830,9 @@ class DominoPhysicalDataset(Dataset):
         epi,grid,age_id=map(int,self.rows[index]);ep=self.episodes[epi]
         records,raw_actions,flow,visual_cache=self._episode(epi)
         t=records.timestamps.numpy();dt=self.dt;event=None
+        source_tail=self.manifest.get('continuous_source_tail_policy')=='known_only_frozen_slow_v11'
+        if source_tail:
+            _require(bool(self.manifest.get('residual_v10',{}).get('continuity')),'partial source labels require frozen V11 slow/teacher')
         if self.manifest.get('native_v5'):
             s=ep['first_time']+grid*self.manifest['source_stride_seconds']
             q=s+self.manifest['query_ages_seconds'][age_id];completed=s
@@ -876,7 +879,7 @@ class DominoPhysicalDataset(Dataset):
             fast_action,fv,_=resample_actions(t,raw_actions.numpy(),fast_starts+dt)
         if self.manifest.get('continuous_tail_policy')=='valid_prefix_and_two_free_rows':
             needed=int(fast_known.sum())+2
-            _require(sv.all() and fv[:needed].all(),"continuous index lacks committed or executable targets")
+            _require((sv[source_known.numpy()].all() if source_tail else sv.all()) and fv[:needed].all(),"continuous index lacks committed or executable targets")
         elif not self.manifest.get('native_v5'):
             _require(sv.all() and fv.all(),"index promised complete action support")
         source_action=np.where(sv[:,None],source_action,0.)
@@ -888,7 +891,7 @@ class DominoPhysicalDataset(Dataset):
         for target in future_requests:
             try: video_frames.append(select_frame(t,target,past_only=False,tolerance=RGB_TOLERANCE));video_valid.append(True)
             except ValueError:
-                if not self.manifest.get('native_v5'):raise
+                if not self.manifest.get('native_v5') and not source_tail:raise
                 video_frames.append(source_frame);video_valid.append(False)
         visual_requests=(fast_starts[0]+np.array([1,2,4,8])*dt if self.manifest.get('native_v6') else q+np.array([.1,.2,.4,.8]))
         if self.manifest.get('residual_v10'):
@@ -960,13 +963,15 @@ class DominoPhysicalDataset(Dataset):
                     action_times=torch.from_numpy(fast_starts),action_intervals=torch.from_numpy(np.stack([fast_starts,fast_starts+dt],-1)),
                     query_entity_valid=torch.ones(len(self.active_entity_roles),dtype=torch.bool),
                     executed_actions=source_action.clone(),executed_action_intervals=source_intervals.clone(),
-                    executed_action_valid=source_intervals[:,1]<=q+1e-8,
+                    executed_action_valid=(source_intervals[:,1]<=q+1e-8)&torch.from_numpy(sv),
                     source_action_valid=torch.from_numpy(sv),fast_action_valid=torch.from_numpy(fv),
                     source_rgb_actual_times=torch.tensor(t[source_frame],dtype=torch.float64),
                     future_rgb_actual_times=torch.from_numpy(t[video_frames].copy()),future_rgb_time_errors=torch.from_numpy(t[video_frames]-future_requests),
                     future_visibility_known=torch.zeros(len(self.future_token_indices),dtype=torch.bool),
                     future_visual_actual_times=torch.tensor([t[i] if i>=0 else q for i in visual_frames],dtype=torch.float64).repeat(len(self.active_entity_roles)))
         item['executed_actions'][~item['executed_action_valid']]=0
+        if source_tail:
+            item['source_future_rgb_valid']=torch.tensor(video_valid,dtype=torch.bool)
         if event is not None:
             item.update(reference_available=torch.tensor(event['reference_available'],dtype=torch.bool),
                 source_request_time=torch.tensor(s+event['request_time'],dtype=torch.float64),
@@ -1055,7 +1060,8 @@ def materialize_native_latents(batch, vae, *, device=None):
     if 'feedback_noise_seed' in batch:
         # V11 freezes Full; its source-future VAE tensor has no training use.
         # This does not skip the separately supervised compact future labels.
-        result['source_future_latent']=torch.zeros_like(result['source_condition_latent'])
+        shape=(*result['source_condition_latent'].shape[:3],future.shape[-2]//16,future.shape[-1]//16)
+        result['source_future_latent']=result['source_condition_latent'].new_zeros(shape)
         result['source_video_loss_valid']=torch.zeros_like(result['source_future_latent'],dtype=torch.bool)
     else:
         all_future=encode(future)
@@ -1066,7 +1072,7 @@ def materialize_native_latents(batch, vae, *, device=None):
     previous={k[9:]:v for k,v in batch.items() if k.startswith('previous_')}
     if 'source_condition_frames' in previous and ('pair_valid' not in batch or bool(batch['pair_valid'].any())):
         result.update({'previous_'+k:v for k,v in materialize_native_latents(previous,vae,device=device).items()})
-    if 'native_video_valid' in batch:
+    if 'native_video_valid' in batch and 'feedback_noise_seed' not in batch:
         result['source_video_loss_valid']=batch['native_video_valid'][:,None,None,None,None].expand_as(result['source_future_latent'])
     return result
 
