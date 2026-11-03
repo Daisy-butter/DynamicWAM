@@ -54,6 +54,8 @@ def main():
    if prior[key]!=source[key]:raise ValueError('supervision changed: '+key)
   changed=subprocess.check_output(['git','diff','--name-only',prior['commit'],source['commit']],cwd=REPO,text=True).splitlines()
   allowed={'src/dynamicwam/dualrate/continuity_data.py','src/dynamicwam/dualrate/continuity_v11.py',
+           'src/dynamicwam/dualrate/handoff_v12.py','src/dynamicwam/dualrate/residual_v10.py',
+           'scripts/prepare_residual_v10_data.py','scripts/audit_zero_head_v12.py',
            'scripts/continuity_v12_pipeline.py','scripts/audit_continuity_data.py','scripts/dualrate_domino_smoke.py',
            'src/dynamicwam/dualrate/producer.py','scripts/prepare_dualrate_exposure_data.py',
            'scripts/audit_continuity_expert_data.py','src/dynamicwam/dualrate/deployment.py',
@@ -82,6 +84,13 @@ def main():
    tree=ast.parse(text);tree.body=[x for x in tree.body if not isinstance(x,ast.FunctionDef) or x.name!='build_replay_index']
    return ast.dump(tree,include_attributes=False)
   assert recorder_ast(old)==recorder_ast((REPO/file).read_text())
+  for file,excluded in (('src/dynamicwam/dualrate/handoff_v12.py',{'loss','diagnostics'}),
+                        ('src/dynamicwam/dualrate/residual_v10.py',{'configure'})):
+   old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
+   def sampling_ast(text):
+    tree=ast.parse(text);tree.body=[x for x in tree.body if not isinstance(x,ast.FunctionDef) or x.name not in excluded]
+    return ast.dump(tree,include_attributes=False)
+   assert sampling_ast(old)==sampling_ast((REPO/file).read_text())
   # Retain only completed TRAIN reports: the only changed runtime path formerly
   # raised before creating a lease. Verify all successful-path AST is identical.
   for file in ('src/dynamicwam/dualrate/reference_lease.py','src/dynamicwam/dualrate/deployment.py'):
@@ -110,6 +119,12 @@ def main():
   return launch([sys.executable,str(REPO/'scripts/guarded_dualrate_run.py'),'--config',str(path),'--run-dir',str(out/(name+'_guard')),'--gpus',','.join(gpus),'--max-runtime','86400'],name)
  try:
   state('validating_initial')
+  from prepare_residual_v10_data import verified_trace_equivalence
+  trace_proof=verified_trace_equivalence(base)
+  if trace_proof is not None:ev(base['zero_head_trace_equivalence']['path'])
+  def compatible_trace_config(c):
+   assert c['runtime']==base['runtime']
+   assert c['residual_v10']==base['residual_v10'] or (trace_proof is not None and c['residual_v10']==trace_proof['old_residual'])
   initial=read(ev(root/(a.initial+'.status.json')));assert initial['state']=='initial_gpu_smoke_completed'
   # The added finite controller does not alter source/model/runtime code.
   runtime_equivalent(initial['source'])
@@ -162,7 +177,8 @@ def main():
   # declare each other idle. Scored eval retains its unified eight-GPU guard.
   if a.reuse_prefix:
    c=read(ev(prefix/'collection_0.config.json'))
-   assert set(c['deployment']['tasks'])==set(all_tasks)-retained_tasks and c['residual_v10']==base['residual_v10'] and c['runtime']==base['runtime']
+   assert set(c['deployment']['tasks'])==set(all_tasks)-retained_tasks
+   compatible_trace_config(c)
    configs.append(c);records.append((None,'collection_0',c))
   else:
    c=read(root/'collection.template.json');c['deployment']['tasks']=[t for t in all_tasks if t not in retained_tasks]
@@ -219,7 +235,7 @@ def main():
   cbase.update(source_sha256=source['source_sha256'],manifest=str(dataset/'train.json'),training_recipe=[dict(phase=p,steps=s) for p,s in zip(PHASES,STEPS)],data_distribution='half expert episodes, all indexed windows; paired queries + 25 percent train-only measured Full-anchored feedback replay',log_every=1)
   smokes=[]
   for phase in PHASES:
-   c=copy.deepcopy(cbase);c.update(phase=phase,run_kind='distributed_training_smoke',steps=4,output=str(R/'outputs/training/continuity_v12_smoke01'/phase),sequence_id='continuity_v12_smoke01',query_age_seconds=ages if phase==PHASES[-1] else young,fast_lr=5e-5 if phase==PHASES[-1] else 1e-4)
+   c=copy.deepcopy(cbase);c.update(phase=phase,run_kind='distributed_training_smoke',steps=4,output=str(R/'outputs/training/continuity_v12_smoke02'/phase),sequence_id='continuity_v12_smoke02',query_age_seconds=ages if phase==PHASES[-1] else young,fast_lr=5e-5 if phase==PHASES[-1] else 1e-4)
    smokes.append(c)
   def sequence(configs,name,mode):
    rows=[]

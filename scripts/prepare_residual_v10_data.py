@@ -17,13 +17,35 @@ from dynamicwam.dualrate.exposure_timing import load_templates,validate_template
 from dynamicwam.dualrate.data import sha256_file
 from dynamicwam.dualrate.c2_executor import displacement_interval,ARMS
 
+def verified_trace_equivalence(cfg):
+    binding=cfg.get('zero_head_trace_equivalence')
+    if binding is None:return None
+    path=Path(binding['path']).resolve(strict=True)
+    if sha256_file(path)!=binding['sha256']:raise ValueError('trace equivalence receipt changed')
+    proof=json.loads(path.read_text())
+    if (not proof['passed'] or proof['new_residual']!=cfg['residual_v10'] or
+        proof['runtime']!=cfg['runtime'] or len(proof['reports'])!=35 or
+        proof['max_command_difference_rad']>=2e-6):
+        raise ValueError('invalid zero-head trace equivalence')
+    return proof
+
+def validate_trace(report,path,cfg,proof):
+    if report.get('runtime_contract')!=cfg['runtime']:
+        raise ValueError('timing trace runtime changed')
+    if report.get('residual_v10')==cfg['residual_v10']:return
+    if (proof is None or report.get('residual_v10')!=proof['old_residual'] or
+        proof['reports'].get(str(path))!=sha256_file(path)):
+        raise ValueError('timing traces require exact settings or measured zero-head command parity')
+
 
 def prepare(source,output,config):
     source=Path(source).resolve(strict=True);output=Path(output).resolve()
     config=Path(config).resolve(strict=True)
     output.mkdir(parents=True,exist_ok=False)
     cfg=json.loads(config.read_text());s=cfg['residual_v10'];dt=s['action_dt']
+    proof=verified_trace_equivalence(cfg)
     audit=dict(kind='offline_expert_not_on_policy',config_sha256=sha256_file(config),splits={},formal_training_ready=False)
+    if proof is not None:audit['zero_head_trace_equivalence']=cfg['zero_head_trace_equivalence']
     manifests={}
     for split in ('train','validation'):
         path=source/(split+'.json');m=json.loads(path.read_text())
@@ -33,8 +55,7 @@ def prepare(source,output,config):
             trace_path=Path(evidence['path']).resolve(strict=True)
             if sha256_file(trace_path)!=evidence['sha256']:raise ValueError('timing report changed')
             report=json.loads(trace_path.read_text())
-            if report.get('runtime_contract')!=cfg['runtime'] or report.get('residual_v10')!=s:
-                raise ValueError('timing traces do not use the exact V10 model/executor/runtime')
+            validate_trace(report,trace_path,cfg,proof)
         ep=json.loads(bound_metadata_path(m,source,'episodes_file').read_text())
         row_source=(source/m['rows_file']).resolve(strict=True)
         if sha256_file(row_source)!=m['rows_sha256']:raise ValueError('input rows changed')
@@ -77,6 +98,7 @@ def prepare(source,output,config):
             continuous_gripper_sampling='interval_start_previous_event',continuous_flow_sampling='raw_frames_v1',
             future_anchor='first_mutable_start',measured_runtime=cfg['runtime'],formal_training_ready=False,
             parent_manifest=str(path),parent_manifest_sha256=sha256_file(path))
+        if proof is not None:new['zero_head_trace_equivalence']=cfg['zero_head_trace_equivalence']
         audit['splits'][split]=dict(input_rows=len(rows),retained_rows=len(keep),tested_prefixes=tested,rejections=dict(reasons))
         manifests[split]=new
     receipt=output/'prefix_filter.json';receipt.write_text(json.dumps(audit,indent=2))

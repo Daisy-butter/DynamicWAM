@@ -25,7 +25,7 @@ feedback design but provide no score floor for this continuous protocol.
 `handoff_v12.reconcile` aligns the last accepted full proposal to the new query's
 FP64 physical intervals. A common scalar alpha across all arm joints and all
 valid mutable future rows limits changes to that full plan. Normal innovation is
-0.02 rad per 0.18-s query interval; a new-reference/ongoing handoff permits 0.06,
+0.06 rad per 0.18-s query interval for both same-reference and cross-reference changes,
 scaled by actual query spacing in [0.5,2] nominal intervals. Thus a far-tail
 discontinuity is not merely deferred until it becomes executable. Missing tail
 uses the new Full increments plus the final shared offset; this is explicitly
@@ -46,7 +46,7 @@ No truth labels enter deployment. No learned clock synchronization is introduced
 
 ## Loss and precision diagnostics
 
-Fast corrections apply only to the first four editable rows, bounded by 0.06 rad
+Fast corrections apply only to the first four editable rows, bounded by 0.24 rad
 in physical joint units. Main target is fresh Full teacher minus old aligned Full;
 the residual head is explicitly supervised before the connector. This prevents a
 saturated connector from hiding a wrong proposal through zero gradients. Additional
@@ -82,3 +82,19 @@ event acceptance rejects deferrals when an actually usable reference exists.
 Retained completed TRAIN episodes require native MP4/clock/replay hash checks
 and AST proof that their successful model and dispatch paths are unchanged.
 The failed partial episode is excluded and its task must be recollected.
+
+## Near-term capacity revision after real eight-rank smoke
+
+The first executable row also frequently exceeded 0.06 rad (not just the tail).
+The internal residual capacity is now 0.24 rad; the full-plan command revision
+remains separately bounded by 0.06 rad per nominal query interval (at most 0.12
+for long intervals). This permits accumulating local four-row corrections while
+preventing a one-query 0.24-rad proposal jump. It does not guarantee that all
+teacher targets are reachable before execution. Log raw count/error numerators
+and final command error separately; aggregate numerators/counts, never average
+conditional rates across microbatches with absent domains.
+
+All 35 retained zero-head TRAIN scenes require numerical replay proving identical
+commands under both settings, bound to exact report/data hashes. This exception
+is only for zero-head collection, never for learned-policy equivalence. New
+current-source GPU smoke and three-stage eight-rank smoke are mandatory.

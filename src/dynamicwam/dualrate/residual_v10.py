@@ -320,7 +320,11 @@ def configure(model,settings,mean,scale):
         if settings.get('tracking_token') is not True or not 0<=settings.get('reaction_weight',-1)<=4:
             raise ValueError('explicit current-state feedback and bounded reaction weighting required')
         model.fast.tracking_projection=nn.Linear(29,model.fast.config.observation_dim)
-    if not 0<settings['arm_radius']<=.15 or not 0<settings['gripper_radius']<=.1:raise ValueError('bounded raw correction radius required')
+    # V12 bounds the COMPLETE deployed plan separately; its residual head must
+    # be able to express the observed near-term teacher corrections.
+    handoff=settings.get('continuity',{}).get('handoff',{})
+    maximum=.24 if handoff.get('contract')=='whole_plan_handoff_v12' else .15
+    if not 0<settings['arm_radius']<=maximum or not 0<settings['gripper_radius']<=.1:raise ValueError('bounded raw correction radius required')
     if not 0<=settings['queue_perturb_probability']<=1 or not 0<settings['queue_perturb_radius']<=settings['arm_radius']:
         raise ValueError('future queue augmentation must fit the trained residual range')
     model.residual_v10=dict(settings)

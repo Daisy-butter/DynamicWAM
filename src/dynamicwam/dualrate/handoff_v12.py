@@ -72,11 +72,12 @@ def reconcile(system,b,base,proposal,valid):
     return result,effective,dict(alpha=alpha,active=active,modified=modified,budget_rad=budget,
         raw_change_rad=magnitude,anchor=anchor,overlap=overlap,cross=cross,enabled=enabled,achieved_change_rad=achieved)
 
-def diagnostics(system,b,target,base,valid,handoff):
+def diagnostics(system,b,target,base,valid,handoff,action=None):
     free=valid&~b['fast_known_mask'];near=local_mask(system,b,valid)
     first=b['fast_known_mask'].long().sum(-1)
     first_mask=torch.zeros_like(free).scatter(1,first[:,None],True)&free
     raw=((target-base)*system.action_scale_v10).index_select(-1,torch.as_tensor(ARMS,device=base.device)).abs().amax(-1)
+    command_error=None if action is None else ((target-action)*system.action_scale_v10).index_select(-1,torch.as_tensor(ARMS,device=base.device)).abs().amax(-1)
     replay=b.get('recorded_replay',torch.zeros(len(base),dtype=torch.bool,device=base.device))
     metrics={}
     for domain,domain_mask in (('all',torch.ones_like(replay)),('replay',replay),('expert',~replay)):
@@ -85,6 +86,14 @@ def diagnostics(system,b,target,base,valid,handoff):
             metrics[f'teacher_{domain}_{band}_over_radius']=masked_mean((raw>system.residual_v10['arm_radius']).float(),mask)
             metrics[f'teacher_{domain}_{band}_error_rad']=masked_mean(raw,mask)
             metrics[f'teacher_{domain}_{band}_rows']=mask.float().sum()
+            # Numerators survive gradient-accumulation averaging even when a
+            # microbatch has no rows in one domain. Divide summed numerators by
+            # summed counts when reporting conditional domain statistics.
+            metrics[f'teacher_{domain}_{band}_error_sum']=torch.where(mask,raw,0.).sum()
+            metrics[f'teacher_{domain}_{band}_over_count']=((raw>system.residual_v10['arm_radius'])&mask).float().sum()
+            if command_error is not None:metrics[f'teacher_{domain}_{band}_command_error_sum']=torch.where(mask,command_error,0.).sum()
+            for threshold in (.06,.15,.24):
+                metrics[f'teacher_{domain}_{band}_over_{int(threshold*100):02d}_count']=((raw>threshold)&mask).float().sum()
     metrics.update(handoff_fraction=handoff['active'].float().mean(),handoff_alpha=handoff['alpha'].mean(),
                    cross_reference_fraction=(handoff['cross']&handoff['overlap'].any(-1)).float().mean())
     return metrics
@@ -147,7 +156,7 @@ def loss(self,batch,generator=None,action_conditioned=None):
     result=dict(loss=total,fast_action=primary,teacher_endpoint=primary,baseline_preservation=preserve,boundary=seam,
         cross_query_revision=control,future_visual=visual,future_geometry=geometry,contact=contact,
         measured_state_fraction=b['measured_state_valid'].float().mean(),paired_fraction=paired.float().mean())
-    result.update(diagnostics(self,b,target,base,valid&tvalid,raw['handoff']))
+    result.update(diagnostics(self,b,target,base,valid&tvalid,raw['handoff'],action))
     return result
 
 def configure(system,settings):

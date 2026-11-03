@@ -184,3 +184,51 @@ def test_clean_feedback_writer_does_not_make_a_failed_episode_training_data(tmp_
     result=build_replay_index([tmp_path],tmp_path/'index.json',['task'])
     index=json.loads((tmp_path/'index.json').read_text())
     assert result['rows']==4 and len(index['excluded_failed_reports'])==1
+
+def test_larger_internal_residual_still_has_bounded_complete_plan_revision():
+    s,b,base,valid=case();s.handoff_v12['same_step_rad']=.06
+    b['previous_reference_same'][:]=True;b['previous_actions'].zero_()
+    proposal=base.clone();proposal[:,2:6,ARMS]=.24
+    out,_,meta=reconcile(s,b,base,proposal,valid)
+    assert meta['achieved_change_rad'].item()<=.060001
+    assert out[:,2:6,ARMS].max()<=.060001
+    assert not out[:,:,[6,13]].any()
+    assert torch.equal(out[:,:2],b['fast_known_actions'][:,:2])
+
+def test_expanded_capacity_requires_explicit_v12_contract():
+    from test_residual_v10 import fixture
+    from dynamicwam.dualrate.residual_v10 import configure
+    s,_,_=fixture();settings=dict(s.residual_v10,arm_radius=.24)
+    with pytest.raises(ValueError,match='bounded raw'):configure(s,settings,[0.]*14,[1.]*14)
+    settings['continuity']=dict(handoff=dict(contract=CONTRACT))
+    configure(s,settings,[0.]*14,[1.]*14)
+    assert s.radius_raw_v10[0]==pytest.approx(.24)
+
+def test_precision_counts_aggregate_absent_domains_correctly():
+    from dynamicwam.dualrate.handoff_v12 import diagnostics
+    s,b,base,valid=case();s.residual_v10['arm_radius']=.24
+    target=base.clone();target[:,:,ARMS]=.20
+    meta=dict(active=torch.tensor([False]),alpha=torch.tensor([1.]),cross=torch.tensor([False]),overlap=valid)
+    b['recorded_replay']=torch.tensor([True]);a=diagnostics(s,b,target,base,valid,meta,base)
+    b['recorded_replay']=torch.tensor([False]);c=diagnostics(s,b,target,base,valid,meta,base)
+    # One replay and one expert microbatch: conditional rates use count sums.
+    mean=lambda k:(a[k]+c[k])/2
+    count=mean('teacher_replay_first_rows')
+    assert count==.5
+    assert mean('teacher_replay_first_over_06_count')/count==1
+    assert mean('teacher_replay_first_over_24_count')==0
+    assert mean('teacher_replay_first_command_error_sum')/count==pytest.approx(.20)
+
+def test_trace_capacity_exception_binds_exact_report_and_settings(tmp_path):
+    import json,sys
+    from pathlib import Path
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+    from prepare_residual_v10_data import validate_trace,sha256_file
+    p=tmp_path/'report.json';p.write_text('{}')
+    cfg=dict(runtime={'clock':'physical'},residual_v10={'arm_radius':.24})
+    r=dict(runtime_contract=cfg['runtime'],residual_v10={'arm_radius':.06})
+    proof=dict(old_residual=r['residual_v10'],reports={str(p):sha256_file(p)})
+    validate_trace(r,p,cfg,proof)
+    with pytest.raises(ValueError):validate_trace(r,p,cfg,None)
+    p.write_text('{"changed":true}')
+    with pytest.raises(ValueError):validate_trace(r,p,cfg,proof)
