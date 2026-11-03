@@ -17,6 +17,8 @@ CONTRACT = 'physical_feedback_continuity_v11'
 def align(values, source, target, valid=None):
     if source.dtype != torch.float64 or target.dtype != torch.float64:
         raise ValueError('alignment requires actual FP64 interval endpoints')
+    if source.shape[1]==0:
+        return values.new_zeros(target.shape[0],target.shape[1],values.shape[-1]),torch.zeros(target.shape[:2],dtype=torch.bool,device=target.device)
     match = (target[:,:,None]-source[:,None]).abs().amax(-1) <= 1e-7
     if bool((match.sum(-1)>1).any()):
         raise ValueError('ambiguous prior physical interval')
@@ -145,14 +147,14 @@ def loss(self,batch,generator=None,action_conditioned=None):
     actual_r=(action-base)/radius.clamp_min(1e-8)
     # Teacher is primary. Large deviations are out-of-local-recovery examples;
     # do not teach persistent saturation with equal weight to valid feedback.
-    recoverable=teacher_delta[:,:,arm].abs().amax(-1)<=radius[arm].max()*1.5
+    recoverable=(teacher_delta[:,:,arm]/radius[arm]).abs().amax(-1)<=1.5
     weights=torch.where(recoverable,1.,self.continuity_v11['out_of_radius_weight'])
     first=b['fast_known_mask'].long().sum(-1)
     weights=weights.scatter(1,first[:,None],weights.gather(1,first[:,None])*self.residual_v10['execute_weight'])
     teacher_error=F.smooth_l1_loss(actual_r[:,:,arm],target_r[:,:,arm],reduction='none')
     primary=masked_mean(teacher_error*weights[...,None],mask[...,None])
     # Healthy same-state teacher agrees: explicitly train no unnecessary change.
-    keep=teacher_delta[:,:,arm].abs().amax(-1)<self.residual_v10['preserve_tolerance']
+    keep=(teacher_delta[:,:,arm]*self.action_scale_v10[arm]).abs().amax(-1)<self.residual_v10['preserve_tolerance']
     preserve=masked_mean(actual_r[:,:,arm].square(),(mask&keep)[...,None])
     # Supervise FULL command increments, including known->new seam. Prefix is
     # a detached known condition; never edited to reduce a continuity loss.

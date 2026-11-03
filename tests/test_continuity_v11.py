@@ -19,6 +19,34 @@ def test_duplicate_reference_rejected():
         align(torch.zeros(1,2,14),t,t)
 
 
+def test_empty_real_execution_history_is_unavailable():
+    t=torch.tensor([[[0.,.18]]],dtype=torch.float64)
+    x,valid=align(torch.zeros(1,0,14),torch.zeros(1,0,2,dtype=torch.float64),t)
+    assert x.shape==(1,1,14) and not x.any() and not valid.any()
+
+
+def test_real_replay_teacher_covers_actual_prefix(tmp_path):
+    from types import SimpleNamespace
+    from dynamicwam.dualrate.feedback_replay import FeedbackRecorder
+    t=torch.arange(16,dtype=torch.float64)*.18
+    spans=torch.stack((t,t+.18),-1)[None]
+    actions=torch.randn(1,16,14)
+    source=dict(source_time=torch.tensor([0.],dtype=torch.float64),source_action_intervals=spans,
+                source_condition_frames=torch.zeros(1,3,5,4,4))
+    known=torch.arange(16)[None]<3
+    b=dict(query_time=torch.tensor([.2],dtype=torch.float64),measured_state_valid=torch.tensor([True]),
+           action_intervals=spans,fast_known_actions=torch.where(known[...,None],actions,0.),fast_known_mask=known,
+           teacher_action_intervals=spans,executed_actions=torch.zeros(1,0,14),
+           executed_action_intervals=torch.zeros(1,0,2,dtype=torch.float64),executed_action_valid=torch.zeros(1,0,dtype=torch.bool))
+    ref=SimpleNamespace(completed_time=.1,payload={'reference_actions':actions})
+    recorder=FeedbackRecorder(tmp_path/'ok',dict(split='train',seed=1))
+    recorder.capture(1,(source,torch.zeros(16,dtype=torch.uint8)),b,dict(actions=actions,draft_valid=torch.ones(1,16,dtype=torch.bool)),ref)
+    recorder.close();r=torch.load(tmp_path/'ok/query_00001.pt',weights_only=True)
+    assert r['teacher_known_mask'].sum()==3 and not r['executed_action_valid'].any()
+    assert torch.equal(r['teacher_known_actions'][:3],actions[0,:3])
+    with pytest.raises(ValueError,match='evaluation scenes'):FeedbackRecorder(tmp_path/'bad',dict(split='train',seed=100000))
+
+
 def test_bounded_temporal_basis_zero_and_grippers():
     valid=torch.ones(2,16,dtype=torch.bool)
     assert not shape_correction(torch.zeros(2,16,14),valid).any()

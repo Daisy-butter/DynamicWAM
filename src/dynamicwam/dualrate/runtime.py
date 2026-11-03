@@ -378,7 +378,7 @@ class DualRateRuntime:
                         earliest_physical_time=receipt.earliest_physical_time,
                         protected_until=lease.protected_until,prefix_hash=lease.prefix_hash,
                         submission_contract=self.config.submission_contract))
-                if self.feedback_recorder is not None:
+                if self.feedback_recorder is not None and self.clock_bridge.active:
                     self.feedback_recorder.capture(lease.query_id,self._feedback_sources[lease.reference_version],batch,
                         output,reference)
                 return result

@@ -89,7 +89,7 @@ class ContinuityDataset(DominoPhysicalDataset):
         row['reference_available']=torch.tensor(True)
         row['source_prefix_end']=sample['source_action_intervals'][int(sample['source_known_mask'].sum())-1,1]
         row['fast_prefix_end']=sample['action_intervals'][int(sample['fast_known_mask'].sum())-1,1]
-        row['query_available_time']=sample['query_time'].clone()
+        row['query_available_time']=sample['teacher_available_time'].clone()
         row['recorded_replay']=torch.tensor(True)
         for k in ('future_loss_valid','future_visual_encode_valid','contact_valid','source_video_loss_valid'):
             if k in row:row[k]=torch.zeros_like(row[k])
