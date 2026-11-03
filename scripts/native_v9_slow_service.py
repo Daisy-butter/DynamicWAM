@@ -9,6 +9,17 @@ import time
 from dualrate_slow_process import _send,_receive,_cpu_tree
 
 
+def load_trained_state(system,config):
+    """Use one verified Path for hashing and strict trained-state loading."""
+    from pathlib import Path
+    import torch
+    from dynamicwam.dualrate.data import sha256_file
+    path=Path(config['checkpoint'])
+    if sha256_file(path)!=config['checkpoint_sha256']:raise ValueError('checkpoint changed')
+    payload=torch.load(path,map_location='cpu',weights_only=True,mmap=True)
+    system.load_state_dict(payload['model'],strict=True)
+
+
 def child(sock,config,parent_pid,parent_session):
     try:
         if os.getsid(0)!=parent_session:raise RuntimeError('slow child session mismatch')
@@ -22,9 +33,7 @@ def child(sock,config,parent_pid,parent_session):
         torch.set_num_threads(1);torch.set_num_interop_threads(1);torch.cuda.set_device(1)
         system=build_system(config,'cuda:1').eval().requires_grad_(False)
         if config.get('checkpoint'):
-            from dynamicwam.dualrate.data import sha256_file
-            if sha256_file(config['checkpoint'])!=config['checkpoint_sha256']:raise ValueError('checkpoint changed')
-            system.load_state_dict(torch.load(config['checkpoint'],map_location='cpu',weights_only=True,mmap=True)['model'],strict=True)
+            load_trained_state(system,config)
         _send(sock,dict(kind='ready',pid=os.getpid()),time.monotonic()+60)
         while True:
             request=_receive(sock,time.monotonic()+86400)

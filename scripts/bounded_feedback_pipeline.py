@@ -15,7 +15,7 @@ PHASES=('warmup','small_age_joint','cross_time_joint')
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--core',required=True)
     p.add_argument('--cpu-acceptance',required=True);p.add_argument('--manual-start',action='store_true',required=True)
-    p.add_argument('--deployment',required=True);p.add_argument('--gpus',required=True);p.add_argument('--prepared-eval',required=True)
+    p.add_argument('--reuse-preflight');p.add_argument('--deployment',required=True);p.add_argument('--gpus',required=True);p.add_argument('--prepared-eval',required=True)
     a=p.parse_args();root=Path(a.root).resolve();repo=Path(__file__).resolve().parents[1]
     sys.path.insert(0,str(repo/'src'))
     if not str(root).startswith('/SSD_DISK/users/wuruihan/'):raise ValueError('verified SSD scope required')
@@ -103,65 +103,75 @@ def main():
         wait(child,name)
         if runner.read_json(root/name/'status.json')['state']!='completed':raise RuntimeError(name+' incomplete')
     try:
-        # Predeclared clean train scenes, not scored scenes or success-filtered
-        # policy rollouts. The initial zero-residual policy remains dual-rate.
-        prepared=runner.read_json(a.prepared_eval);tasks=prepared['tasks']
-        if len(tasks)!=35 or len(set(tasks))!=35:raise ValueError('35 native tasks required')
-        from dynamicwam.dualrate.feedback_data import training_seed_manifest
-        train_seeds=training_seed_manifest(base['manifest'])
-        if set(train_seeds['tasks'])!=set(tasks):raise ValueError('training task set differs')
-        atomic(root/'training_scenes.json',train_seeds)
-        collection=[];status('collecting_native_training_replay')
-        for group in range(4):
-            name=f'collect_{group}';c=json.loads(json.dumps(deploy));c.pop('checkpoint',None);c.pop('checkpoint_sha256',None)
-            c.update(output=str(root/name),collect_native_replay=True,purpose='native_training_collection')
-            c['training_scenes']=train_seeds
-            c['deployment'].update(tasks=tasks[group::4],episodes=1,seed=300100,result_stamp=root.name+'_collect')
-            collection.append((rollout(c,name,gpus[2*group:2*group+2]),name,c))
-        for child,name,c in collection:wait(child,name);check_rollout(name,c)
-        sys.path.insert(0,str(repo/'src'))
-        from dynamicwam.dualrate.native_v9_data import build_manifest,NativeReplayDataset
-        manifest=root/'dataset/train.json'
-        info=build_manifest(base['manifest'],[c['output'] for _,_,c in collection],manifest)
-        mm=runner.read_json(manifest);mm['bounded_feedback_dataset']=True;atomic(manifest,mm)
-        from dynamicwam.dualrate.feedback_data import FeedbackDataset
-        NativeReplayDataset=FeedbackDataset
-        info['sha256']=file_sha256(manifest)
-        if len(info['tasks'])!=35 or info['samples']<280:raise RuntimeError('native replay task/window coverage is insufficient')
-        ds=NativeReplayDataset(manifest)
-        from dynamicwam.dualrate.train import validate_row
-        for i in ds.select_domains(['native_replay'])[::max(1,len(ds.replay)//32)]:validate_row(ds[int(i)])
-        atomic(root/'dataset/acceptance.json',dict(passed=True,**info,actual_native_timing=True,borrowed_future_labels=False))
-        del ds
-        configs=[]
-        for phase,domains in zip(PHASES,(['expert_bootstrap'],['native_replay'],['expert_bootstrap','native_replay'])):
-            c=dict(base,manifest=str(manifest),run_kind='distributed_training_smoke',phase=phase,
-                sequence_id=root.name+'_smoke',output=str(root/'training_smoke'/phase),steps=4,
-                query_age_seconds=base['query_age_seconds'],training_domains=domains,log_every=1,
-                data_distribution='expert bootstrap + actual native Full-anchored feedback collection replay, no retimed labels')
-            for key in ('stage_init_checkpoint','stage_init_checkpoint_sha256','acceptance_receipt','acceptance_receipt_sha256','resume'):c.pop(key,None)
-            configs.append(c)
-        sequence(configs,'distributed_training_smoke','smoke_sequence')
+        from bounded_feedback_eval import prepared_contract,aggregate
+        evaluation=prepared_contract(a.prepared_eval,deploy)
+        atomic(root/'evaluation_contract.json',evaluation)
+        reuse_evidence=[];preflight_root=root
+        if a.reuse_preflight:
+            from bounded_feedback_reuse import validate_reuse
+            status('validating_completed_preflight')
+            configs,manifest,reuse_evidence,preflight_root=validate_reuse(repo,Path(a.reuse_preflight),base,root)
+        else:
+            # Predeclared clean train scenes, not scored scenes or success-filtered
+            # policy rollouts. The initial zero-residual policy remains dual-rate.
+            prepared=runner.read_json(a.prepared_eval);tasks=prepared['tasks']
+            if len(tasks)!=35 or len(set(tasks))!=35:raise ValueError('35 native tasks required')
+            from dynamicwam.dualrate.feedback_data import training_seed_manifest
+            train_seeds=training_seed_manifest(base['manifest'])
+            if set(train_seeds['tasks'])!=set(tasks):raise ValueError('training task set differs')
+            atomic(root/'training_scenes.json',train_seeds)
+            collection=[];status('collecting_native_training_replay')
+            for group in range(4):
+                name=f'collect_{group}';c=json.loads(json.dumps(deploy));c.pop('checkpoint',None);c.pop('checkpoint_sha256',None)
+                c.update(output=str(root/name),collect_native_replay=True,purpose='native_training_collection')
+                c['training_scenes']=train_seeds
+                c['deployment'].update(tasks=tasks[group::4],episodes=1,seed=300100,result_stamp=root.name+'_collect')
+                collection.append((rollout(c,name,gpus[2*group:2*group+2]),name,c))
+            for child,name,c in collection:wait(child,name);check_rollout(name,c)
+            sys.path.insert(0,str(repo/'src'))
+            from dynamicwam.dualrate.native_v9_data import build_manifest,NativeReplayDataset
+            manifest=root/'dataset/train.json'
+            info=build_manifest(base['manifest'],[c['output'] for _,_,c in collection],manifest)
+            mm=runner.read_json(manifest);mm['bounded_feedback_dataset']=True;atomic(manifest,mm)
+            from dynamicwam.dualrate.feedback_data import FeedbackDataset
+            NativeReplayDataset=FeedbackDataset
+            info['sha256']=file_sha256(manifest)
+            if len(info['tasks'])!=35 or info['samples']<280:raise RuntimeError('native replay task/window coverage is insufficient')
+            ds=NativeReplayDataset(manifest)
+            from dynamicwam.dualrate.train import validate_row
+            for i in ds.select_domains(['native_replay'])[::max(1,len(ds.replay)//32)]:validate_row(ds[int(i)])
+            atomic(root/'dataset/acceptance.json',dict(passed=True,**info,actual_native_timing=True,borrowed_future_labels=False))
+            del ds
+            configs=[]
+            for phase,domains in zip(PHASES,(['expert_bootstrap'],['native_replay'],['expert_bootstrap','native_replay'])):
+                c=dict(base,manifest=str(manifest),run_kind='distributed_training_smoke',phase=phase,
+                    sequence_id=root.name+'_smoke',output=str(root/'training_smoke'/phase),steps=4,
+                    query_age_seconds=base['query_age_seconds'],training_domains=domains,log_every=1,
+                    data_distribution='expert bootstrap + actual native Full-anchored feedback collection replay, no retimed labels')
+                for key in ('stage_init_checkpoint','stage_init_checkpoint_sha256','acceptance_receipt','acceptance_receipt_sha256','resume'):c.pop(key,None)
+                configs.append(c)
+            sequence(configs,'distributed_training_smoke','smoke_sequence')
         diagnostic=Path(configs[-1]['output'])/'last.pt'
         smoke=json.loads(json.dumps(deploy));smoke.update(output=str(root/'trained_smoke'),manifest=str(manifest),collect_native_replay=False,
             checkpoint=str(diagnostic),checkpoint_sha256=file_sha256(diagnostic),purpose='diagnostic_trained_smoke')
         smoke['deployment'].update(tasks=['adjust_bottle','click_bell'],episodes=1,seed=400000,result_stamp=root.name+'_trained_smoke')
         status('trained_deployment_smoke');child=rollout(smoke,'trained_smoke',gpus[:2]);wait(child,'trained_smoke')
         acceptance=check_rollout('trained_smoke',smoke)
-        evidence=[];identity=None
+        evidence=list(reuse_evidence);identity=None
         for phase,c in zip(PHASES,configs):
             _,_,result,_=phase_completed(Path(c['output']),c)
             chosen={k:result['identity'][k] for k in ('source_sha256','manifest_sha256','init_checkpoint_sha256')}
             if identity is not None and chosen!=identity:raise ValueError('phase identities differ')
             identity=chosen
-            for f in [Path(c['output'])/'result.json',Path(c['output'])/'reload.json',root/'smoke_sequence'/phase/'status.json']:
+            for f in [Path(c['output'])/'result.json',Path(c['output'])/'reload.json',preflight_root/'smoke_sequence'/phase/'status.json']:
                 evidence.append(dict(path=str(f),sha256=file_sha256(f)))
         for folder in [root/'dataset',root/'trained_smoke',root/'trained_smoke_guard']:
             for f in folder.rglob('*'):
                 if f.is_file() and f.suffix in ('.json','.mp4'):evidence.append(dict(path=str(f),sha256=file_sha256(f)))
         receipt=dict(passed=True,world_size=8,**identity,supervisor_sha256=source['distributed_supervisor_sha256'],
             source_contract=runner.source_contract(source),profiles={p:runner.profile_sha256(c) for p,c in zip(PHASES,configs)},
-            evidence=evidence,native_deployment=acceptance,quality_accepted=False)
+            evidence=evidence,native_deployment=acceptance,quality_accepted=False,
+            preflight_reused_from=str(preflight_root) if a.reuse_preflight else None)
         ap=root/'acceptance.json';atomic(ap,receipt)
         atomic(root/'formal_checklist.json',dict(passed=True,cpu_acceptance_sha256=file_sha256(Path(a.cpu_acceptance)),
             gpu_acceptance_sha256=file_sha256(ap),world_size=8,all_three_phases_restored=True,
@@ -175,12 +185,24 @@ def main():
         sequence(formal,'formal_distributed_training','formal_sequence')
         checkpoint=Path(formal[-1]['output'])/'last.pt';digest=file_sha256(checkpoint)
         final=json.loads(json.dumps(deploy));final.update(manifest=str(manifest),checkpoint=str(checkpoint),checkpoint_sha256=digest,
-            collect_native_replay=False,purpose='final_weight_acceptance',output=str(root/'final_smoke'))
-        final['deployment'].update(tasks=['adjust_bottle','click_bell'],episodes=2,seed=450000,result_stamp=root.name+'_final_smoke')
+            collect_native_replay=False,purpose='final_weight_acceptance',output=str(root/'final_smoke'),
+            prepared=evaluation['prepared'],prepared_sha256=evaluation['prepared_sha256'])
+        final['deployment'].update(tasks=['adjust_bottle','click_bell'],episodes=2,seed=evaluation['seed'],result_stamp=root.name+'_final_smoke')
         status('final_weight_smoke');child=rollout(final,'final_smoke',gpus[:2]);wait(child,'final_smoke');check_rollout('final_smoke',final)
-        status('completed_training',checkpoint=str(checkpoint),checkpoint_sha256=digest,
-            formal_training_started=True,final_native_smoke_passed=True,formal_benchmark_started=False)
-        return  # The user scheduled training, not an unsolicited 700-episode suite.
+        atomic(root/'training_completed.json',dict(passed=True,checkpoint=str(checkpoint),checkpoint_sha256=digest,
+            formal_training_started=True,all_three_phases_completed=True,final_native_smoke_passed=True))
+        # User 2026-11-03 authorizes evaluation after clean training and saved
+        # weights. Preserve native TOPP, the frozen 700 scenes and original budgets.
+        formal_evals=[];status('formal_native_evaluation',checkpoint=str(checkpoint),checkpoint_sha256=digest)
+        for group in range(4):
+            name=f'formal_eval_{group}';c=json.loads(json.dumps(final))
+            c.update(output=str(root/name),purpose='formal_native_evaluation')
+            c['deployment'].update(tasks=evaluation['tasks'][group::4],episodes=20,result_stamp=root.name+'_formal')
+            formal_evals.append((rollout(c,name,gpus[2*group:2*group+2]),name,c))
+        for child,name,c in formal_evals:wait(child,name);check_rollout(name,c)
+        result=aggregate(root,[(name,c) for _,name,c in formal_evals],evaluation,digest)
+        status('completed',checkpoint=str(checkpoint),checkpoint_sha256=digest,formal_training_completed=True,
+            formal_evaluation_completed=True,episodes=700,successes=result['successes'],success_rate=result['success_rate'])
     except BaseException as exc:
         status('failed',error=repr(exc))
         for child,ticks in children:

@@ -10,7 +10,7 @@ from bounded_feedback_launch import verify
 
 
 def check():
-    receipt=base/'prep/cpu_acceptance_gpu02.json';r=json.loads(receipt.read_text())
+    receipt=base/'prep/cpu_acceptance_recover03.json';r=json.loads(receipt.read_text())
     core=repo/'configs/bounded_feedback_core.json';deploy=repo/'configs/bounded_feedback_deploy.json'
     verify(r,repo,core,deploy)
     c=json.loads(core.read_text());d=json.loads(deploy.read_text())
@@ -36,7 +36,8 @@ def check():
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);g=p.add_mutually_exclusive_group(required=True)
-    p.add_argument('--run-id',default='manual02')
+    p.add_argument('--run-id',default='manual03')
+    p.add_argument('--reuse-preflight')
     g.add_argument('--check',action='store_true');g.add_argument('--start',action='store_true');g.add_argument('--status',action='store_true')
     a=p.parse_args()
     if not re.fullmatch(r'manual[0-9]{2}',a.run_id):raise ValueError('explicit manualNN run identity required')
@@ -53,6 +54,7 @@ def main():
     cmd=[sys.executable,str(repo/'scripts/bounded_feedback_pipeline.py'),'--manual-start','--root',str(root),
         '--core',str(core),'--deployment',str(deploy),'--gpus',','.join(gpus),'--cpu-acceptance',str(receipt),
         '--prepared-eval','/SSD_DISK/users/wuruihan/DynamicWAM/outputs/diagnostics/native_v7_final_eval_20261031/run01/formal.json']
+    if a.reuse_preflight:cmd.extend(['--reuse-preflight',str(Path(a.reuse_preflight).resolve(strict=True))])
     # O_EXCL is the one-shot reservation; never recover/retry a partial launch.
     run_launcher.mkdir(exist_ok=False)
     with (run_launcher/'launch.json').open('x') as identity:
