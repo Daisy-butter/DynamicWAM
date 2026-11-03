@@ -89,7 +89,7 @@ def predict(self,batch,world,*,expert_actions=None):
     if hasattr(self,'handoff_v12'):
         from .handoff_v12 import reconcile
         _,_,preview=reconcile(self,batch,base,base,valid)
-        cond['future_allowed']=cond['future_allowed'] & ~preview['active']
+        cond['future_allowed']=cond['future_allowed'] & ~preview['modified']
     if self.residual_v10.get('tracking_token'):
         from .reference_executor import measured_reference_discrepancy
         discrepancy,available=measured_reference_discrepancy(batch,world)
@@ -163,12 +163,12 @@ def sample(self,batch,world,*,steps=1,generator=None,initial_action_noise=None):
             learned_correction_actions=raw['raw_proposal']-raw['raw_baseline'],handoff_active=h['active'],handoff_alpha=h['alpha'],
             handoff_budget_rad=h['budget_rad'],handoff_raw_change_rad=h['raw_change_rad'])
         result.update(handoff_revision_rad=h['achieved_change_rad'],handoff_enabled=h['enabled'])
-        result['future']=torch.where(h['active'][:,None,None],0.,result['future'])
-        result['contact_probability']=torch.where(h['active'][:,None,None],0.,result['contact_probability'])
+        result['future']=torch.where(h['modified'][:,None,None],0.,result['future'])
+        result['contact_probability']=torch.where(h['modified'][:,None,None],0.,result['contact_probability'])
         # The compact future was predicted before the explicit command connector.
-        result['future_valid']=result['future_valid']&~h['active'][:,None]
-        result['future_field_valid']=fields&~h['active'][:,None,None]
-        result['contact_valid']=contacts&~h['active'][:,None,None]
+        result['future_valid']=result['future_valid']&~h['modified'][:,None]
+        result['future_field_valid']=fields&~h['modified'][:,None,None]
+        result['contact_valid']=contacts&~h['modified'][:,None,None]
     return result
 
 

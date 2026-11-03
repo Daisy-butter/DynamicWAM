@@ -56,7 +56,8 @@ def reconcile(system,b,base,proposal,valid):
     alpha=torch.where(enabled,alpha,1.)
     effective=anchor+alpha[:,None,None]*(base-anchor)
     result=effective+alpha[:,None,None]*(proposal-base)
-    active=cross & (alpha<1.-1e-6)
+    modified=enabled & (alpha<1.-1e-6)
+    active=cross & modified
     # Hold only previous Full gripper events, never a fractional average.
     grip_anchor=anchor.clone()
     grip_anchor[:,:,[6,13]]=torch.where(overlap[...,None],b['previous_actions'],committed[:,None])[:,:,[6,13]]
@@ -68,7 +69,7 @@ def reconcile(system,b,base,proposal,valid):
     if not bool((torch.isfinite(physical)&(physical>=limits[:,0]-1e-5)&(physical<=limits[:,1]+1e-5)).all()):
         raise ValueError('whole-plan connector exceeds native joint limits')
     achieved=torch.where(free[...,None],((result-anchor)*system.action_scale_v10).index_select(-1,arm).abs(),0.).amax((1,2))
-    return result,effective,dict(alpha=alpha,active=active,budget_rad=budget,
+    return result,effective,dict(alpha=alpha,active=active,modified=modified,budget_rad=budget,
         raw_change_rad=magnitude,anchor=anchor,overlap=overlap,cross=cross,enabled=enabled,achieved_change_rad=achieved)
 
 def diagnostics(system,b,target,base,valid,handoff):
@@ -96,6 +97,14 @@ def loss(self,batch,generator=None,action_conditioned=None):
     if bool(paired.any()):
         prior={k[9:]:v for k,v in b.items() if k.startswith('previous_') and k not in
                ('previous_actions','previous_valid','previous_reference_same','previous_handoff')}
+        # Non-paired replay has a real prior-query timestamp, possibly before
+        # the CURRENT reference was published. It is not a prior-label example.
+        # Use valid current placeholders only for this unused paired forward;
+        # retain the actual previous plan/time in b for the real controller.
+        for key,value in list(prior.items()):
+            if key in b and isinstance(value,torch.Tensor) and value.shape==b[key].shape:
+                selector=paired.reshape((len(paired),)+(1,)*(value.ndim-1))
+                prior[key]=torch.where(selector,value,b[key])
         prior=defaults(prior)
         DualRateSystem._validate_clocks(prior);DualRateSystem._validate_prefix_pair(prior)
         for key in ('source_time','source_request_time','source_available_time','completed_time','source_known_mask','source_known_actions'):

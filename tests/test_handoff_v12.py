@@ -119,3 +119,17 @@ def test_replay_preserves_actual_previous_query_time(tmp_path):
     d=ContinuityDataset.__new__(ContinuityDataset);d.replay=[dict(path=str(p))];d.template=sample
     r=d.replay_item(0)
     assert r['previous_query_time']==sample['previous_query_time'] and r['previous_handoff']
+
+def test_mixed_batch_does_not_treat_real_prior_query_as_paired_teacher_time():
+    from test_residual_v10 import fixture,generator
+    from dynamicwam.dualrate.continuity_v11 import configure,CONTRACT as V11
+    s,b,w=fixture()
+    configure(s,dict(contract=V11,reference_hold_steps=4,seam_weight=.1,revision_weight=.1,out_of_radius_weight=.2,revision_radius_fraction=1/3,
+        handoff=dict(contract=CONTRACT,local_rows=4,handoff_step_rad=.06,same_step_rad=.02)))
+    b['feedback_noise_seed']=torch.tensor([17]);b['action_grid_origin']=b['source_time'].clone()
+    b={k:v.repeat((2,)+(1,)*(v.ndim-1)) for k,v in b.items()}
+    b=defaults(b);b.update({'previous_'+k:v.clone() for k,v in list(b.items()) if not k.startswith('previous_')})
+    b['pair_valid']=torch.tensor([True,False]);b['previous_query_time'][1]-=100.
+    s.residual_v10['executor']='phase_c2'
+    result=s.training_loss(b,generator=generator())
+    assert torch.isfinite(result['loss'])
