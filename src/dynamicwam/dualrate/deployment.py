@@ -16,6 +16,7 @@ from .contact_cache import StepContactCache
 from .loop_diagnostics import LoopDiagnostics
 from .continuous_owner import ContinuousStepOwner
 from .producer import NUMERIC_TIME_EPSILON
+from .reference_lease import ReferenceUnavailable
 
 PROTOCOL='dualrate_v4_exposure_anchor_wall_release_fast_only'
 
@@ -378,6 +379,15 @@ def dispatch_due_queries(runtime,builder,history,queue,*,now,initial,vae,emit,de
                     observation_time=snapshot[-1].exposure,observation_available=snapshot[-1].available,
                     observation_age=age,observation_wall_age=wall_age,max_observation_age=builder.max_observation_age,
                     reason='insufficient_prefix_budget'))
+                continue
+            except ReferenceUnavailable as exc:
+                # No query/lease was created. Keep executing the already accepted
+                # queue while the independent slow worker catches up. No stale M,
+                # repeated actions, TTL extension, clock pause or deadline credit.
+                deferred[route]=began if began is not None else now
+                emit(dict(event='query_deferred',route=route,physical_time=now,
+                    observation_time=snapshot[-1].exposure,first_editable_time=exc.first,
+                    reason='no_usable_slow_reference'))
                 continue
             if getattr(runtime,'_reference_lease',None) is not None:
                 seen_references.add(runtime.fast_job[1].reference_version)

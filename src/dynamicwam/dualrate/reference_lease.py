@@ -3,6 +3,12 @@ import math
 import torch
 
 
+class ReferenceUnavailable(ValueError):
+    def __init__(self,now,first):
+        super().__init__('no causal reference with two editable physical rows')
+        self.now=float(now);self.first=float(first)
+
+
 class ReferenceLease:
     def __init__(self,hold_steps,dt):
         if type(hold_steps) is not int or hold_steps<1 or not dt>0:
@@ -32,7 +38,7 @@ class ReferenceLease:
             else:reason='same_candidate'
         elif old_ok:reason='minimum_dwell' if held else 'candidate_unavailable'
         else:
-            raise ValueError('no causal reference with two editable physical rows')
+            raise ReferenceUnavailable(now,first)
         return self.active,self.device,dict(event='reference_selected',query_time=float(now),
             candidate_version=latest.version if latest else -1,reference_version=self.active.version,
             activated_time=self.activated,hold_seconds=self.duration,first_editable_time=float(first),

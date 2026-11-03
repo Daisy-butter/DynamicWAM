@@ -56,7 +56,9 @@ def main():
   allowed={'src/dynamicwam/dualrate/continuity_data.py','src/dynamicwam/dualrate/continuity_v11.py',
            'scripts/continuity_v12_pipeline.py','scripts/audit_continuity_data.py','scripts/dualrate_domino_smoke.py',
            'src/dynamicwam/dualrate/producer.py','scripts/prepare_dualrate_exposure_data.py',
-           'scripts/audit_continuity_expert_data.py'}
+           'scripts/audit_continuity_expert_data.py','src/dynamicwam/dualrate/deployment.py',
+           'src/dynamicwam/dualrate/reference_lease.py','scripts/dualrate_continuous_acceptance.py',
+           'src/dynamicwam/dualrate/feedback_replay.py'}
   if any(x not in allowed and not x.startswith(('docs/','tests/')) for x in changed):raise ValueError('runtime equivalence not proven')
   file='src/dynamicwam/dualrate/continuity_v11.py'
   old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
@@ -74,9 +76,34 @@ def main():
      x.body=[f for f in x.body if not isinstance(f,ast.FunctionDef) or f.name!='__getitem__']
    return ast.dump(tree,include_attributes=False)
   assert producer_runtime_ast(old)==producer_runtime_ast((REPO/file).read_text())
+  file='src/dynamicwam/dualrate/feedback_replay.py'
+  old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
+  def recorder_ast(text):
+   tree=ast.parse(text);tree.body=[x for x in tree.body if not isinstance(x,ast.FunctionDef) or x.name!='build_replay_index']
+   return ast.dump(tree,include_attributes=False)
+  assert recorder_ast(old)==recorder_ast((REPO/file).read_text())
+  # Retain only completed TRAIN reports: the only changed runtime path formerly
+  # raised before creating a lease. Verify all successful-path AST is identical.
+  for file in ('src/dynamicwam/dualrate/reference_lease.py','src/dynamicwam/dualrate/deployment.py'):
+   old=subprocess.check_output(['git','show',prior['commit']+':'+file],cwd=REPO,text=True)
+   def successful_path_ast(text):
+    tree=ast.parse(text)
+    class RemoveDeferral(ast.NodeTransformer):
+     def visit_ClassDef(self,node):
+      return None if node.name=='ReferenceUnavailable' else self.generic_visit(node)
+     def visit_ImportFrom(self,node):
+      return None if node.module=='reference_lease' and [x.name for x in node.names]==['ReferenceUnavailable'] else node
+     def visit_ExceptHandler(self,node):
+      return None if isinstance(node.type,ast.Name) and node.type.id=='ReferenceUnavailable' else self.generic_visit(node)
+     def visit_Raise(self,node):
+      if isinstance(node.exc,ast.Call) and isinstance(node.exc.func,ast.Name) and node.exc.func.id=='ReferenceUnavailable':
+       node.exc=ast.Call(func=ast.Name(id='ValueError',ctx=ast.Load()),args=[ast.Constant('no causal reference with two editable physical rows')],keywords=[])
+      return node
+    return ast.dump(RemoveDeferral().visit(tree),include_attributes=False)
+   assert successful_path_ast(old)==successful_path_ast((REPO/file).read_text())
   proof=out/('runtime_equivalence_'+prior['commit'][:8]+'.json')
   save(proof,dict(passed=True,original=prior,current=source,changed_paths=changed,unchanged_deployment_ast=True,
-                 scope='training pair selection/loss and collection/controller only; scored runtime and model sampling unchanged'))
+                 scope='successful model/dispatch paths unchanged; typed no-reference pre-query exception now defers without changing clocks, prefix or TTL'))
   ev(proof)
  def guarded(c,name,gpus):
   path=out/(name+'.config.json');save(path,c)
@@ -114,7 +141,8 @@ def main():
    assert gs['guard_closed'] and gs['errors']==["RuntimeError('worker exited 1; automatic retry disabled')"]
    assert not ge['remaining'] and ge['returncode']==1 and gk['unchanged'] and gk['same_boot'] and not gk['added']
    log=ev(gd/'worker.log').read_text()
-   assert 'AssertionError: target_pose cannot be None for move action.' in log
+   assert ('AssertionError: target_pose cannot be None for move action.' in log or
+           'ValueError: no causal reference with two editable physical rows' in log)
    oldcfg=read(ev(prior_root/'collection_0.config.json'))
    assert oldcfg['runtime']==base['runtime'] and oldcfg['residual_v10']==base['residual_v10']
    from video_artifacts import validate_video_artifacts

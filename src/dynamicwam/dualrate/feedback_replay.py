@@ -82,9 +82,15 @@ class FeedbackRecorder:
 
 
 def build_replay_index(collection,output,expected_tasks):
-    roots=[Path(p) for p in collection];rows=[];tasks=set()
+    roots=[Path(p) for p in collection];rows=[];tasks=set();excluded=[]
     for root in roots:
         for p in sorted(root.glob('*/episode_*/feedback/manifest.json')):
+            report_path=p.parents[1]/'report.json'
+            report=json.loads(report_path.read_text())
+            if report.get('continuous_valid') is not True or report.get('realtime_valid') is not True:
+                # A writer can close cleanly after an episode fails. Its partial
+                # trace is diagnostic, not an accepted TRAIN episode.
+                excluded.append(str(report_path));continue
             m=json.loads(p.read_text());ident=m['identity']
             if not m['complete'] or ident['split']!='train' or ident['seed']>=100000:
                 raise ValueError('incomplete or non-training feedback')
@@ -95,5 +101,5 @@ def build_replay_index(collection,output,expected_tasks):
     if tasks!=set(expected_tasks) or len(rows)<4*len(tasks):
         raise ValueError('all-task real feedback coverage missing')
     path=Path(output);path.parent.mkdir(parents=True,exist_ok=True)
-    path.write_text(json.dumps(dict(schema='continuous_feedback_replay_v11',tasks=sorted(tasks),rows=rows),indent=2))
+    path.write_text(json.dumps(dict(schema='continuous_feedback_replay_v11',tasks=sorted(tasks),rows=rows,excluded_failed_reports=excluded),indent=2))
     return dict(path=str(path),sha256=digest(path),rows=len(rows),tasks=len(tasks))

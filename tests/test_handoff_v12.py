@@ -133,3 +133,54 @@ def test_mixed_batch_does_not_treat_real_prior_query_as_paired_teacher_time():
     s.residual_v10['executor']='phase_c2'
     result=s.training_loss(b,generator=generator())
     assert torch.isfinite(result['loss'])
+
+def test_expired_reference_defers_query_but_does_not_block_slow_refresh():
+    from test_dualrate_hardtime_deployment import observation,DT
+    from dynamicwam.dualrate.deployment import dispatch_due_queries
+    from dynamicwam.dualrate.online import ObservationHistory
+    from dynamicwam.dualrate.reference_lease import ReferenceUnavailable
+    from dynamicwam.dualrate.timing import ExecutionQueue,TimedPlan
+    q=ExecutionQueue(TimedPlan(0.,DT,tuple((float(i),) for i in range(16)),0,0.))
+    now=2*DT+.12
+    for t in (0.,DT,2*DT,now):q.action_at(t)
+    q.commit_prefix(query_time=now,until=4*DT)
+    h=ObservationHistory();h.append(observation(),exposure=2*DT,available=2*DT+.1)
+    calls=[];events=[];deferred={}
+    def fast(*a,**kw):raise ReferenceUnavailable(now,4*DT)
+    r=SimpleNamespace(due=lambda now:(True,True),store=SimpleNamespace(snapshot=lambda now:None),start_fast=fast,
+        start_slow=lambda *a,**kw:calls.append(kw))
+    b=SimpleNamespace(hardtime=True,max_observation_age=.24)
+    dispatch_due_queries(r,b,h,q,now=now,initial=0.,vae=None,emit=events.append,deferred=deferred,seen_references=set())
+    assert calls and deferred['fast']==now
+    assert any(e.get('reason')=='no_usable_slow_reference' for e in events)
+    assert q.action_at(3*DT)==(3.,)  # Original queue continues, no repeated old command.
+
+def test_measured_cup_expiry_recovers_only_after_new_publication():
+    from dynamicwam.dualrate.reference_lease import ReferenceLease,ReferenceUnavailable
+    dt=45*float(torch.tensor(.004,dtype=torch.float32))
+    def ref(version,source,completed):
+        t=source+torch.arange(16,dtype=torch.float64)*dt
+        return SimpleNamespace(version=version,source_time=source,completed_time=completed,expires_at=source+2.,
+            payload=dict(reference_actions=torch.zeros(1,16,14),reference_action_intervals=torch.stack((t,t+dt),-1)[None],world_valid=torch.ones(1,16,dtype=torch.bool)))
+    old=ref(14,51*dt,9.928000471554697);new=ref(15,59*dt,11.432000543)
+    lease=ReferenceLease(4,dt)
+    lease.select(old,(14,None),now=10.848000515252352,first=62*dt)
+    with pytest.raises(ReferenceUnavailable):lease.select(old,(14,None),now=11.276000535581261,first=64*dt)
+    # Even a ready device result may not become visible before publication.
+    with pytest.raises(ReferenceUnavailable):lease.select(new,(15,None),now=11.40,first=65*dt)
+    got,_,_=lease.select(new,(15,None),now=11.4360005432,first=65*dt)
+    assert got is new and old.expires_at==51*dt+2.
+
+def test_clean_feedback_writer_does_not_make_a_failed_episode_training_data(tmp_path):
+    import json
+    from dynamicwam.dualrate.feedback_replay import digest,build_replay_index
+    for i,ok in enumerate([True,False]):
+        ep=tmp_path/'task'/f'episode_{i:04d}';fb=ep/'feedback';fb.mkdir(parents=True)
+        rows=[]
+        for n in range(4):
+            p=fb/f'query_{n}.pt';torch.save(dict(x=torch.tensor(n)),p);rows.append(dict(path=str(p),sha256=digest(p)))
+        (ep/'report.json').write_text(json.dumps(dict(continuous_valid=ok,realtime_valid=ok)))
+        (fb/'manifest.json').write_text(json.dumps(dict(complete=True,identity=dict(split='train',seed=1,task='task'),rows=rows)))
+    result=build_replay_index([tmp_path],tmp_path/'index.json',['task'])
+    index=json.loads((tmp_path/'index.json').read_text())
+    assert result['rows']==4 and len(index['excluded_failed_reports'])==1

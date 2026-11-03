@@ -68,3 +68,17 @@ Real collection is initially zero-residual Full-driven; it is not comprehensive
 student on-policy training. Phase C2 gives shared position/velocity/acceleration
 continuity at knots but is not a global jerk/velocity optimal planner. Full closed
 loop MP4s and 35x20 final evaluation must establish stability and task precision.
+
+## Reference availability gap found in real collection
+
+In place_empty_cup, a camera delay deferred queries; the next valid source did
+not finish before the previous reference's 2-s TTL. Its already accepted queue
+still had predicted executable coverage, but `ReferenceLease.select` aborted
+the episode before a new query was created. `ReferenceUnavailable` now defers
+only that new query. Physics and the accepted queue keep running; the slow worker
+remains independent. No expired reference is passed into a model, no TTL or
+deadline is extended, and eventual queue underrun is still an error. Independent
+event acceptance rejects deferrals when an actually usable reference exists.
+Retained completed TRAIN episodes require native MP4/clock/replay hash checks
+and AST proof that their successful model and dispatch paths are unchanged.
+The failed partial episode is excluded and its task must be recollected.

@@ -57,6 +57,12 @@ def validate_reference_leases(events, config, activation):
             elif event['activated_time']!=selected_at:
                 raise ValueError('reference activation time was rewritten')
             selection=event
+        elif active and kind=='query_deferred' and event.get('reason')=='no_usable_slow_reference':
+            q=event['physical_time'];first=event['first_editable_time'];dt=config['runtime']['action_dt']
+            for version in (latest,selected_version):
+                ref=published.get(version)
+                if ref is not None and ref['completed_time']<=q<ref['source_time']+ttl and first+2*dt<=ref['source_time']+16*dt+1e-7:
+                    raise ValueError('reference deferral skipped a usable causal reference')
         elif active and kind == 'fast_started':
             version, query = event['reference_version'], event['query_time']
             reference = published.get(version)
